@@ -1,0 +1,65 @@
+"""Contract test: a fresh database reaches the current Alembic revision.
+
+This protects the migration boundary. If a model and a migration drift, this
+test fails. Per ``TECHNICAL_BASELINE.md`` -> Technical Verification Gate
+point 4: "A fresh database reaches the current Alembic revision".
+"""
+
+from __future__ import annotations
+
+from pathlib import Path
+
+from alembic.runtime.migration import MigrationContext
+from sqlalchemy import create_engine, inspect
+
+from universal_auto_applier.persistence.db import build_engine_url
+from universal_auto_applier.persistence.migrations import apply_migrations
+
+
+def test_apply_migrations_creates_required_tables(tmp_path: Path) -> None:
+    db_path = tmp_path / "contract_uaa.sqlite"
+    url = build_engine_url(db_path)
+    head = apply_migrations(url)
+
+    assert head == "0001_initial_schema"
+
+    engine = create_engine(url)
+    try:
+        inspector = inspect(engine)
+        actual = set(inspector.get_table_names())
+    finally:
+        engine.dispose()
+
+    expected = {
+        "application_jobs",
+        "application_attempts",
+        "phase_results",
+        "interventions",
+        "answer_memories",
+        "artifacts",
+        "system_runs",
+    }
+    assert expected.issubset(actual), f"missing tables: {expected - actual}"
+
+
+def test_apply_migrations_is_idempotent(tmp_path: Path) -> None:
+    """Re-running migrations on an already-upgraded DB must be a no-op."""
+    url = build_engine_url(tmp_path / "idempotent_uaa.sqlite")
+    head_first = apply_migrations(url)
+    head_second = apply_migrations(url)
+    assert head_first == head_second == "0001_initial_schema"
+
+
+def test_apply_migrations_sets_current_revision(tmp_path: Path) -> None:
+    url = build_engine_url(tmp_path / "revision_uaa.sqlite")
+    apply_migrations(url)
+
+    engine = create_engine(url)
+    try:
+        with engine.connect() as connection:
+            ctx = MigrationContext.configure(connection)
+            current = ctx.get_current_revision()
+    finally:
+        engine.dispose()
+
+    assert current == "0001_initial_schema"

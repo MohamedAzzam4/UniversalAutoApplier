@@ -1,16 +1,23 @@
-# Universal Auto Applier Documentation Pack
+# Universal Auto Applier
 
-This folder documents the plan for turning the current Siemens-focused auto
-applier into a generalized job application system.
+A local-first, generalized job application system. Owns queue import,
+adapter routing, generic navigation, form filling, interventions, answer
+memory, review-before-submit, evidence, application history, and the
+operational dashboard.
 
-The final repository architecture is:
+> Repository bootstrap phase (checkpoint/bootstrap-phase-0).
+> No application behavior is implemented yet. See
+> `docs/generalization/ROADMAP.md` for the phase plan.
+
+## Repository boundaries
 
 ```text
 JobHunter
   search -> evaluate -> tailor CV and cover letter
 
 UniversalAutoApplier
-  import ready jobs -> route by platform -> navigate -> fill forms -> review -> submit
+  import ready jobs -> route by platform -> navigate -> fill forms
+  -> review -> submit
   new repository; owns the generalized product and local dashboard
 
 SiemensAutoApplier
@@ -25,93 +32,169 @@ generalized product inside SiemensAutoApplier. Preserve the working Siemens
 flow and integrate it through a narrow adapter boundary.
 ```
 
-## File Map
+## Version 1 is local-first
 
-Read the files in this order:
+* Runs locally on the user's Windows machine (Linux/macOS also supported
+  for development).
+* The dashboard binds to `127.0.0.1` by default.
+* No VPS, container platform, Cloudflare, or other hosted service required.
+* No authentication on the localhost API (later public deployments must add
+  auth before binding publicly).
 
-1. `DEPLOYMENT_AND_REPO_STRATEGY.md`
-   - Final repository boundaries, local-first version 1 deployment, integration
-     contracts, startup health, and repository bootstrap instructions.
+## Stack (fixed for version 1)
 
-2. `TECHNICAL_BASELINE.md`
-   - Fixed runtime, framework, persistence, browser, frontend, package layout,
-     commands, dependency policy, and quality tooling for version 1.
+| Concern        | Choice                              |
+| -------------- | ----------------------------------- |
+| Runtime        | Python 3.11+ (3.12 reference)       |
+| API            | FastAPI                             |
+| Contracts      | Pydantic v2                         |
+| Persistence    | SQLite + SQLAlchemy 2.x             |
+| Migrations     | Alembic                             |
+| Browser        | Playwright (Chromium)               |
+| Dashboard      | Semantic HTML + CSS + vanilla JS    |
+| Tests          | pytest, pytest-playwright, httpx    |
+| Lint/format    | Ruff, Pyright                       |
 
-3. `ROADMAP.md`
-   - Phases, workpackages, acceptance criteria, and implementation order.
+Exact resolved versions are recorded in
+`docs/generalization/TECHNICAL_BASELINE.md`.
 
-4. `DATA_CONTRACTS.md`
-   - The shared job queue schema, application state model, adapter result model,
-     intervention model, and history rules.
+## Quick start
 
-5. `IMPLEMENTATION_RULES.md`
-   - Coding style, project fingerprint, module boundaries, logging rules,
-     safety rules, and clean-code requirements for humans and AI agents.
+### Windows (PowerShell)
 
-6. `TESTING_STRATEGY.md`
-   - Unit, contract, integration, regression, fixture, Playwright, and full
-     pipeline dry-run tests. Includes the regression gate required after each
-     phase.
+```powershell
+.\scripts\setup.ps1
+.\scripts\run_local.ps1
+```
 
-7. `UI_UX_SPEC.md`
-   - Dashboard views, workflows, status model, intervention UX, history UX, and
-     user-control requirements.
+### Linux / macOS
 
-8. `AI_HANDOFF_PROMPTS.md`
-   - Copy-paste prompts for GLM or another AI implementer. Includes phase
-     prompts, review prompts, and reporting requirements.
+```bash
+./scripts/setup.sh
+./scripts/run_local.sh
+```
 
-## Vocabulary
+### Equivalent direct commands (no scripts)
 
-Use these terms consistently.
+```bash
+python -m venv .venv
+. .venv/bin/activate
+python -m pip install -e ".[dev]"
+python -m playwright install chromium
+python -m universal_auto_applier
+```
 
-`ApplicationJob`
-: A normalized job that is ready for the applier. It includes company, title,
-  URL, score, verdict, tailored documents, and application status.
+The dashboard URL is printed on startup. Default: `http://127.0.0.1:8000/`.
 
-`Adapter`
-: A platform-specific implementation that knows how to navigate and apply on a
-  specific application platform. Example: `SiemensAdapter`, `GreenhouseAdapter`.
+## Configuration
 
-`GenericNavigator`
-: A safe fallback navigator that can click obvious "Apply", "Next", and
-  "Continue" actions but must stop before final submit or uncertainty.
+Copy `.env.example` to `.env` and edit values. All settings can also be
+provided as real environment variables (which take precedence).
 
-`GenericFormFiller`
-: A platform-agnostic form filler that extracts visible fields, maps them to the
-  candidate profile, fills high-confidence answers, and creates interventions
-  for uncertain fields.
+| Variable                | Default        | Purpose                                        |
+| ----------------------- | -------------- | ---------------------------------------------- |
+| `UAA_HOST`              | `127.0.0.1`    | API bind host (do not use `0.0.0.0`)           |
+| `UAA_PORT`              | `8000`         | API bind port                                  |
+| `UAA_DATA_DIR`          | `.uaa_data`    | Local data directory for DB, logs, artifacts   |
+| `UAA_JOBHUNTER_QUEUE`   | _(unset)_      | Absolute path to `application_queue.jsonl`     |
+| `UAA_SIEMENS_REPO`      | _(unset)_      | Absolute path to SiemensAutoApplier repo       |
+| `UAA_BROWSER_HEADLESS`  | `false`        | Headed mode is local default                   |
+| `UAA_SUBMIT_MODE`       | `review`       | `dry_run` / `review` / `trusted_auto_submit`   |
 
-`Intervention`
-: A user-facing task that asks for approval or manual input. Example: "Confirm
-  answer to sponsorship question."
+## Health endpoints
 
-`Review Before Submit`
-: The safety mode where the system fills the application and pauses before the
-  final submission action.
+| Endpoint               | Behavior                                            |
+| ---------------------- | --------------------------------------------------- |
+| `GET /api/health`      | Lightweight status (no Chromium launch)             |
+| `GET /api/health/detail` | Includes a real Chromium smoke check              |
+| `GET /api/docs`        | FastAPI Swagger UI                                  |
+| `GET /`                | Dashboard shell                                     |
 
-## Non-Goals
+The health report lists per-capability state for `api`, `store`, `worker`,
+`browser`, `jobhunter_queue`, and `siemens_adapter`.
 
-Do not build these in the first phases:
+## Tests
 
-- A perfect universal bot that submits every unknown website automatically.
-- A rewrite of Siemens page objects.
-- A giant monolithic "AI browser agent" that clicks whatever the model suggests.
-- A replacement for JobHunter search and tailoring logic.
-- Auto-submit for unknown platforms.
-- A cloud or VPS deployment in version 1.
-- Generalized production modules added to the Siemens repository.
+### Windows
 
-## Fixed Version 1 Decisions
+```powershell
+.\scripts\test.ps1
+.\scripts\test.ps1 -IncludePlaywright
+.\scripts\test.ps1 -All
+```
 
-- `UniversalAutoApplier` is a new sibling repository.
-- Version 1 runs locally on the user's Windows machine.
-- The dashboard binds to localhost by default.
-- JobHunter integrates through a versioned queue contract.
-- Siemens integrates through `SiemensAdapter`; its browser workflow is not
-  copied into the generalized repository.
+### Linux / macOS
 
-## System-Level Safety Rules
+```bash
+./scripts/test.sh
+INCLUDE_PLAYWRIGHT=1 ./scripts/test.sh
+RUN_ALL=1 ./scripts/test.sh
+```
+
+### Direct pytest
+
+```bash
+python -m pytest                              # default: not live, not playwright
+python -m pytest -m playwright                # Playwright UI tests only
+python -m pytest -m "not live and not playwright"
+```
+
+Test markers (per `docs/generalization/TESTING_STRATEGY.md`): `unit`,
+`contract`, `integration`, `playwright`, `pipeline`, `live`.
+
+## Project layout
+
+```text
+UniversalAutoApplier/
+  pyproject.toml
+  README.md
+  .env.example
+  .gitignore
+  alembic.ini
+  migrations/
+  docs/
+  scripts/
+    setup.ps1 / setup.sh
+    run_local.ps1 / run_local.sh
+    test.ps1 / test.sh
+  src/
+    universal_auto_applier/
+      api/
+      core/
+      services/
+      persistence/
+      application_queue/
+      adapters/
+      navigator/
+      form_engine/
+      interventions/
+      browser/
+      ui/
+        static/
+  tests/
+    unit/
+    contract/
+    integration/
+    fixtures/
+    playwright/
+    pipeline/
+```
+
+## Architecture enforcement
+
+```text
+api/ui -> services -> core contracts
+services -> repositories and adapter interfaces
+adapters -> browser/navigator/form engine and core contracts
+persistence -> core contracts
+core -> standard library and Pydantic only
+```
+
+`core` must not import FastAPI, SQLAlchemy, Playwright, or UI modules. API
+routes must not import SQLAlchemy models directly. Generic form modules must
+not import Siemens code.
+
+## Safety rules (system-level)
 
 1. Default mode is dry-run or review-before-submit.
 2. Unknown sites must never auto-submit.
@@ -121,3 +204,29 @@ Do not build these in the first phases:
 5. Low-confidence field mappings must create interventions.
 6. Every application attempt must leave history, logs, and enough evidence to
    debug what happened.
+
+See `docs/generalization/IMPLEMENTATION_RULES.md` for the full rule set.
+
+## Documentation pack
+
+Read the planning pack in this order (see `docs/generalization/README.md`):
+
+1. `DEPLOYMENT_AND_REPO_STRATEGY.md`
+2. `TECHNICAL_BASELINE.md`
+3. `ROADMAP.md`
+4. `DATA_CONTRACTS.md`
+5. `IMPLEMENTATION_RULES.md`
+6. `TESTING_STRATEGY.md`
+7. `UI_UX_SPEC.md`
+8. `AI_HANDOFF_PROMPTS.md`
+
+## Non-Goals (version 1)
+
+* A perfect universal bot that submits every unknown website automatically.
+* A rewrite of Siemens page objects.
+* A giant monolithic "AI browser agent" that clicks whatever the model
+  suggests.
+* A replacement for JobHunter search and tailoring logic.
+* Auto-submit for unknown platforms.
+* A cloud or VPS deployment in version 1.
+* Generalized production modules added to the Siemens repository.
