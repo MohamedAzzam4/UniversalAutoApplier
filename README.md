@@ -45,7 +45,7 @@ flow and integrate it through a narrow adapter boundary.
 
 | Concern        | Choice                              |
 | -------------- | ----------------------------------- |
-| Runtime        | Python 3.11+ (3.12 reference)       |
+| Runtime        | Python 3.11+ (3.12 reference; 3.14 verified) |
 | API            | FastAPI                             |
 | Contracts      | Pydantic v2                         |
 | Persistence    | SQLite + SQLAlchemy 2.x             |
@@ -55,8 +55,33 @@ flow and integrate it through a narrow adapter boundary.
 | Tests          | pytest, pytest-playwright, httpx    |
 | Lint/format    | Ruff, Pyright                       |
 
-Exact resolved versions are recorded in
-`docs/generalization/TECHNICAL_BASELINE.md`.
+### Pinned dependency versions
+
+All dependencies are pinned to exact versions in `pyproject.toml` so that
+`pip install -e .` resolves identically on every Python 3.11+ and every OS.
+This avoids the situation where pip's resolver picks a newer major version
+(e.g. `fastapi 0.139` + `starlette 1.x` + `httpx2`) that breaks the test
+suite under strict `filterwarnings = ["error"]`.
+
+| Package             | Pinned version |
+| ------------------- | -------------- |
+| fastapi             | 0.128.0        |
+| starlette           | 0.50.0         |
+| httpx               | 0.28.1         |
+| pydantic            | 2.12.5         |
+| pydantic-settings   | 2.13.1         |
+| sqlalchemy          | 2.0.51         |
+| alembic             | 1.18.5         |
+| playwright          | 1.57.0         |
+| uvicorn[standard]   | 0.44.0         |
+| pytest              | 9.0.2          |
+| pytest-playwright   | 0.8.0          |
+| ruff                | 0.15.21        |
+| pyright             | 1.1.411        |
+
+To upgrade any dependency: bump the pin in `pyproject.toml` AND re-run the
+full gate (`ruff check`, `ruff format --check`, `pyright`, `pytest`) on both
+Python 3.12 and Python 3.14.
 
 ## Quick start
 

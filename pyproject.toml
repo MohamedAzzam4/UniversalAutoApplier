@@ -7,33 +7,52 @@ name = "universal-auto-applier"
 version = "0.0.1"
 description = "Local-first generalized job application system. Owns queue import, adapter routing, generic navigation, form filling, interventions, review-before-submit, evidence, application history, and the operational dashboard."
 readme = "README.md"
+# Python 3.11+ is required per docs/generalization/TECHNICAL_BASELINE.md
+# (3.12 is the reference runtime). 3.11 is the minimum because we use
+# `enum.StrEnum` and `datetime.UTC`, both added in 3.11.
+# Tested on Python 3.12.13 and Python 3.14.5 (Windows + Linux).
 requires-python = ">=3.11"
 license = { text = "Proprietary" }
 authors = [{ name = "UniversalAutoApplier Contributors" }]
 keywords = ["job-application", "automation", "playwright", "fastapi", "local-first"]
 
-# Runtime dependencies. Pinned by major version per TECHNICAL_BASELINE.md.
-# Exact compatible versions resolved at bootstrap time:
-#   fastapi 0.128.0, pydantic 2.12.5, sqlalchemy 2.0.51, alembic 1.18.5,
-#   playwright 1.57.0, httpx 0.28.1, uvicorn 0.44.0.
+# ---------------------------------------------------------------------------
+# Runtime dependencies.
+#
+# Versions are PINNED EXACTLY (not ranges) so that `pip install -e .` resolves
+# identically on every Python 3.10+ and every OS. The original bootstrap used
+# loose ranges like `fastapi>=0.115,<1`, but pip's resolver picks the newest
+# satisfying version, which on Python 3.14 pulled in fastapi 0.139 + starlette
+# 1.x + httpx2 - a combination that triggers StarletteDeprecationWarning under
+# our strict `filterwarnings = ["error"]` pytest config.
+#
+# The pinned set below is the exact combination verified green on
+# Python 3.12.13 and Python 3.14.5 (Windows + Linux):
+#   fastapi 0.128.0 -> starlette 0.50.0 -> httpx 0.28.1
+#   pydantic 2.12.5, sqlalchemy 2.0.51, alembic 1.18.5,
+#   playwright 1.57.0, uvicorn 0.44.0.
+#
+# To upgrade any dependency, bump the pin here AND re-run the full gate
+# (ruff + pyright + pytest -m playwright) on both Python 3.12 and 3.14.
+# ---------------------------------------------------------------------------
 dependencies = [
-    "fastapi>=0.115,<1",
-    "pydantic>=2,<3",
-    "pydantic-settings>=2,<3",
-    "sqlalchemy>=2,<3",
-    "alembic>=1,<2",
-    "playwright>=1.40",
-    "httpx>=0.27",
-    "uvicorn[standard]>=0.30",
+    "fastapi==0.128.0",
+    "starlette==0.50.0",
+    "httpx==0.28.1",
+    "pydantic==2.12.5",
+    "pydantic-settings==2.13.1",
+    "sqlalchemy==2.0.51",
+    "alembic==1.18.5",
+    "playwright==1.57.0",
+    "uvicorn[standard]==0.44.0",
 ]
 
 [project.optional-dependencies]
 dev = [
-    "pytest>=8",
-    "pytest-playwright>=0.5",
-    "pytest-asyncio>=0.23",
-    "ruff>=0.5",
-    "pyright>=1.1.350",
+    "pytest==9.0.2",
+    "pytest-playwright==0.8.0",
+    "ruff==0.15.21",
+    "pyright==1.1.411",
 ]
 
 [project.urls]
@@ -78,6 +97,11 @@ combine-as-imports = true
 # Match Black's defaults; do not reformat strings to single quotes.
 quote-style = "double"
 indent-style = "space"
+# Force LF line endings. Combined with .gitattributes (which normalizes
+# text=auto eol=lf in the repo and on checkout), this guarantees that
+# `ruff format --check` passes on Windows even when Git is configured with
+# core.autocrlf=true. Without this, Ruff would see CRLF endings on Windows
+# checkouts and report every file as "would reformat".
 line-ending = "lf"
 
 # ----------------------------------------------------------------------------
@@ -132,4 +156,3 @@ filterwarnings = [
     "ignore::DeprecationWarning:websockets.*",
     "ignore::DeprecationWarning:uvicorn.*",
 ]
-asyncio_mode = "auto"

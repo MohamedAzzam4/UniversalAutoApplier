@@ -1,0 +1,25 @@
+# Normalize line endings to LF in the repo and on checkout.
+#
+# This guarantees that `ruff format --check` passes on Windows even when the
+# user has `git config --global core.autocrlf true`. Ruff's `line-ending = "lf"`
+# setting (see pyproject.toml) means Ruff writes LF; if Git checks out CRLF,
+# every file shows up as "would reformat".
+#
+# With `text=auto eol=lf`, Git stores LF in the repo and checks out LF on
+# every platform, regardless of the user's autocrlf setting.
+#
+# PowerShell scripts (.ps1) traditionally want CRLF on Windows, but PowerShell
+# 5.1+ and PowerShell Core 6+ both handle LF fine, so we normalize them too
+# for consistency. This matches Microsoft's own repos (e.g. PowerShell/PowerShell).
+* text=auto eol=lf
+
+# Binary files - never normalize.
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.pdf binary
+*.zip binary
+*.gz binary
+*.sqlite binary
+*.db binary
