@@ -9,6 +9,12 @@ Foreign keys are enforced via a SQLAlchemy ``connect`` event listener on the
 migration engine; this avoids opening an auto-begin transaction before
 Alembic's own transaction context, which in SQLAlchemy 2.x would otherwise
 swallow the ``alembic_version`` INSERT on connection close.
+
+The migration engine is disposed in a ``finally`` block after migrations
+finish. Without ``dispose()``, the engine's connection pool holds
+``sqlite3.Connection`` objects open, and Python 3.14's stricter resource
+finalization emits ``ResourceWarning: unclosed database`` during garbage
+collection.
 """
 
 from __future__ import annotations
@@ -16,7 +22,7 @@ from __future__ import annotations
 from logging.config import fileConfig
 
 from alembic import context
-from sqlalchemy import event, engine_from_config, pool
+from sqlalchemy import Engine, engine_from_config, event, pool
 
 from universal_auto_applier.persistence.models import Base
 
@@ -45,7 +51,12 @@ def run_migrations_offline() -> None:
 
 
 def run_migrations_online() -> None:
-    """Run migrations against a live database connection."""
+    """Run migrations against a live database connection.
+
+    Creates a SQLAlchemy engine, runs migrations within a transaction, and
+    disposes the engine in a ``finally`` block to avoid leaking
+    ``sqlite3.Connection`` objects.
+    """
     section = config.get_section(config.config_ini_section, {})
     if section is None:
         section = {}
@@ -54,7 +65,7 @@ def run_migrations_online() -> None:
         raise RuntimeError("sqlalchemy.url must be set before running migrations")
     section["sqlalchemy.url"] = url
 
-    connectable = engine_from_config(
+    connectable: Engine = engine_from_config(
         section,
         prefix="sqlalchemy.",
         poolclass=pool.NullPool,
@@ -67,20 +78,26 @@ def run_migrations_online() -> None:
     if connectable.dialect.name == "sqlite":
 
         @event.listens_for(connectable, "connect")
-        def _enable_sqlite_foreign_keys(dbapi_connection, _record):  # noqa: ANN001
-            cursor = dbapi_connection.cursor()
+        def _enable_sqlite_foreign_keys(dbapi_connection: object, _record: object) -> None:
+            cursor = dbapi_connection.cursor()  # type: ignore[attr-defined]
             cursor.execute("PRAGMA foreign_keys=ON")
             cursor.close()
 
-    with connectable.connect() as connection:
-        context.configure(
-            connection=connection,
-            target_metadata=target_metadata,
-            compare_type=True,
-            render_as_batch=True,
-        )
-        with context.begin_transaction():
-            context.run_migrations()
+    try:
+        with connectable.connect() as connection:
+            context.configure(
+                connection=connection,
+                target_metadata=target_metadata,
+                compare_type=True,
+                render_as_batch=True,
+            )
+            with context.begin_transaction():
+                context.run_migrations()
+    finally:
+        # Dispose the engine to release any pooled connections. Without this,
+        # Python 3.14 emits ResourceWarning: unclosed database when the
+        # sqlite3.Connection is garbage-collected.
+        connectable.dispose()
 
 
 if context.is_offline_mode():

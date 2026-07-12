@@ -159,6 +159,11 @@ markers = [
 ]
 filterwarnings = [
     "error",
+    # Explicitly catch ResourceWarning as an error. Python 3.14's sqlite3
+    # module emits ResourceWarning for unclosed connections; Python 3.12 does
+    # not. Catching it explicitly on all versions prevents future leaks from
+    # slipping through on 3.12 and failing on 3.14.
+    "error::ResourceWarning",
     # Allow third-party library deprecation noise; we still want our own
     # warnings to surface as errors during tests.
     "ignore::DeprecationWarning:alembic.*",
