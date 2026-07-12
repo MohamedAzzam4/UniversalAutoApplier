@@ -196,6 +196,37 @@ python -m pytest -m "not live and not playwright"
 Test markers (per `docs/generalization/TESTING_STRATEGY.md`): `unit`,
 `contract`, `integration`, `playwright`, `pipeline`, `live`.
 
+### ResourceWarning gate
+
+`pyproject.toml` configures `filterwarnings = ["error", "error::ResourceWarning", ...]`
+so any `ResourceWarning` is treated as a test failure. This catches unclosed
+SQLite connections, file handles, and similar leaks on all Python versions
+(Python 3.14's `sqlite3` is stricter about this than 3.12). If a test fails
+with `ResourceWarning: unclosed database`, the fix is to `dispose()` the
+engine or `close()` the connection in a `finally` block — not to suppress
+the warning.
+
+## CI verification
+
+Two GitHub Actions workflows run the full bootstrap gate on every push and
+pull request:
+
+| Workflow | Runner | Python | Purpose |
+|---|---|---|---|
+| `.github/workflows/verify-windows-py314.yml` | `windows-latest` | 3.14 | Primary target-environment proof (the user's actual deployment target) |
+| `.github/workflows/verify-linux.yml` | `ubuntu-latest` | 3.11, 3.12, 3.13, 3.14 | Cross-version matrix on Linux |
+
+Both workflows run the exact commands a human reviewer would run:
+`setup.ps1`/`setup.sh`, `test.ps1 -All -IncludePlaywright`/`test.sh`, and
+the four direct commands (`ruff check`, `ruff format --check`, `pyright`,
+`pytest`). They also include a step that proves `ResourceWarning` is treated
+as an error by emitting a deliberate `ResourceWarning` and asserting the
+test fails.
+
+To trigger a workflow manually: **Actions** tab → select the workflow →
+**Run workflow**. To re-run a failed workflow: **Actions** tab → select the
+run → **Re-run all jobs**.
+
 ## Project layout
 
 ```text
