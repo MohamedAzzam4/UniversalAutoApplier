@@ -126,15 +126,24 @@ Invoke-Step "9. contract tests (ResourceWarning gate)" {
 
 # Step 10: Prove ResourceWarning is treated as error
 Invoke-Step "10. Prove ResourceWarning is treated as error" {
+    $tempTest = "tests\test_rw_temp.py"
     @"
 import warnings
 def test_resourcewarning_is_error():
     warnings.warn('deliberate', ResourceWarning)
-"@ | Out-File -FilePath tests\test_rw_temp.py -Encoding utf8
+"@ | Out-File -FilePath $tempTest -Encoding utf8
 
-    & $py -m pytest tests\test_rw_temp.py -q 2>&1 | Out-String | Write-Host
-    $rwExit = $LASTEXITCODE
-    Remove-Item tests\test_rw_temp.py -Force
+    try {
+        & $py -m pytest $tempTest -q 2>&1 | Out-String | Write-Host
+        $rwExit = $LASTEXITCODE
+    } finally {
+        # ALWAYS remove the temp test, even if pytest hangs or the script
+        # is interrupted. We never want a deliberately-failing test file
+        # left in the working tree.
+        if (Test-Path $tempTest) {
+            Remove-Item $tempTest -Force
+        }
+    }
 
     if ($rwExit -eq 0) {
         throw "ResourceWarning was NOT treated as error (test passed, should have failed)"

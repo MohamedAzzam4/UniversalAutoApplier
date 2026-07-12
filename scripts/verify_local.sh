@@ -66,14 +66,20 @@ run_step "9. contract tests (ResourceWarning gate)" bash -c './.venv/bin/python 
 
 # Step 10: Prove ResourceWarning is treated as error
 run_step "10. Prove ResourceWarning is treated as error" bash -c '
-    cat > tests/test_rw_temp.py << EOF
+    temp_test="tests/test_rw_temp.py"
+    cat > "$temp_test" << EOF
 import warnings
 def test_resourcewarning_is_error():
     warnings.warn("deliberate", ResourceWarning)
 EOF
-    ./.venv/bin/python -m pytest tests/test_rw_temp.py -q
+
+    # Use a trap to ALWAYS remove the temp test, even on interruption.
+    trap "rm -f \"$temp_test\"" EXIT
+    ./.venv/bin/python -m pytest "$temp_test" -q
     rw_exit=$?
-    rm -f tests/test_rw_temp.py
+    rm -f "$temp_test"
+    trap - EXIT
+
     if [ "$rw_exit" -eq 0 ]; then
         echo "FAIL: ResourceWarning was NOT treated as error"
         exit 1
