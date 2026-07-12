@@ -85,8 +85,12 @@ if (-not $SkipBrowser) {
 Write-Host "==> Applying database migrations" -ForegroundColor Cyan
 $env:UAA_DATA_DIR = if ($env:UAA_DATA_DIR) { $env:UAA_DATA_DIR } else { ".\.uaa_data" }
 New-Item -ItemType Directory -Force -Path $env:UAA_DATA_DIR | Out-Null
+# Pass the data dir to Python via UAA_DATA_DIR env var (already set above) and
+# read it with os.environ inside Python. Do NOT interpolate the Windows path
+# into the Python source string — backslashes in paths like `.\.uaa_data`
+# trigger `SyntaxWarning: "\." is an invalid escape sequence` in Python.
 Invoke-NativeCommand {
-    & $py -c "from universal_auto_applier.persistence.migrations import apply_migrations; from universal_auto_applier.persistence.db import build_engine_url; from pathlib import Path; print('head=', apply_migrations(build_engine_url(Path('$env:UAA_DATA_DIR') / 'uaa.sqlite')))"
+    & $py -c "import os; from pathlib import Path; from universal_auto_applier.persistence.migrations import apply_migrations; from universal_auto_applier.persistence.db import build_engine_url; data_dir = Path(os.environ['UAA_DATA_DIR']); print('head=', apply_migrations(build_engine_url(data_dir / 'uaa.sqlite')))"
 } -Description "Apply Alembic migrations to head"
 
 Write-Host "==> Running smoke tests (unit + integration, no Playwright)" -ForegroundColor Cyan

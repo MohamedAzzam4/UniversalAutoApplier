@@ -10,7 +10,10 @@ readme = "README.md"
 # Python 3.11+ is required per docs/generalization/TECHNICAL_BASELINE.md
 # (3.12 is the reference runtime). 3.11 is the minimum because we use
 # `enum.StrEnum` and `datetime.UTC`, both added in 3.11.
-# Tested on Python 3.12.13 and Python 3.14.5 (Windows + Linux).
+# Verified on Python 3.12.13 (Linux). Python 3.14 is intended to work — all
+# pinned dependencies declare Requires-Python >=3.x with no upper bound — but
+# has not yet been verified end-to-end on Windows. Re-verify before claiming
+# 3.14 support.
 requires-python = ">=3.11"
 license = { text = "Proprietary" }
 authors = [{ name = "UniversalAutoApplier Contributors" }]
@@ -20,20 +23,21 @@ keywords = ["job-application", "automation", "playwright", "fastapi", "local-fir
 # Runtime dependencies.
 #
 # Versions are PINNED EXACTLY (not ranges) so that `pip install -e .` resolves
-# identically on every Python 3.10+ and every OS. The original bootstrap used
+# identically on every Python 3.11+ and every OS. The original bootstrap used
 # loose ranges like `fastapi>=0.115,<1`, but pip's resolver picks the newest
 # satisfying version, which on Python 3.14 pulled in fastapi 0.139 + starlette
 # 1.x + httpx2 - a combination that triggers StarletteDeprecationWarning under
 # our strict `filterwarnings = ["error"]` pytest config.
 #
 # The pinned set below is the exact combination verified green on
-# Python 3.12.13 and Python 3.14.5 (Windows + Linux):
+# Python 3.12.13 (Linux):
 #   fastapi 0.128.0 -> starlette 0.50.0 -> httpx 0.28.1
 #   pydantic 2.12.5, sqlalchemy 2.0.51, alembic 1.18.5,
 #   playwright 1.57.0, uvicorn 0.44.0.
 #
 # To upgrade any dependency, bump the pin here AND re-run the full gate
-# (ruff + pyright + pytest -m playwright) on both Python 3.12 and 3.14.
+# (ruff + pyright + pytest -m playwright) on Python 3.12 (and 3.14 once
+# verified end-to-end on Windows).
 # ---------------------------------------------------------------------------
 dependencies = [
     "fastapi==0.128.0",
@@ -108,6 +112,13 @@ line-ending = "lf"
 # Pyright: strict type checking for the source package.
 # ----------------------------------------------------------------------------
 [tool.pyright]
+# Use the project's virtualenv so Pyright resolves installed dependencies
+# (fastapi, sqlalchemy, playwright, etc.) without needing --pythonpath on the
+# CLI. venvPath is the directory containing the venv; venv is the venv name.
+# This makes `python -m pyright` work as-is, without the user having to pass
+# `--pythonpath .\.venv\Scripts\python.exe` every time.
+venvPath = "."
+venv = ".venv"
 include = ["src/universal_auto_applier"]
 exclude = [
     "**/__pycache__",

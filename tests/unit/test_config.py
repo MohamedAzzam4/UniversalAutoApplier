@@ -1,9 +1,16 @@
 """Unit tests for :mod:`universal_auto_applier.config`.
 
 Pure-logic tests for the settings loader. No network, no browser.
+
+Path comparisons use ``Path`` objects (not ``str()``) so the tests pass on
+both POSIX and Windows. On Windows, ``str(Path("/tmp/foo"))`` is
+``"\\tmp\\foo"``, which would break a hard-coded POSIX string comparison.
+Comparing ``Path`` objects normalizes separators on both sides.
 """
 
 from __future__ import annotations
+
+from pathlib import Path
 
 import pytest
 
@@ -33,11 +40,14 @@ def test_load_settings_reads_all_variables() -> None:
     settings = load_settings(env=env)
     assert settings.host == "127.0.0.1"
     assert settings.port == 9001
-    assert str(settings.data_dir) == "/tmp/uaa_test_data"
+    # Compare Path objects, not str(), so the test is cross-platform.
+    # On Windows, str(Path("/tmp/foo")) == "\\tmp\\foo", which would fail a
+    # hard-coded POSIX string comparison. Path equality normalizes separators.
+    assert settings.data_dir == Path("/tmp/uaa_test_data")
     assert settings.jobhunter_queue is not None
-    assert str(settings.jobhunter_queue) == "/tmp/queue.jsonl"
+    assert settings.jobhunter_queue == Path("/tmp/queue.jsonl")
     assert settings.siemens_repo is not None
-    assert str(settings.siemens_repo) == "/tmp/siemens"
+    assert settings.siemens_repo == Path("/tmp/siemens")
     assert settings.browser_headless is True
     assert settings.submit_mode == "dry_run"
 

@@ -38,7 +38,10 @@ fi
 echo "==> Applying database migrations"
 export UAA_DATA_DIR="${UAA_DATA_DIR:-./.uaa_data}"
 mkdir -p "$UAA_DATA_DIR"
-python -c "from universal_auto_applier.persistence.migrations import apply_migrations; from universal_auto_applier.persistence.db import build_engine_url; from pathlib import Path; print('head=', apply_migrations(build_engine_url(Path('$UAA_DATA_DIR') / 'uaa.sqlite')))"
+# Pass the data dir to Python via UAA_DATA_DIR env var and read it with
+# os.environ inside Python. Do NOT interpolate the path into the Python
+# source string — backslashes in Windows paths trigger SyntaxWarning.
+python -c "import os; from pathlib import Path; from universal_auto_applier.persistence.migrations import apply_migrations; from universal_auto_applier.persistence.db import build_engine_url; data_dir = Path(os.environ['UAA_DATA_DIR']); print('head=', apply_migrations(build_engine_url(data_dir / 'uaa.sqlite')))"
 
 echo "==> Running smoke tests (unit + integration, no Playwright)"
 python -m pytest tests/unit tests/integration -q

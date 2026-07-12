@@ -45,7 +45,7 @@ flow and integrate it through a narrow adapter boundary.
 
 | Concern        | Choice                              |
 | -------------- | ----------------------------------- |
-| Runtime        | Python 3.11+ (3.12 reference; 3.14 verified) |
+| Runtime        | Python 3.11+ (3.12 reference; 3.14 not yet verified on Windows) |
 | API            | FastAPI                             |
 | Contracts      | Pydantic v2                         |
 | Persistence    | SQLite + SQLAlchemy 2.x             |
@@ -110,6 +110,35 @@ python -m universal_auto_applier
 ```
 
 The dashboard URL is printed on startup. Default: `http://127.0.0.1:8000/`.
+
+### Refreshing an existing checkout (line endings)
+
+The repo enforces LF line endings via `.gitattributes` (`* text=auto eol=lf`).
+A **fresh clone** always gets LF endings on every platform, even with
+`git config --global core.autocrlf true`. However, if you checked out the
+repo **before** `.gitattributes` was added, your working tree may still
+contain CRLF files, which will cause `ruff format --check` to report
+"31 files would be reformatted".
+
+To refresh an existing checkout after `git pull`:
+
+```bash
+# Option A (simplest): re-clone
+rm -rf UniversalAutoApplier
+git clone <repo>
+cd UniversalAutoApplier
+git checkout checkpoint/bootstrap-phase-0
+
+# Option B: force Git to re-checkout with current .gitattributes rules
+git stash
+git stash drop
+# or, if you have no local changes to preserve:
+git rm --cached -r .
+git checkout -- .
+```
+
+After refreshing, `ruff format --check src tests` should report
+"38 files already formatted".
 
 ## Configuration
 
