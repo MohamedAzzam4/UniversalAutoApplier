@@ -96,6 +96,7 @@ jobs:
             exit 1
           else
             echo "OK: ResourceWarning is correctly treated as error (test failed as expected)"
+            exit 0
           fi
 
       - name: Summary

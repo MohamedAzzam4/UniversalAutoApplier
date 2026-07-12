@@ -140,6 +140,10 @@ jobs:
             exit 1
           } else {
             Write-Host "OK: ResourceWarning is correctly treated as error (test failed as expected)"
+            # pytest exited 1 (as expected), but GitHub Actions checks
+            # $LASTEXITCODE at the end of the script block. Reset it so the
+            # step is marked successful.
+            $global:LASTEXITCODE = 0
           }
 
       - name: Summary
