@@ -88,6 +88,7 @@ history/
 playwright-report/
 test-results/
 playwright/.cache/
+.playwright-mcp/
 browser_state.json
 auth_state.json
 
