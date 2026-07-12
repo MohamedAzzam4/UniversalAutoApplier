@@ -154,7 +154,11 @@ jobs:
           Write-Host "Python: $(python --version)"
           Write-Host "Commit: ${{ github.sha }}"
           Write-Host "Branch: ${{ github.ref_name }}"
-          if (${{ job.status }} -eq 'success') {
+          # ${{ job.status }} interpolates as a bare word (e.g. 'success'),
+          # which PowerShell treats as a command name. Quote it so it is
+          # evaluated as a string.
+          $jobStatus = "${{ job.status }}"
+          if ($jobStatus -eq 'success') {
             Write-Host "RESULT: ALL GATES PASSED on Windows + Python 3.14"
           } else {
             Write-Host "RESULT: GATES FAILED - see logs above"
