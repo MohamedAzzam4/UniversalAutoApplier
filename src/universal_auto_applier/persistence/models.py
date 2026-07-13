@@ -60,6 +60,16 @@ class ApplicationJobRow(Base):
     cv_pdf: Mapped[str | None] = mapped_column(Text, nullable=True)
     cover_letter_pdf: Mapped[str | None] = mapped_column(Text, nullable=True)
     status: Mapped[str] = mapped_column(String(32), index=True)
+    # Optional identity fields, needed to recompute application_id on read.
+    job_id: Mapped[str | None] = mapped_column(String(256), nullable=True)
+    external_job_id: Mapped[str | None] = mapped_column(String(256), nullable=True, index=True)
+    # Optional descriptive fields from the ApplicationJob contract.
+    date_posted: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    evaluated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    tailored_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    evaluation_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    german_filter_result: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    documents_json: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
     metadata_json: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
     first_seen_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
     last_updated_at: Mapped[datetime] = mapped_column(
