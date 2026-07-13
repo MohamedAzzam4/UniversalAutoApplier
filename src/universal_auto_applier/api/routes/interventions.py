@@ -113,7 +113,9 @@ def resolve_intervention_endpoint(
     try:
         resolution = InterventionStatus(body.resolution)
     except ValueError:
-        raise HTTPException(status_code=400, detail=f"Invalid resolution: {body.resolution}")
+        raise HTTPException(
+            status_code=400, detail=f"Invalid resolution: {body.resolution}"
+        ) from None
 
     with session_factory() as session:
         # Check the intervention exists.

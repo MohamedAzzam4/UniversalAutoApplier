@@ -103,7 +103,7 @@ def approve_review_endpoint(
     try:
         approve_review_state(state, approval_id=body.approval_id)
     except ValueError as exc:
-        raise HTTPException(status_code=409, detail=str(exc))
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
 
     # Store the updated state back.
     states[application_id] = state

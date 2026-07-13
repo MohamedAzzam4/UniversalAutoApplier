@@ -296,7 +296,7 @@ class TestPhase3Regression:
             clicked.append(selector)
             return True
 
-        result = safe_explore(observe, click)
+        safe_explore(observe, click)
         assert len(clicked) == 0
 
 
