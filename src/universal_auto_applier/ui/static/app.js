@@ -1,116 +1,345 @@
-/* UniversalAutoApplier dashboard shell.
- *
- * Vanilla JS, no framework. One shared polling controller with backoff and
- * cancellation, per TECHNICAL_BASELINE.md -> Dashboard Frontend.
- *
- * The bootstrap phase only renders health. Phase 6 will add views for Queue,
- * Interventions, History, Job Detail, Logs, and Settings.
+/* UniversalAutoApplier dashboard - Phase 6.
+ * Supports: status, queue, interventions, review, logs views.
+ * Vanilla JS, no framework. Local-first, no external calls.
  */
 
 (() => {
   "use strict";
 
-  const POLL_INTERVAL_MS = 5000;
-  const POLL_BACKOFF_MAX_MS = 30000;
+  const POLL_INTERVAL_MS = 10000;
+  let pollTimer = null;
 
-  const overall = document.getElementById("overall-status");
-  const version = document.getElementById("uaa-version");
-  const submitMode = document.getElementById("uaa-submit-mode");
-  const componentList = document.getElementById("component-list");
+  // ---- View navigation ----
+  const views = document.querySelectorAll(".uaa-view");
+  const navLinks = document.querySelectorAll(".uaa-nav a");
 
-  const pillClassFor = (state) => `uaa-pill uaa-pill-${state}`;
+  function showView(viewName) {
+    views.forEach((v) => v.classList.remove("uaa-view-active"));
+    navLinks.forEach((a) => a.removeAttribute("aria-current"));
+    const view = document.getElementById("view-" + viewName);
+    if (view) view.classList.add("uaa-view-active");
+    const link = document.querySelector(`.uaa-nav a[data-view="${viewName}"]`);
+    if (link) link.setAttribute("aria-current", "page");
+  }
 
-  const renderReport = (report) => {
-    if (overall) {
-      overall.textContent = report.status;
-      overall.className = pillClassFor(report.status);
+  navLinks.forEach((link) => {
+    link.addEventListener("click", (e) => {
+      e.preventDefault();
+      const viewName = link.getAttribute("data-view");
+      showView(viewName);
+      if (viewName === "queue") loadQueue();
+      if (viewName === "interventions") loadInterventions();
+      if (viewName === "logs") loadLogs();
+    });
+  });
+
+  // ---- Helpers ----
+  async function fetchJSON(url) {
+    const resp = await fetch(url, { headers: { Accept: "application/json" } });
+    if (!resp.ok) throw new Error(`${url} returned ${resp.status}`);
+    return resp.json();
+  }
+
+  async function postJSON(url, body) {
+    const resp = await fetch(url, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Accept: "application/json" },
+      body: JSON.stringify(body),
+    });
+    if (!resp.ok) {
+      const err = await resp.json().catch(() => ({ detail: resp.statusText }));
+      throw new Error(err.detail || `HTTP ${resp.status}`);
     }
-    if (version) {
-      version.textContent = report.version;
-    }
-    if (submitMode) {
-      // Submit mode is rendered from window.__UAA_SETTINGS__ if present, set
-      // by the server in a future phase. For now it stays "—" because the
-      // bootstrap dashboard does not expose a settings endpoint.
-      submitMode.textContent = window.__UAA_SUBMIT_MODE__ || "review";
-    }
-    if (!componentList) return;
+    return resp.json();
+  }
 
-    if (!Array.isArray(report.components) || report.components.length === 0) {
-      componentList.innerHTML = "<li>No components reported.</li>";
+  function fmtDate(iso) {
+    if (!iso) return "—";
+    try {
+      return new Date(iso).toLocaleString();
+    } catch {
+      return iso;
+    }
+  }
+
+  function pillClassFor(state) {
+    const map = {
+      idle: "uaa-pill-idle",
+      ready: "uaa-pill-ready",
+      unavailable: "uaa-pill-unavailable",
+      not_configured: "uaa-pill-not_configured",
+      invalid: "uaa-pill-invalid",
+      running: "uaa-pill-running",
+      paused: "uaa-pill-paused",
+    };
+    return "uaa-pill " + (map[state] || "uaa-pill-unknown");
+  }
+
+  // ---- Dashboard / Status ----
+  async function loadStatus() {
+    try {
+      const [status, health] = await Promise.all([
+        fetchJSON("/api/status"),
+        fetchJSON("/api/health"),
+      ]);
+
+      document.getElementById("run-status").textContent = status.run_status;
+      document.getElementById("run-status").className = pillClassFor(status.run_status);
+      document.getElementById("submit-mode").textContent = status.submit_mode;
+      document.getElementById("jobs-total").textContent = status.jobs_total;
+      document.getElementById("pending-interventions").textContent = status.pending_interventions;
+
+      // Jobs by status
+      const breakdown = document.getElementById("jobs-by-status");
+      breakdown.innerHTML = "";
+      if (status.jobs_by_status && Object.keys(status.jobs_by_status).length > 0) {
+        for (const [s, count] of Object.entries(status.jobs_by_status)) {
+          const div = document.createElement("div");
+          div.className = "uaa-stat";
+          div.innerHTML = `<span class="uaa-stat-label">${s}</span><span>${count}</span>`;
+          breakdown.appendChild(div);
+        }
+      } else {
+        breakdown.innerHTML = '<p class="uaa-empty">No jobs imported yet.</p>';
+      }
+
+      // Health components
+      const compList = document.getElementById("component-list");
+      compList.innerHTML = "";
+      for (const c of health.components || []) {
+        const li = document.createElement("li");
+        li.innerHTML = `<span class="uaa-component-name">${c.name}</span><span class="${pillClassFor(c.state)}">${c.state}</span>`;
+        compList.appendChild(li);
+      }
+    } catch (err) {
+      console.error("[UAA] status load failed", err);
+    }
+  }
+
+  // ---- Queue ----
+  async function loadQueue() {
+    try {
+      const filter = document.getElementById("queue-status-filter").value;
+      let url = "/api/queue?limit=100";
+      if (filter) url += "&status=" + encodeURIComponent(filter);
+      const data = await fetchJSON(url);
+
+      const tbody = document.getElementById("queue-tbody");
+      tbody.innerHTML = "";
+      if (data.jobs.length === 0) {
+        tbody.innerHTML = '<tr><td colspan="6" class="uaa-empty">No jobs found.</td></tr>';
+        return;
+      }
+      for (const job of data.jobs) {
+        const tr = document.createElement("tr");
+        tr.innerHTML = `
+          <td>${esc(job.company)}</td>
+          <td>${esc(job.title)}</td>
+          <td>${esc(job.platform)}</td>
+          <td><span class="${pillClassFor(job.status)}">${esc(job.status)}</span></td>
+          <td>${job.score != null ? job.score.toFixed(1) : "—"}</td>
+          <td>${fmtDate(job.last_updated_at)}</td>`;
+        tbody.appendChild(tr);
+      }
+    } catch (err) {
+      console.error("[UAA] queue load failed", err);
+    }
+  }
+
+  document.getElementById("queue-refresh")?.addEventListener("click", loadQueue);
+  document.getElementById("queue-status-filter")?.addEventListener("change", loadQueue);
+
+  // ---- Interventions ----
+  async function loadInterventions() {
+    try {
+      const data = await fetchJSON("/api/interventions?pending_only=true");
+      const container = document.getElementById("intervention-list");
+      container.innerHTML = "";
+
+      if (data.interventions.length === 0) {
+        container.innerHTML = '<p class="uaa-empty">No pending interventions.</p>';
+        return;
+      }
+
+      for (const iv of data.interventions) {
+        const card = document.createElement("div");
+        card.className = "uaa-intervention-card";
+        card.innerHTML = `
+          <div class="uaa-iv-header">
+            <span class="uaa-iv-kind">${esc(iv.kind)}</span>
+            <span class="uaa-pill ${iv.status === "pending" ? "uaa-pill-not_configured" : "uaa-pill-ready"}">${esc(iv.status)}</span>
+          </div>
+          <p class="uaa-iv-question">${esc(iv.question)}</p>
+          <p class="uaa-iv-meta">Job: ${esc(iv.application_id.substring(0, 12))}... · Confidence: ${iv.confidence != null ? iv.confidence : "—"}</p>
+          ${iv.suggested_answer ? `<p class="uaa-iv-suggested">Suggested: <code>${esc(iv.suggested_answer)}</code></p>` : ""}
+          <div class="uaa-iv-actions" data-iv-id="${esc(iv.intervention_id)}">
+            <button class="uaa-btn uaa-btn-success" data-action="approve">Approve</button>
+            <button class="uaa-btn" data-action="edit">Edit</button>
+            <button class="uaa-btn" data-action="skip">Skip</button>
+            <button class="uaa-btn uaa-btn-danger" data-action="block">Block</button>
+          </div>`;
+
+        // Wire action buttons
+        const actions = card.querySelectorAll(".uaa-iv-actions button");
+        actions.forEach((btn) => {
+          btn.addEventListener("click", () => resolveIntervention(iv.intervention_id, btn.dataset.action));
+        });
+
+        container.appendChild(card);
+      }
+    } catch (err) {
+      console.error("[UAA] interventions load failed", err);
+    }
+  }
+
+  async function resolveIntervention(ivId, action) {
+    const resolutionMap = {
+      approve: "approved",
+      edit: "edited",
+      skip: "skipped",
+      block: "blocked",
+    };
+    const resolution = resolutionMap[action];
+    if (!resolution) return;
+
+    let answer = null;
+    let saveToMemory = false;
+    if (action === "approve" || action === "edit") {
+      answer = prompt("Enter the answer:");
+      if (answer === null) return; // cancelled
+      saveToMemory = confirm("Save this answer to memory for future reuse?");
+    }
+
+    try {
+      await postJSON(`/api/interventions/${ivId}/resolve`, {
+        resolution,
+        answer: answer || undefined,
+        save_to_memory: saveToMemory,
+      });
+      loadInterventions();
+      loadStatus();
+    } catch (err) {
+      alert("Failed to resolve: " + err.message);
+    }
+  }
+
+  // ---- Review ----
+  document.getElementById("review-load")?.addEventListener("click", loadReviewState);
+
+  async function loadReviewState() {
+    const jobId = document.getElementById("review-job-id").value.trim();
+    if (!jobId) return;
+
+    try {
+      const data = await fetchJSON(`/api/review/${encodeURIComponent(jobId)}`);
+      const display = document.getElementById("review-state-display");
+      const controls = document.getElementById("review-controls");
+
+      display.innerHTML = `
+        <div class="uaa-status-grid">
+          <div class="uaa-stat"><span class="uaa-stat-label">Approved</span><span class="${data.approved ? "uaa-pill uaa-pill-ready" : "uaa-pill uaa-pill-idle"}">${data.approved ? "Yes" : "No"}</span></div>
+          <div class="uaa-stat"><span class="uaa-stat-label">Can Submit</span><span class="${data.can_submit ? "uaa-pill uaa-pill-ready" : "uaa-pill uaa-pill-unavailable"}">${data.can_submit ? "Yes" : "No"}</span></div>
+          <div class="uaa-stat"><span class="uaa-stat-label">Unresolved Interventions</span><span>${data.has_unresolved_interventions ? "Yes" : "No"}</span></div>
+        </div>
+        ${data.final_action_detected ? `<p><strong>Final action detected:</strong> ${esc(data.final_action_detected)}</p>` : ""}
+        ${data.unanswered_fields && data.unanswered_fields.length > 0 ? `<p><strong>Unanswered fields:</strong> ${data.unanswered_fields.map(esc).join(", ")}</p>` : ""}
+        ${data.documents && data.documents.length > 0 ? `<p><strong>Documents:</strong> ${data.documents.map(esc).join(", ")}</p>` : ""}
+        <p class="uaa-safety-note">Note: Approving does NOT submit. It only sets the approval flag. Submission requires the pipeline orchestrator (Phase 8).</p>`;
+
+      controls.style.display = "flex";
+      updateSubmitCheck(jobId);
+    } catch (err) {
+      document.getElementById("review-state-display").innerHTML = `<p class="uaa-empty">Error: ${esc(err.message)}</p>`;
+      controls.style.display = "none";
+    }
+  }
+
+  async function updateSubmitCheck(jobId) {
+    try {
+      const data = await fetchJSON(`/api/review/${encodeURIComponent(jobId)}/submit-check`);
+      const el = document.getElementById("submit-check-result");
+      el.textContent = data.can_submit ? "Submit Allowed" : "Submit Blocked";
+      el.className = data.can_submit ? "uaa-pill uaa-pill-ready" : "uaa-pill uaa-pill-unavailable";
+    } catch {
+      // ignore
+    }
+  }
+
+  document.getElementById("review-approve")?.addEventListener("click", async () => {
+    const jobId = document.getElementById("review-job-id").value.trim();
+    if (!jobId) return;
+    const approvalId = "manual-" + Date.now();
+    try {
+      await postJSON(`/api/review/${encodeURIComponent(jobId)}/approve`, { approval_id: approvalId });
+      loadReviewState();
+    } catch (err) {
+      alert("Cannot approve: " + err.message);
+    }
+  });
+
+  document.getElementById("review-deny")?.addEventListener("click", async () => {
+    const jobId = document.getElementById("review-job-id").value.trim();
+    if (!jobId) return;
+    try {
+      await postJSON(`/api/review/${encodeURIComponent(jobId)}/deny`);
+      loadReviewState();
+    } catch (err) {
+      alert("Cannot deny: " + err.message);
+    }
+  });
+
+  // ---- Logs ----
+  async function loadLogs() {
+    try {
+      const [logs, errors] = await Promise.all([
+        fetchJSON("/api/logs?limit=50"),
+        fetchJSON("/api/errors?limit=50"),
+      ]);
+
+      renderLogList("log-list", logs.entries);
+      renderLogList("error-list", errors.entries);
+    } catch (err) {
+      console.error("[UAA] logs load failed", err);
+    }
+  }
+
+  function renderLogList(elementId, entries) {
+    const el = document.getElementById(elementId);
+    if (!entries || entries.length === 0) {
+      el.innerHTML = '<p class="uaa-empty">No entries.</p>';
       return;
     }
-
-    componentList.innerHTML = "";
-    for (const component of report.components) {
-      const li = document.createElement("li");
-
-      const left = document.createElement("span");
-      left.className = "uaa-component-name";
-      left.textContent = component.name;
-
-      const detail = document.createElement("span");
-      detail.className = "uaa-component-detail";
-      detail.textContent = component.detail || "";
-
-      const pill = document.createElement("span");
-      pill.className = pillClassFor(component.state);
-      pill.textContent = component.state;
-
-      left.appendChild(detail);
-      li.appendChild(left);
-      li.appendChild(pill);
-      componentList.appendChild(li);
+    el.innerHTML = "";
+    for (const entry of entries) {
+      const div = document.createElement("div");
+      div.className = "uaa-log-entry uaa-log-" + entry.level;
+      div.innerHTML = `<span class="uaa-log-time">${fmtDate(entry.timestamp)}</span> <span class="uaa-log-level">${esc(entry.level)}</span> ${esc(entry.message)}`;
+      el.appendChild(div);
     }
-  };
+  }
 
-  const fetchHealth = async () => {
-    const response = await fetch("/api/health", {
-      headers: { Accept: "application/json" },
-    });
-    if (!response.ok) {
-      throw new Error(`health endpoint returned ${response.status}`);
-    }
-    return response.json();
-  };
+  // ---- HTML escape ----
+  function esc(text) {
+    if (text == null) return "";
+    const div = document.createElement("div");
+    div.textContent = String(text);
+    return div.innerHTML;
+  }
 
-  const startPolling = () => {
-    let interval = POLL_INTERVAL_MS;
-    let timer = null;
-    let stopped = false;
+  // ---- Polling ----
+  function startPolling() {
+    loadStatus();
+    pollTimer = setInterval(loadStatus, POLL_INTERVAL_MS);
+  }
 
-    const tick = async () => {
-      try {
-        const report = await fetchHealth();
-        renderReport(report);
-        interval = POLL_INTERVAL_MS;
-      } catch (err) {
-        console.error("[UAA] health poll failed", err);
-        interval = Math.min(interval * 2, POLL_BACKOFF_MAX_MS);
-      } finally {
-        if (!stopped) {
-          timer = setTimeout(tick, interval);
-        }
-      }
-    };
+  function stopPolling() {
+    if (pollTimer) clearInterval(pollTimer);
+  }
 
-    const stop = () => {
-      stopped = true;
-      if (timer) clearTimeout(timer);
-    };
-
-    document.addEventListener("visibilitychange", () => {
-      if (document.hidden) {
-        if (timer) clearTimeout(timer);
-      } else if (!stopped) {
-        timer = setTimeout(tick, 0);
-      }
-    });
-
-    // Kick off immediately.
-    tick();
-    return stop;
-  };
+  document.addEventListener("visibilitychange", () => {
+    if (document.hidden) stopPolling();
+    else startPolling();
+  });
 
   startPolling();
 })();

@@ -157,6 +157,11 @@ def server_url(settings, tmp_path_factory) -> Iterator[str]:
     )
     server = uvicorn.Server(config)
 
+    # Create database tables in the lifespan-created engine after server starts.
+    import time as _time
+
+    _start_time = _time.time()
+
     thread = threading.Thread(target=server.run, daemon=True)
     thread.start()
 
@@ -178,6 +183,11 @@ def server_url(settings, tmp_path_factory) -> Iterator[str]:
         server.should_exit = True
         thread.join(timeout=2.0)
         raise RuntimeError("uvicorn server did not start in time")
+
+    # Create database tables now that the lifespan has created the engine.
+    from universal_auto_applier.persistence.models import Base
+
+    Base.metadata.create_all(app.state.engine)
 
     yield base
 

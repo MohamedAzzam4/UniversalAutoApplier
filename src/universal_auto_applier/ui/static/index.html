@@ -16,57 +16,144 @@
         </div>
       </div>
       <nav class="uaa-nav" aria-label="Primary">
-        <a href="/" aria-current="page">Dashboard</a>
-        <a href="#" data-placeholder="Queue" title="Phase 6">Queue</a>
-        <a href="#" data-placeholder="Interventions" title="Phase 6">Interventions</a>
-        <a href="#" data-placeholder="History" title="Phase 6">History</a>
-        <a href="#" data-placeholder="Logs" title="Phase 6">Logs &amp; Errors</a>
-        <a href="#" data-placeholder="Settings" title="Phase 6">Settings</a>
+        <a href="#" data-view="dashboard" aria-current="page">Dashboard</a>
+        <a href="#" data-view="queue">Queue</a>
+        <a href="#" data-view="interventions">Interventions</a>
+        <a href="#" data-view="review">Review</a>
+        <a href="#" data-view="logs">Logs &amp; Errors</a>
       </nav>
     </header>
 
     <main class="uaa-main">
-      <section class="uaa-card uaa-status-card" aria-labelledby="status-title">
-        <h2 id="status-title">System status</h2>
-        <p class="uaa-status-line">
-          Overall:
-          <span id="overall-status" class="uaa-pill uaa-pill-unknown">loading…</span>
-        </p>
-        <p class="uaa-meta">Version <span id="uaa-version">—</span> · Submit mode <span id="uaa-submit-mode">—</span></p>
-        <p class="uaa-meta">
-          <a href="/api/docs">API docs</a> ·
-          <a href="/api/health">/api/health</a> ·
-          <a href="/api/health/detail">/api/health/detail</a>
-        </p>
+      <!-- Dashboard View -->
+      <section id="view-dashboard" class="uaa-view uaa-view-active">
+        <div class="uaa-card uaa-status-card">
+          <h2>Pipeline Status</h2>
+          <div class="uaa-status-grid">
+            <div class="uaa-stat">
+              <span class="uaa-stat-label">Run Status</span>
+              <span id="run-status" class="uaa-pill uaa-pill-idle">idle</span>
+            </div>
+            <div class="uaa-stat">
+              <span class="uaa-stat-label">Submit Mode</span>
+              <span id="submit-mode" class="uaa-pill uaa-pill-ready">review</span>
+            </div>
+            <div class="uaa-stat">
+              <span class="uaa-stat-label">Total Jobs</span>
+              <span id="jobs-total">0</span>
+            </div>
+            <div class="uaa-stat">
+              <span class="uaa-stat-label">Pending Interventions</span>
+              <span id="pending-interventions">0</span>
+            </div>
+          </div>
+        </div>
+
+        <div class="uaa-card">
+          <h2>Job Status Breakdown</h2>
+          <div id="jobs-by-status" class="uaa-status-grid"></div>
+        </div>
+
+        <div class="uaa-card">
+          <h2>System Health</h2>
+          <ul id="component-list" class="uaa-component-list">
+            <li>Loading...</li>
+          </ul>
+        </div>
+
+        <div class="uaa-card uaa-safety-note">
+          <h2>Safety</h2>
+          <p id="safety-mode-text">
+            Server is local-only (127.0.0.1). No real submission can occur from the dashboard.
+            Submit mode is <strong>review</strong>: all applications require explicit human approval.
+          </p>
+        </div>
       </section>
 
-      <section class="uaa-card" aria-labelledby="components-title">
-        <h2 id="components-title">Capabilities</h2>
-        <ul id="component-list" class="uaa-component-list">
-          <li>Loading…</li>
-        </ul>
+      <!-- Queue View -->
+      <section id="view-queue" class="uaa-view">
+        <div class="uaa-card">
+          <h2>Job Queue &amp; History</h2>
+          <div class="uaa-filter-bar">
+            <select id="queue-status-filter">
+              <option value="">All statuses</option>
+              <option value="queued">Queued</option>
+              <option value="in_progress">In Progress</option>
+              <option value="review_ready">Review Ready</option>
+              <option value="applied">Applied</option>
+              <option value="failed">Failed</option>
+              <option value="skipped">Skipped</option>
+            </select>
+            <button id="queue-refresh" class="uaa-btn">Refresh</button>
+          </div>
+          <div class="uaa-table-wrap">
+            <table id="queue-table" class="uaa-table">
+              <thead>
+                <tr>
+                  <th>Company</th>
+                  <th>Title</th>
+                  <th>Platform</th>
+                  <th>Status</th>
+                  <th>Score</th>
+                  <th>Last Updated</th>
+                </tr>
+              </thead>
+              <tbody id="queue-tbody">
+                <tr><td colspan="6" class="uaa-empty">No jobs loaded.</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
       </section>
 
-      <section class="uaa-card uaa-bootstrap-note" aria-labelledby="bootstrap-title">
-        <h2 id="bootstrap-title">Bootstrap phase</h2>
-        <p>
-          This is the repository bootstrap shell. Per
-          <code>docs/generalization/ROADMAP.md</code>, the next phases will add
-          the queue, adapters, navigator, form engine, interventions, and the
-          full dashboard. No browser automation, submission, or Siemens
-          integration is wired up here.
-        </p>
-        <p>
-          Default submit mode is <strong>review</strong>. Generic adapters will
-          never auto-submit. See
-          <code>docs/generalization/IMPLEMENTATION_RULES.md</code> for the full
-          safety rules.
-        </p>
+      <!-- Interventions View -->
+      <section id="view-interventions" class="uaa-view">
+        <div class="uaa-card">
+          <h2>Pending Interventions</h2>
+          <div id="intervention-list" class="uaa-intervention-list">
+            <p class="uaa-empty">No pending interventions.</p>
+          </div>
+        </div>
+      </section>
+
+      <!-- Review View -->
+      <section id="view-review" class="uaa-view">
+        <div class="uaa-card">
+          <h2>Review Before Submit</h2>
+          <div class="uaa-review-bar">
+            <input id="review-job-id" placeholder="Application ID" class="uaa-input" />
+            <button id="review-load" class="uaa-btn">Load Review State</button>
+          </div>
+          <div id="review-state-display" class="uaa-review-display">
+            <p class="uaa-empty">Enter an application ID to view its review state.</p>
+          </div>
+          <div id="review-controls" class="uaa-review-controls" style="display:none;">
+            <button id="review-approve" class="uaa-btn uaa-btn-success">Approve</button>
+            <button id="review-deny" class="uaa-btn uaa-btn-danger">Deny / Revoke</button>
+            <span id="submit-check-result" class="uaa-pill uaa-pill-idle"></span>
+          </div>
+        </div>
+      </section>
+
+      <!-- Logs View -->
+      <section id="view-logs" class="uaa-view">
+        <div class="uaa-card">
+          <h2>Recent Logs</h2>
+          <div id="log-list" class="uaa-log-list">
+            <p class="uaa-empty">No log entries.</p>
+          </div>
+        </div>
+        <div class="uaa-card">
+          <h2>Errors &amp; Warnings</h2>
+          <div id="error-list" class="uaa-log-list">
+            <p class="uaa-empty">No errors.</p>
+          </div>
+        </div>
       </section>
     </main>
 
     <footer class="uaa-footer">
-      <p>UniversalAutoApplier · bind 127.0.0.1 only · local-first</p>
+      <p>UniversalAutoApplier · 127.0.0.1 only · local-first · no auto-submit</p>
     </footer>
 
     <script src="/static/app.js" defer></script>

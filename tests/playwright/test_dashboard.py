@@ -30,9 +30,9 @@ def test_dashboard_loads_at_desktop_viewport(page, server_url: str) -> None:
     assert "UniversalAutoApplier" in expect_text
 
     # The status card must exist and not be empty.
-    page.wait_for_selector("#overall-status", timeout=10_000)
-    status_text = page.locator("#overall-status").inner_text()
-    assert status_text, "overall status pill was empty"
+    page.wait_for_selector("#run-status", timeout=10_000)
+    status_text = page.locator("#run-status").inner_text()
+    assert status_text, "run status pill was empty"
 
 
 def test_dashboard_loads_at_small_viewport(page, server_url: str) -> None:
