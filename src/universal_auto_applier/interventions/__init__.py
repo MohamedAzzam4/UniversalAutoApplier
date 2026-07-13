@@ -22,6 +22,9 @@ from universal_auto_applier.interventions.answer_memory import (
 from universal_auto_applier.interventions.fill_bridge import (
     create_interventions_from_fill_summary,
 )
+from universal_auto_applier.interventions.navigation_bridge import (
+    create_interventions_from_exploration,
+)
 from universal_auto_applier.interventions.review import (
     ReviewState,
     approve_review_state,
@@ -59,4 +62,6 @@ __all__ = [
     "check_submit_approval",
     # Fill bridge
     "create_interventions_from_fill_summary",
+    # Navigation bridge
+    "create_interventions_from_exploration",
 ]
