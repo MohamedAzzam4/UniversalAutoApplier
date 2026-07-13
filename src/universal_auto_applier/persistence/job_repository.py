@@ -41,6 +41,12 @@ def _utcnow() -> datetime:
 
 def _row_to_job(row: ApplicationJobRow) -> ApplicationJob:
     """Convert an :class:`ApplicationJobRow` to an :class:`ApplicationJob`."""
+    from universal_auto_applier.core.models import ApplicationJobDocuments
+
+    documents: ApplicationJobDocuments | None = None
+    if row.documents_json:
+        documents = ApplicationJobDocuments(**row.documents_json)
+
     return ApplicationJob(
         application_id=row.application_id,
         platform=row.platform,  # type: ignore[arg-type]
@@ -62,6 +68,7 @@ def _row_to_job(row: ApplicationJobRow) -> ApplicationJob:
         tailored_at=row.tailored_at,
         evaluation_reason=row.evaluation_reason,
         german_filter_result=row.german_filter_result,
+        documents=documents,
         metadata=row.metadata_json or {},
     )
 
@@ -89,6 +96,7 @@ def _job_to_row_data(job: ApplicationJob) -> dict[str, object]:
         "tailored_at": job.tailored_at,
         "evaluation_reason": job.evaluation_reason,
         "german_filter_result": job.german_filter_result,
+        "documents_json": job.documents.model_dump() if job.documents else None,
         "metadata_json": job.metadata,
     }
 
@@ -147,6 +155,7 @@ def upsert_application_job(session: Session, job: ApplicationJob) -> Application
     existing.tailored_at = job.tailored_at
     existing.evaluation_reason = job.evaluation_reason
     existing.german_filter_result = job.german_filter_result
+    existing.documents_json = job.documents.model_dump() if job.documents else None
     existing.metadata_json = job.metadata
 
     # Do not downgrade terminal statuses on re-import.

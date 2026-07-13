@@ -69,6 +69,7 @@ class ApplicationJobRow(Base):
     tailored_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     evaluation_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
     german_filter_result: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    documents_json: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
     metadata_json: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
     first_seen_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
     last_updated_at: Mapped[datetime] = mapped_column(

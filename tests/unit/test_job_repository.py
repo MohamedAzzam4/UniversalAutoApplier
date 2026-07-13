@@ -12,7 +12,7 @@ from pathlib import Path
 import pytest
 
 from universal_auto_applier.core.identity import compute_application_id
-from universal_auto_applier.core.models import ApplicationJob
+from universal_auto_applier.core.models import ApplicationJob, ApplicationJobDocuments
 from universal_auto_applier.core.statuses import ApplicationStatus, Platform
 from universal_auto_applier.persistence.db import make_session_factory, session_scope
 from universal_auto_applier.persistence.job_repository import (
@@ -216,6 +216,81 @@ class TestGetApplicationJob:
         retrieved = get_application_job(_open_session(session_factory), job.application_id)
         assert retrieved is not None
         assert retrieved.application_id == job.application_id
+
+
+class TestDocumentsRoundTrip:
+    """Prove that the ``documents`` field (ApplicationJobDocuments) survives
+    a full round-trip: import -> DB upsert -> repository get/list ->
+    reconstructed ApplicationJob.
+
+    This test exists because Phase 1 initially dropped ``documents`` during
+    persistence — the field was accepted by the Pydantic model but never
+    written to or read from the database. The round-trip test catches that
+    class of bug.
+    """
+
+    def test_documents_survive_round_trip_via_get(self, tmp_path: Path, session_factory) -> None:
+        cv_md = tmp_path / "cv.md"
+        cover_md = tmp_path / "cover.md"
+        job = _make_job()
+        job.documents = ApplicationJobDocuments(  # type: ignore[assignment]
+            cv_md=str(cv_md),
+            cover_letter_md=str(cover_md),
+        )
+        with session_scope(session_factory) as session:
+            upsert_application_job(session, job)
+
+        retrieved = get_application_job(_open_session(session_factory), job.application_id)
+        assert retrieved is not None
+        assert retrieved.documents is not None
+        assert retrieved.documents.cv_md == str(cv_md)
+        assert retrieved.documents.cover_letter_md == str(cover_md)
+
+    def test_documents_survive_round_trip_via_list(self, tmp_path: Path, session_factory) -> None:
+        cv_md = tmp_path / "cv.md"
+        job = _make_job()
+        job.documents = ApplicationJobDocuments(  # type: ignore[assignment]
+            cv_md=str(cv_md),
+            cover_letter_md=None,
+        )
+        with session_scope(session_factory) as session:
+            upsert_application_job(session, job)
+
+        jobs = list_application_jobs(_open_session(session_factory))
+        assert len(jobs) == 1
+        assert jobs[0].documents is not None
+        assert jobs[0].documents.cv_md == str(cv_md)
+        assert jobs[0].documents.cover_letter_md is None
+
+    def test_documents_none_when_not_provided(self, session_factory) -> None:
+        job = _make_job()  # no documents set
+        with session_scope(session_factory) as session:
+            upsert_application_job(session, job)
+
+        retrieved = get_application_job(_open_session(session_factory), job.application_id)
+        assert retrieved is not None
+        assert retrieved.documents is None
+
+    def test_documents_survive_reimport(self, tmp_path: Path, session_factory) -> None:
+        cv_md = tmp_path / "cv.md"
+        cover_md = tmp_path / "cover.md"
+        job = _make_job()
+        job.documents = ApplicationJobDocuments(  # type: ignore[assignment]
+            cv_md=str(cv_md),
+            cover_letter_md=str(cover_md),
+        )
+        with session_scope(session_factory) as session:
+            upsert_application_job(session, job)
+
+        # Re-import the same job (idempotent upsert).
+        with session_scope(session_factory) as session:
+            upsert_application_job(session, job)
+
+        retrieved = get_application_job(_open_session(session_factory), job.application_id)
+        assert retrieved is not None
+        assert retrieved.documents is not None
+        assert retrieved.documents.cv_md == str(cv_md)
+        assert retrieved.documents.cover_letter_md == str(cover_md)
 
 
 def _open_session(session_factory):

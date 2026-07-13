@@ -16,7 +16,7 @@ from universal_auto_applier.persistence.db import build_engine_url
 from universal_auto_applier.persistence.migrations import apply_migrations
 
 # The current head revision. Update this when adding a new migration.
-CURRENT_HEAD = "0002_application_job_optional_fields"
+CURRENT_HEAD = "0003_application_job_documents"
 
 
 def test_apply_migrations_creates_required_tables(tmp_path: Path) -> None:
@@ -88,6 +88,7 @@ def test_phase1_columns_exist(tmp_path: Path) -> None:
         "tailored_at",
         "evaluation_reason",
         "german_filter_result",
+        "documents_json",
     }
     assert expected_new_columns.issubset(columns), (
         f"missing columns: {expected_new_columns - columns}"
