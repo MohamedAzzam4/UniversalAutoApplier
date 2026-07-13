@@ -1,0 +1,74 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>UniversalAutoApplier</title>
+    <link rel="stylesheet" href="/static/styles.css" />
+  </head>
+  <body>
+    <header class="uaa-header">
+      <div class="uaa-brand">
+        <span class="uaa-mark" aria-hidden="true">UAA</span>
+        <div>
+          <h1>UniversalAutoApplier</h1>
+          <p class="uaa-subtitle">Local-first generalized job application system</p>
+        </div>
+      </div>
+      <nav class="uaa-nav" aria-label="Primary">
+        <a href="/" aria-current="page">Dashboard</a>
+        <a href="#" data-placeholder="Queue" title="Phase 6">Queue</a>
+        <a href="#" data-placeholder="Interventions" title="Phase 6">Interventions</a>
+        <a href="#" data-placeholder="History" title="Phase 6">History</a>
+        <a href="#" data-placeholder="Logs" title="Phase 6">Logs &amp; Errors</a>
+        <a href="#" data-placeholder="Settings" title="Phase 6">Settings</a>
+      </nav>
+    </header>
+
+    <main class="uaa-main">
+      <section class="uaa-card uaa-status-card" aria-labelledby="status-title">
+        <h2 id="status-title">System status</h2>
+        <p class="uaa-status-line">
+          Overall:
+          <span id="overall-status" class="uaa-pill uaa-pill-unknown">loading…</span>
+        </p>
+        <p class="uaa-meta">Version <span id="uaa-version">—</span> · Submit mode <span id="uaa-submit-mode">—</span></p>
+        <p class="uaa-meta">
+          <a href="/api/docs">API docs</a> ·
+          <a href="/api/health">/api/health</a> ·
+          <a href="/api/health/detail">/api/health/detail</a>
+        </p>
+      </section>
+
+      <section class="uaa-card" aria-labelledby="components-title">
+        <h2 id="components-title">Capabilities</h2>
+        <ul id="component-list" class="uaa-component-list">
+          <li>Loading…</li>
+        </ul>
+      </section>
+
+      <section class="uaa-card uaa-bootstrap-note" aria-labelledby="bootstrap-title">
+        <h2 id="bootstrap-title">Bootstrap phase</h2>
+        <p>
+          This is the repository bootstrap shell. Per
+          <code>docs/generalization/ROADMAP.md</code>, the next phases will add
+          the queue, adapters, navigator, form engine, interventions, and the
+          full dashboard. No browser automation, submission, or Siemens
+          integration is wired up here.
+        </p>
+        <p>
+          Default submit mode is <strong>review</strong>. Generic adapters will
+          never auto-submit. See
+          <code>docs/generalization/IMPLEMENTATION_RULES.md</code> for the full
+          safety rules.
+        </p>
+      </section>
+    </main>
+
+    <footer class="uaa-footer">
+      <p>UniversalAutoApplier · bind 127.0.0.1 only · local-first</p>
+    </footer>
+
+    <script src="/static/app.js" defer></script>
+  </body>
+</html>

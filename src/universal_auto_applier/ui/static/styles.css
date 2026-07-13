@@ -1,0 +1,244 @@
+/* UniversalAutoApplier dashboard shell.
+ *
+ * Goals:
+ *   - semantic HTML + vanilla CSS, no framework, no build step
+ *   - usable at 1280x720, 1440x900, and 390x844
+ *   - first screen is the operational dashboard (UI_UX_SPEC.md)
+ *   - safe defaults: no auto-submit control is rendered in bootstrap phase
+ */
+
+:root {
+  --uaa-bg: #0f1419;
+  --uaa-panel: #1a2029;
+  --uab-border: #2a323f;
+  --uaa-text: #e6edf3;
+  --uaa-text-muted: #8b949e;
+  --uaa-accent: #58a6ff;
+  --uaa-success: #3fb950;
+  --uaa-warn: #d29922;
+  --uaa-danger: #f85149;
+  --uaa-radius: 10px;
+  --uaa-gap: 16px;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  padding: 0;
+  background: var(--uaa-bg);
+  color: var(--uaa-text);
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue",
+    Arial, "Noto Sans", sans-serif;
+  font-size: 15px;
+  line-height: 1.5;
+}
+
+a {
+  color: var(--uaa-accent);
+  text-decoration: none;
+}
+
+a:hover {
+  text-decoration: underline;
+}
+
+code {
+  background: rgba(255, 255, 255, 0.06);
+  padding: 1px 4px;
+  border-radius: 4px;
+  font-family: "JetBrains Mono", "Fira Code", Consolas, monospace;
+  font-size: 0.92em;
+}
+
+.uaa-header {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--uaa-gap);
+  padding: 20px 28px;
+  border-bottom: 1px solid var(--uab-border);
+  background: var(--uaa-panel);
+}
+
+.uaa-brand {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+}
+
+.uaa-mark {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 44px;
+  height: 44px;
+  border-radius: 10px;
+  background: linear-gradient(135deg, var(--uaa-accent), #6f7bff);
+  color: #0b0e13;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+}
+
+.uaa-header h1 {
+  margin: 0;
+  font-size: 1.2rem;
+}
+
+.uaa-subtitle {
+  margin: 2px 0 0;
+  color: var(--uaa-text-muted);
+  font-size: 0.85rem;
+}
+
+.uaa-nav {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.uaa-nav a {
+  padding: 6px 10px;
+  border-radius: 6px;
+  color: var(--uaa-text-muted);
+  font-size: 0.9rem;
+}
+
+.uaa-nav a[aria-current="page"],
+.uaa-nav a:hover {
+  background: rgba(255, 255, 255, 0.06);
+  color: var(--uaa-text);
+  text-decoration: none;
+}
+
+.uaa-main {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+  gap: var(--uaa-gap);
+  padding: 24px 28px;
+  max-width: 1200px;
+  margin: 0 auto;
+}
+
+.uaa-card {
+  background: var(--uaa-panel);
+  border: 1px solid var(--uab-border);
+  border-radius: var(--uaa-radius);
+  padding: 18px 20px;
+}
+
+.uaa-card h2 {
+  margin: 0 0 12px;
+  font-size: 1rem;
+  font-weight: 600;
+  color: var(--uaa-text);
+}
+
+.uaa-status-line {
+  font-size: 1.05rem;
+  margin: 0 0 6px;
+}
+
+.uaa-meta {
+  color: var(--uaa-text-muted);
+  font-size: 0.85rem;
+  margin: 4px 0;
+}
+
+.uaa-pill {
+  display: inline-block;
+  padding: 2px 10px;
+  border-radius: 999px;
+  font-size: 0.8rem;
+  font-weight: 600;
+  border: 1px solid transparent;
+}
+
+.uaa-pill-ready {
+  background: rgba(63, 185, 80, 0.15);
+  color: var(--uaa-success);
+  border-color: rgba(63, 185, 80, 0.4);
+}
+
+.uaa-pill-unavailable,
+.uaa-pill-invalid {
+  background: rgba(248, 81, 73, 0.15);
+  color: var(--uaa-danger);
+  border-color: rgba(248, 81, 73, 0.4);
+}
+
+.uaa-pill-not_configured,
+.uaa-pill-idle {
+  background: rgba(210, 153, 34, 0.12);
+  color: var(--uaa-warn);
+  border-color: rgba(210, 153, 34, 0.4);
+}
+
+.uaa-pill-unknown {
+  background: rgba(139, 148, 158, 0.12);
+  color: var(--uaa-text-muted);
+  border-color: rgba(139, 148, 158, 0.4);
+}
+
+.uaa-component-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.uaa-component-list li {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 8px 0;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.04);
+}
+
+.uaa-component-list li:last-child {
+  border-bottom: none;
+}
+
+.uaa-component-list .uaa-component-name {
+  font-weight: 500;
+}
+
+.uaa-component-list .uaa-component-detail {
+  color: var(--uaa-text-muted);
+  font-size: 0.78rem;
+  margin-left: 8px;
+}
+
+.uaa-bootstrap-note p {
+  margin: 0 0 10px;
+  color: var(--uaa-text-muted);
+}
+
+.uaa-footer {
+  padding: 18px 28px;
+  color: var(--uaa-text-muted);
+  font-size: 0.8rem;
+  text-align: center;
+  border-top: 1px solid var(--uab-border);
+}
+
+/* 390x844 viewport tweaks (mobile) */
+@media (max-width: 540px) {
+  .uaa-header {
+    padding: 14px 16px;
+  }
+  .uaa-main {
+    padding: 16px;
+  }
+  .uaa-nav {
+    width: 100%;
+    overflow-x: auto;
+  }
+  .uaa-nav a {
+    white-space: nowrap;
+  }
+}

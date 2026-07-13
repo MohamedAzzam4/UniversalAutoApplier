@@ -1,0 +1,174 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "universal-auto-applier"
+version = "0.0.1"
+description = "Local-first generalized job application system. Owns queue import, adapter routing, generic navigation, form filling, interventions, review-before-submit, evidence, application history, and the operational dashboard."
+readme = "README.md"
+# Python 3.11+ is required per docs/generalization/TECHNICAL_BASELINE.md
+# (3.12 is the reference runtime). 3.11 is the minimum because we use
+# `enum.StrEnum` and `datetime.UTC`, both added in 3.11.
+# Verified on Python 3.12.13 (Linux). Python 3.14 is intended to work — all
+# pinned dependencies declare Requires-Python >=3.x with no upper bound — but
+# has not yet been verified end-to-end on Windows. Re-verify before claiming
+# 3.14 support.
+requires-python = ">=3.11"
+license = { text = "Proprietary" }
+authors = [{ name = "UniversalAutoApplier Contributors" }]
+keywords = ["job-application", "automation", "playwright", "fastapi", "local-first"]
+
+# ---------------------------------------------------------------------------
+# Runtime dependencies.
+#
+# Versions are PINNED EXACTLY (not ranges) so that `pip install -e .` resolves
+# identically on every Python 3.11+ and every OS. The original bootstrap used
+# loose ranges like `fastapi>=0.115,<1`, but pip's resolver picks the newest
+# satisfying version, which on Python 3.14 pulled in fastapi 0.139 + starlette
+# 1.x + httpx2 - a combination that triggers StarletteDeprecationWarning under
+# our strict `filterwarnings = ["error"]` pytest config.
+#
+# The pinned set below is the exact combination verified green on
+# Python 3.12.13 (Linux):
+#   fastapi 0.128.0 -> starlette 0.50.0 -> httpx 0.28.1
+#   pydantic 2.12.5, sqlalchemy 2.0.51, alembic 1.18.5,
+#   playwright 1.57.0, uvicorn 0.44.0.
+#
+# To upgrade any dependency, bump the pin here AND re-run the full gate
+# (ruff + pyright + pytest -m playwright) on Python 3.12 (and 3.14 once
+# verified end-to-end on Windows).
+# ---------------------------------------------------------------------------
+dependencies = [
+    "fastapi==0.128.0",
+    "starlette==0.50.0",
+    "httpx==0.28.1",
+    "pydantic==2.12.5",
+    "pydantic-settings==2.13.1",
+    "sqlalchemy==2.0.51",
+    "alembic==1.18.5",
+    "playwright==1.57.0",
+    "uvicorn[standard]==0.44.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest==9.0.2",
+    "pytest-playwright==0.8.0",
+    "ruff==0.15.21",
+    "pyright==1.1.411",
+]
+
+[project.urls]
+Documentation = "https://github.com/MohamedAzzam4/UniversalAutoApplier/blob/main/docs/generalization/README.md"
+Repository = "https://github.com/MohamedAzzam4/UniversalAutoApplier"
+
+# ----------------------------------------------------------------------------
+# Setuptools: treat src/ as the source root.
+# ----------------------------------------------------------------------------
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+"universal_auto_applier.ui" = ["static/**/*"]
+
+# ----------------------------------------------------------------------------
+# Ruff: formatter and linter. Single configuration per TECHNICAL_BASELINE.md.
+# ----------------------------------------------------------------------------
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+src = ["src", "tests"]
+extend-exclude = [
+    "migrations/versions",
+]
+
+[tool.ruff.lint]
+# Enable pyflakes (F), pycodestyle (E,W), isort (I), pyupgrade (UP),
+# bugbear (B), and pygrep-hooks (PGH).
+select = ["E", "W", "F", "I", "UP", "B", "PGH"]
+ignore = [
+    # Allow line-length enforcement to be the formatter's job.
+    "E501",
+]
+
+[tool.ruff.lint.isort]
+known-first-party = ["universal_auto_applier"]
+force-single-line = false
+combine-as-imports = true
+
+[tool.ruff.format]
+# Match Black's defaults; do not reformat strings to single quotes.
+quote-style = "double"
+indent-style = "space"
+# Force LF line endings. Combined with .gitattributes (which normalizes
+# text=auto eol=lf in the repo and on checkout), this guarantees that
+# `ruff format --check` passes on Windows even when Git is configured with
+# core.autocrlf=true. Without this, Ruff would see CRLF endings on Windows
+# checkouts and report every file as "would reformat".
+line-ending = "lf"
+
+# ----------------------------------------------------------------------------
+# Pyright: strict type checking for the source package.
+# ----------------------------------------------------------------------------
+[tool.pyright]
+# Use the project's virtualenv so Pyright resolves installed dependencies
+# (fastapi, sqlalchemy, playwright, etc.) without needing --pythonpath on the
+# CLI. venvPath is the directory containing the venv; venv is the venv name.
+# This makes `python -m pyright` work as-is, without the user having to pass
+# `--pythonpath .\.venv\Scripts\python.exe` every time.
+venvPath = "."
+venv = ".venv"
+include = ["src/universal_auto_applier"]
+exclude = [
+    "**/__pycache__",
+    "migrations/versions",
+    "tests",
+]
+pythonVersion = "3.11"
+typeCheckingMode = "strict"
+reportMissingImports = "error"
+reportMissingTypeStubs = "none"
+# Pydantic v2 plugin: enable for proper model-field type inference.
+enableExperimentalFeatures = true
+
+# Narrow documented exceptions at third-party boundaries.
+# FastAPI route handlers are accessed through decorators; Pyright cannot see
+# the registration, so reportUnusedFunction is too noisy. We still get full
+# type checking on the function bodies.
+reportUnusedFunction = "none"
+
+# ----------------------------------------------------------------------------
+# Pytest: markers per TESTING_STRATEGY.md.
+# ----------------------------------------------------------------------------
+[tool.pytest.ini_options]
+minversion = "8.0"
+testpaths = ["tests"]
+addopts = [
+    "-ra",
+    "--strict-markers",
+    "--strict-config",
+]
+markers = [
+    "unit: pure-logic unit tests (no browser, no network)",
+    "contract: contract tests protecting the JobHunter <-> applier boundary",
+    "integration: integration tests that exercise multiple internal modules",
+    "playwright: tests that launch Chromium through Playwright",
+    "pipeline: full dry-run pipeline tests",
+    "live: opt-in tests that hit real ATS websites; never run by default",
+]
+filterwarnings = [
+    "error",
+    # Explicitly catch ResourceWarning as an error. Python 3.14's sqlite3
+    # module emits ResourceWarning for unclosed connections; Python 3.12 does
+    # not. Catching it explicitly on all versions prevents future leaks from
+    # slipping through on 3.12 and failing on 3.14.
+    "error::ResourceWarning",
+    # Allow third-party library deprecation noise; we still want our own
+    # warnings to surface as errors during tests.
+    "ignore::DeprecationWarning:alembic.*",
+    "ignore::DeprecationWarning:playwright.*",
+    "ignore::DeprecationWarning:sqlalchemy.*",
+    "ignore::DeprecationWarning:websockets.*",
+    "ignore::DeprecationWarning:uvicorn.*",
+]

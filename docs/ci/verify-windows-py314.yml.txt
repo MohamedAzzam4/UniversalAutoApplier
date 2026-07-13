@@ -1,0 +1,157 @@
+name: verify-windows-py314
+
+# Verifies the bootstrap gate on Windows + Python 3.14.
+#
+# This is the primary target-environment verification requested during review.
+# It runs the exact commands a human reviewer would run on their Windows
+# machine, so the CI log is directly comparable to a manual test.
+#
+# Triggers:
+#   - push to checkpoint/bootstrap-phase-0 (the branch under review)
+#   - pull_request targeting main (so the gate runs before any merge)
+#   - manual dispatch (workflow_dispatch) for re-runs on demand
+
+"on":
+  push:
+    branches:
+      - checkpoint/bootstrap-phase-0
+  pull_request:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  verify-windows-py314:
+    name: Windows + Python 3.14 bootstrap gate
+    runs-on: windows-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          # Ensure .gitattributes is applied -> LF endings on checkout.
+          # GitHub Actions runners default to core.autocrlf=false, so this
+          # is belt-and-suspenders.
+          fetch-depth: 1
+
+      - name: Verify LF line endings
+        shell: pwsh
+        run: |
+          Write-Host "=== Verifying LF line endings ==="
+          $files = @(
+            "src/universal_auto_applier/__init__.py",
+            "scripts/setup.ps1",
+            "tests/conftest.py"
+          )
+          foreach ($f in $files) {
+            $bytes = [System.IO.File]::ReadAllBytes($f)
+            $hasCrlf = $false
+            for ($i = 0; $i -lt $bytes.Length - 1; $i++) {
+              if ($bytes[$i] -eq 13 -and $bytes[$i+1] -eq 10) {
+                $hasCrlf = $true
+                break
+              }
+            }
+            if ($hasCrlf) {
+              Write-Error "FAIL: $f has CRLF line endings (expected LF)"
+              exit 1
+            } else {
+              Write-Host "OK: $f has LF line endings"
+            }
+          }
+
+      - name: Set up Python 3.14
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.14"
+          cache: pip
+          cache-dependency-path: pyproject.toml
+
+      - name: Show Python version
+        shell: pwsh
+        run: |
+          python --version
+          python -c "import sys; print(f'Python {sys.version}')"
+
+      - name: Remove stale venv and data
+        shell: pwsh
+        run: |
+          if (Test-Path .venv) { Remove-Item -Recurse -Force .venv }
+          if (Test-Path .uaa_data) { Remove-Item -Recurse -Force .uaa_data }
+
+      - name: Run setup.ps1
+        shell: pwsh
+        run: |
+          .\scripts\setup.ps1 -PythonExecutable python
+
+      - name: Run test.ps1 -All -IncludePlaywright
+        shell: pwsh
+        run: |
+          .\scripts\test.ps1 -All -IncludePlaywright
+
+      - name: Run direct ruff check
+        shell: pwsh
+        run: |
+          .\.venv\Scripts\python.exe -m ruff check src tests migrations
+
+      - name: Run direct ruff format --check
+        shell: pwsh
+        run: |
+          .\.venv\Scripts\python.exe -m ruff format --check src tests migrations
+
+      - name: Run direct pyright
+        shell: pwsh
+        run: |
+          .\.venv\Scripts\python.exe -m pyright
+
+      - name: Run direct pytest (full suite)
+        shell: pwsh
+        run: |
+          .\.venv\Scripts\python.exe -m pytest
+
+      - name: Run contract tests specifically (ResourceWarning gate)
+        shell: pwsh
+        run: |
+          .\.venv\Scripts\python.exe -m pytest tests\contract\test_migrations.py -q
+
+      - name: Prove ResourceWarning is treated as error
+        shell: pwsh
+        run: |
+          # Write a temporary test that emits a ResourceWarning.
+          # If the pyproject.toml filter is wired correctly, pytest fails.
+          # We expect this to FAIL (exit 1), which proves the filter works.
+          @"
+          import warnings
+          def test_resourcewarning_is_error():
+              warnings.warn('deliberate', ResourceWarning)
+          "@ | Out-File -FilePath tests\test_rw_temp.py -Encoding utf8
+
+          $output = .\.venv\Scripts\python.exe -m pytest tests\test_rw_temp.py -q 2>&1
+          $exitCode = $LASTEXITCODE
+          Write-Host $output
+          Remove-Item tests\test_rw_temp.py -Force
+
+          if ($exitCode -eq 0) {
+            Write-Error "FAIL: ResourceWarning was NOT treated as error (test passed, should have failed)"
+            exit 1
+          } else {
+            Write-Host "OK: ResourceWarning is correctly treated as error (test failed as expected)"
+          }
+
+      - name: Summary
+        if: always()
+        shell: pwsh
+        run: |
+          Write-Host "=== Verification summary ==="
+          Write-Host "Python: $(python --version)"
+          Write-Host "Commit: ${{ github.sha }}"
+          Write-Host "Branch: ${{ github.ref_name }}"
+          if (${{ job.status }} -eq 'success') {
+            Write-Host "RESULT: ALL GATES PASSED on Windows + Python 3.14"
+          } else {
+            Write-Host "RESULT: GATES FAILED - see logs above"
+          }

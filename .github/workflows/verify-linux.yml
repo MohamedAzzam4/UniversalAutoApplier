@@ -1,0 +1,113 @@
+name: verify-linux
+
+# Verifies the bootstrap gate on Linux across multiple Python versions.
+#
+# This is the secondary verification path. It runs on every push and PR,
+# and tests Python 3.11 (minimum), 3.12 (reference), and 3.13/3.14 (forward
+# compatibility). The Windows workflow (verify-windows-py314.yml) is the
+# primary target-environment proof requested during review.
+
+"on":
+  push:
+    branches:
+      - checkpoint/bootstrap-phase-0
+      - main
+  pull_request:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  verify-linux:
+    name: Linux + Python ${{ matrix.python-version }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11", "3.12", "3.13", "3.14"]
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+          cache-dependency-path: pyproject.toml
+
+      - name: Show Python version
+        run: |
+          python --version
+          python -c "import sys; print(f'Python {sys.version}')"
+
+      - name: Remove stale venv and data
+        run: |
+          rm -rf .venv .uaa_data .pytest_cache .ruff_cache .pyright
+
+      - name: Run setup.sh
+        run: |
+          ./scripts/setup.sh
+
+      - name: Run test.sh (all gates including Playwright)
+        run: |
+          RUN_ALL=1 INCLUDE_PLAYWRIGHT=1 ./scripts/test.sh
+
+      - name: Direct ruff check
+        run: ./.venv/bin/python -m ruff check src tests migrations
+
+      - name: Direct ruff format --check
+        run: ./.venv/bin/python -m ruff format --check src tests migrations
+
+      - name: Direct pyright
+        run: ./.venv/bin/python -m pyright
+
+      - name: Direct pytest (full suite)
+        run: ./.venv/bin/python -m pytest
+
+      - name: Contract tests specifically (ResourceWarning gate)
+        run: ./.venv/bin/python -m pytest tests/contract/test_migrations.py -q
+
+      - name: Prove ResourceWarning filter is active
+        run: |
+          # Write a temp test that emits ResourceWarning. It should FAIL.
+          cat > tests/test_rw_temp.py << 'EOF'
+          import warnings
+          def test_resourcewarning_is_error():
+              warnings.warn('deliberate', ResourceWarning)
+          EOF
+
+          set +e
+          ./.venv/bin/python -m pytest tests/test_rw_temp.py -q > /tmp/rw_output.log 2>&1
+          exit_code=$?
+          set -e
+          cat /tmp/rw_output.log
+          rm -f tests/test_rw_temp.py
+
+          if [ "$exit_code" -eq 0 ]; then
+            echo "FAIL: ResourceWarning was NOT treated as error"
+            exit 1
+          else
+            echo "OK: ResourceWarning is correctly treated as error (test failed as expected)"
+            exit 0
+          fi
+
+      - name: Summary
+        if: always()
+        run: |
+          echo "=== Verification summary ==="
+          echo "Python: $(python --version)"
+          echo "Commit: ${{ github.sha }}"
+          echo "Branch: ${{ github.ref_name }}"
+          if [ "${{ job.status }}" = "success" ]; then
+            echo "RESULT: ALL GATES PASSED on Linux + Python ${{ matrix.python-version }}"
+          else
+            echo "RESULT: GATES FAILED - see logs above"
+          fi

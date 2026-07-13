@@ -1,0 +1,122 @@
+# ---------------------------------------------------------------------------
+# Python
+# ---------------------------------------------------------------------------
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+*.egg-info/
+*.egg
+.eggs/
+build/
+dist/
+develop-eggs/
+downloads/
+eggs/
+parts/
+sdist/
+var/
+wheels/
+share/python-wheels/
+*.whl
+MANIFEST
+
+# ---------------------------------------------------------------------------
+# Virtual environments
+# ---------------------------------------------------------------------------
+.venv/
+venv/
+env/
+ENV/
+.python-version
+
+# ---------------------------------------------------------------------------
+# Testing / coverage
+# ---------------------------------------------------------------------------
+.pytest_cache/
+.coverage
+.coverage.*
+htmlcov/
+.tox/
+.nox/
+coverage.xml
+*.cover
+*.py,cover
+.hypothesis/
+cache/
+
+# ---------------------------------------------------------------------------
+# Type checkers / linters
+# ---------------------------------------------------------------------------
+.pyright/
+.mypy_cache/
+.ruff_cache/
+.dmypy.json
+dmypy.json
+
+# ---------------------------------------------------------------------------
+# Local-first application artifacts (NEVER commit these)
+#   Per DEPLOYMENT_AND_REPO_STRATEGY.md and IMPLEMENTATION_RULES.md:
+#   - local databases
+#   - browser profiles / saved auth state
+#   - credentials / .env
+#   - screenshots, traces, PDFs
+#   - generated artifacts
+# ---------------------------------------------------------------------------
+.env
+.env.local
+.env.*.local
+*.db
+*.sqlite
+*.sqlite3
+uaa.db
+uaa.sqlite
+uaa.sqlite3
+
+# Local data directory (configurable; default below)
+.uaa_data/
+.uaa_data_test/
+data/
+artifacts/
+screenshots/
+traces/
+logs/
+history/
+
+# Playwright
+playwright-report/
+test-results/
+playwright/.cache/
+.playwright-mcp/
+browser_state.json
+auth_state.json
+
+# ---------------------------------------------------------------------------
+# IDE / editor
+# ---------------------------------------------------------------------------
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
+
+# ---------------------------------------------------------------------------
+# Operating system
+# ---------------------------------------------------------------------------
+.DS_Store
+.AppleDouble
+.LSOverride
+ehthumbs.db
+Desktop.ini
+$RECYCLE.BIN/
+
+# ---------------------------------------------------------------------------
+# Lock files we DO commit (kept here as documentation, not ignored):
+#   - pyproject.toml (project + dev deps pinned by major)
+#   - pip-resolved exact versions are recorded in docs/generalization/TECHNICAL_BASELINE.md
+# We do NOT commit a uv.lock or poetry.lock in this bootstrap; pip is the
+# reference installer for version 1.
+# ---------------------------------------------------------------------------
