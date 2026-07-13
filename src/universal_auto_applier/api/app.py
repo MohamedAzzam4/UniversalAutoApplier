@@ -22,6 +22,11 @@ from fastapi.staticfiles import StaticFiles
 
 from universal_auto_applier import __version__
 from universal_auto_applier.api.routes.health import router as health_router
+from universal_auto_applier.api.routes.interventions import router as interventions_router
+from universal_auto_applier.api.routes.logs import init_log_buffer, router as logs_router
+from universal_auto_applier.api.routes.queue import router as queue_router
+from universal_auto_applier.api.routes.review import router as review_router
+from universal_auto_applier.api.routes.status import router as status_router
 from universal_auto_applier.config import Settings
 from universal_auto_applier.persistence.db import (
     build_engine_url,
@@ -45,6 +50,8 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     app.state.db_url = db_url
     app.state.engine = engine
     app.state.session_factory = session_factory
+    app.state.review_states = {}
+    init_log_buffer(app)
 
     try:
         yield
@@ -84,6 +91,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.state.settings = settings
 
     app.include_router(health_router, prefix="/api")
+    app.include_router(status_router, prefix="/api")
+    app.include_router(queue_router, prefix="/api")
+    app.include_router(interventions_router, prefix="/api")
+    app.include_router(review_router, prefix="/api")
+    app.include_router(logs_router, prefix="/api")
 
     # Serve the dashboard static assets.
     if STATIC_DIR.exists():
@@ -100,7 +112,16 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         return {
             "name": "UniversalAutoApplier",
             "version": __version__,
-            "endpoints": ["/api/health", "/api/health/detail"],
+            "endpoints": [
+                "/api/health",
+                "/api/health/detail",
+                "/api/status",
+                "/api/queue",
+                "/api/interventions",
+                "/api/review/{id}/submit-check",
+                "/api/logs",
+                "/api/errors",
+            ],
         }
 
     return app
