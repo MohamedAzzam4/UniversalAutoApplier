@@ -25,6 +25,7 @@ from universal_auto_applier.api.routes.health import router as health_router
 from universal_auto_applier.api.routes.interventions import router as interventions_router
 from universal_auto_applier.api.routes.logs import init_log_buffer, router as logs_router
 from universal_auto_applier.api.routes.queue import router as queue_router
+from universal_auto_applier.api.routes.retry import router as retry_router
 from universal_auto_applier.api.routes.review import router as review_router
 from universal_auto_applier.api.routes.status import router as status_router
 from universal_auto_applier.config import Settings
@@ -96,6 +97,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(interventions_router, prefix="/api")
     app.include_router(review_router, prefix="/api")
     app.include_router(logs_router, prefix="/api")
+    app.include_router(retry_router, prefix="/api")
 
     # Serve the dashboard static assets.
     if STATIC_DIR.exists():

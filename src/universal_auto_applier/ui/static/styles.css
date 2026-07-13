@@ -1,10 +1,10 @@
-/* UniversalAutoApplier dashboard shell.
+/* UniversalAutoApplier dashboard - Phase 6.
  *
  * Goals:
  *   - semantic HTML + vanilla CSS, no framework, no build step
  *   - usable at 1280x720, 1440x900, and 390x844
  *   - first screen is the operational dashboard (UI_UX_SPEC.md)
- *   - safe defaults: no auto-submit control is rendered in bootstrap phase
+ *   - safe defaults: no auto-submit control is rendered
  */
 
 :root {
@@ -241,4 +241,170 @@ code {
   .uaa-nav a {
     white-space: nowrap;
   }
+}
+
+/* ---- Phase 6: View system ---- */
+.uaa-view { display: none; }
+.uaa-view-active { display: block; }
+
+/* ---- Phase 6: Status grid ---- */
+.uaa-status-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+  gap: 12px;
+  margin-top: 8px;
+}
+.uaa-stat {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 10px 12px;
+  background: rgba(255, 255, 255, 0.03);
+  border-radius: 8px;
+}
+.uaa-stat-label {
+  font-size: 0.78rem;
+  color: var(--uaa-text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+/* ---- Phase 6: Pills ---- */
+.uaa-pill-running { background: rgba(88, 166, 255, 0.15); color: var(--uaa-accent); border-color: rgba(88, 166, 255, 0.4); }
+.uaa-pill-paused { background: rgba(210, 153, 34, 0.12); color: var(--uaa-warn); border-color: rgba(210, 153, 34, 0.4); }
+
+/* ---- Phase 6: Safety note ---- */
+.uaa-safety-note {
+  border-color: rgba(63, 185, 80, 0.3);
+}
+.uaa-safety-note p {
+  color: var(--uaa-text-muted);
+  font-size: 0.85rem;
+}
+
+/* ---- Phase 6: Table ---- */
+.uaa-table-wrap {
+  overflow-x: auto;
+  margin-top: 8px;
+}
+.uaa-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.88rem;
+}
+.uaa-table th {
+  text-align: left;
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--uab-border);
+  color: var(--uaa-text-muted);
+  font-weight: 600;
+  font-size: 0.8rem;
+  text-transform: uppercase;
+}
+.uaa-table td {
+  padding: 8px 10px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.04);
+}
+.uaa-table tr:hover td {
+  background: rgba(255, 255, 255, 0.02);
+}
+
+/* ---- Phase 6: Filter bar ---- */
+.uaa-filter-bar {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  margin-bottom: 8px;
+}
+.uaa-filter-bar select {
+  background: var(--uaa-bg);
+  color: var(--uaa-text);
+  border: 1px solid var(--uab-border);
+  border-radius: 6px;
+  padding: 4px 8px;
+  font-size: 0.85rem;
+}
+
+/* ---- Phase 6: Buttons ---- */
+.uaa-btn {
+  padding: 6px 14px;
+  border-radius: 6px;
+  border: 1px solid var(--uab-border);
+  background: rgba(255, 255, 255, 0.05);
+  color: var(--uaa-text);
+  font-size: 0.85rem;
+  cursor: pointer;
+  transition: background 0.15s;
+}
+.uaa-btn:hover { background: rgba(255, 255, 255, 0.1); }
+.uaa-btn-success { border-color: rgba(63, 185, 80, 0.4); color: var(--uaa-success); }
+.uaa-btn-danger { border-color: rgba(248, 81, 73, 0.4); color: var(--uaa-danger); }
+
+/* ---- Phase 6: Input ---- */
+.uaa-input {
+  background: var(--uaa-bg);
+  color: var(--uaa-text);
+  border: 1px solid var(--uab-border);
+  border-radius: 6px;
+  padding: 6px 10px;
+  font-size: 0.85rem;
+  flex: 1;
+  max-width: 400px;
+}
+
+/* ---- Phase 6: Interventions ---- */
+.uaa-intervention-list { display: flex; flex-direction: column; gap: 12px; }
+.uaa-intervention-card {
+  background: rgba(255, 255, 255, 0.03);
+  border: 1px solid var(--uab-border);
+  border-radius: 8px;
+  padding: 12px 14px;
+}
+.uaa-iv-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 6px;
+}
+.uaa-iv-kind {
+  font-weight: 600;
+  font-size: 0.85rem;
+  text-transform: uppercase;
+  color: var(--uaa-accent);
+}
+.uaa-iv-question { margin: 4px 0; font-size: 0.9rem; }
+.uaa-iv-meta { margin: 2px 0; color: var(--uaa-text-muted); font-size: 0.78rem; }
+.uaa-iv-suggested { margin: 2px 0; font-size: 0.82rem; color: var(--uaa-text-muted); }
+.uaa-iv-actions { display: flex; gap: 6px; margin-top: 8px; }
+
+/* ---- Phase 6: Review ---- */
+.uaa-review-bar { display: flex; gap: 8px; margin-bottom: 12px; }
+.uaa-review-display { margin-bottom: 12px; }
+.uaa-review-controls { display: flex; gap: 8px; align-items: center; }
+
+/* ---- Phase 6: Logs ---- */
+.uaa-log-list {
+  max-height: 300px;
+  overflow-y: auto;
+  font-family: "JetBrains Mono", "Fira Code", Consolas, monospace;
+  font-size: 0.82rem;
+}
+.uaa-log-entry {
+  padding: 4px 8px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.03);
+  display: flex;
+  gap: 8px;
+}
+.uaa-log-time { color: var(--uaa-text-muted); white-space: nowrap; }
+.uaa-log-level { font-weight: 600; text-transform: uppercase; min-width: 50px; }
+.uaa-log-error .uaa-log-level { color: var(--uaa-danger); }
+.uaa-log-warning .uaa-log-level { color: var(--uaa-warn); }
+.uaa-log-info .uaa-log-level { color: var(--uaa-accent); }
+
+/* ---- Phase 6: Empty state ---- */
+.uaa-empty {
+  color: var(--uaa-text-muted);
+  font-style: italic;
+  text-align: center;
+  padding: 16px;
 }
