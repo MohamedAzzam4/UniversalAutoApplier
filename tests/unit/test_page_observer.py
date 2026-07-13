@@ -193,3 +193,73 @@ class TestDisabledElements:
             if "apply" in c.text.lower():
                 assert c.classification == ClickableClassification.UNKNOWN
                 assert c.enabled is False
+
+
+class TestPlatformFixtures:
+    """Tests using the platform fixture files from TESTING_STRATEGY."""
+
+    def test_greenhouse_job_has_apply_link(self) -> None:
+        html = _read_fixture_platform("greenhouse_job.html")
+        obs = observe_html(html, url="https://boards.greenhouse.io/example/jobs/123")
+
+        apply_clickables = [
+            c for c in obs.clickables if c.classification == ClickableClassification.SAFE_APPLY
+        ]
+        assert len(apply_clickables) >= 1
+
+    def test_lever_job_has_apply_button(self) -> None:
+        html = _read_fixture_platform("lever_job.html")
+        obs = observe_html(html, url="https://jobs.lever.co/example/123")
+
+        apply_clickables = [
+            c for c in obs.clickables if c.classification == ClickableClassification.SAFE_APPLY
+        ]
+        assert len(apply_clickables) >= 1
+
+    def test_workday_login_detected(self) -> None:
+        html = _read_fixture_platform("workday_login.html")
+        obs = observe_html(html, url="https://example.myworkdayjobs.com/login")
+
+        assert obs.page_state == PageState.LOGIN
+
+    def test_unknown_custom_form_detected(self) -> None:
+        html = _read_fixture_platform("unknown_custom_form.html")
+        obs = observe_html(html, url="https://unknown-ats.com/apply/123")
+
+        # Should detect either form state or at least inputs.
+        assert obs.page_state in (PageState.FORM, PageState.UNKNOWN)
+        assert len(obs.inputs) >= 3  # fullname, email, phone, linkedin
+
+    def test_unknown_custom_form_has_dangerous_submit(self) -> None:
+        html = _read_fixture_platform("unknown_custom_form.html")
+        obs = observe_html(html, url="https://unknown-ats.com/apply/123")
+
+        submit_clickables = [
+            c
+            for c in obs.clickables
+            if c.classification == ClickableClassification.DANGEROUS_SUBMIT
+        ]
+        assert len(submit_clickables) >= 1
+
+
+class TestAdditionalFixtures:
+    """Tests using the additional fixture files from TESTING_STRATEGY."""
+
+    def test_radio_checkbox_page_has_form(self) -> None:
+        html = _read_fixture("radio_checkbox.html")
+        obs = observe_html(html)
+
+        assert obs.page_state == PageState.FORM
+        assert len(obs.forms) == 1
+
+    def test_select_dropdown_page_has_form(self) -> None:
+        html = _read_fixture("select_dropdown.html")
+        obs = observe_html(html)
+
+        assert obs.page_state == PageState.FORM
+        assert len(obs.forms) == 1
+
+
+def _read_fixture_platform(name: str) -> str:
+    """Read a fixture from tests/fixtures/platforms/."""
+    return (Path(__file__).parent.parent / "fixtures" / "platforms" / name).read_text("utf-8")

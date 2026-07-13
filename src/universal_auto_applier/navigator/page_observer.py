@@ -379,6 +379,15 @@ def _detect_page_state(
         if len(inputs) >= 2:
             return PageState.FORM
 
+    # Check form: if there is a form with a safe_continue button, treat
+    # it as a form even if there are only select elements (no text inputs).
+    if forms:
+        has_safe_continue = any(
+            c.classification == ClickableClassification.SAFE_CONTINUE for c in clickables
+        )
+        if has_safe_continue:
+            return PageState.FORM
+
     # Check for apply page: if there are safe_apply clickables.
     for clickable in clickables:
         if clickable.classification == ClickableClassification.SAFE_APPLY:
