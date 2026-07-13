@@ -1,0 +1,19 @@
+<!doctype html>
+<html lang="en">
+<head>
+    <title>Login Required</title>
+</head>
+<body>
+    <h1>Please Log In</h1>
+    <p>You need to sign in to continue your application.</p>
+    <form action="/login" method="post">
+        <label for="username">Username</label>
+        <input type="text" id="username" name="username" required>
+
+        <label for="password">Password</label>
+        <input type="password" id="password" name="password" required>
+
+        <button type="submit" id="login-btn">Sign in</button>
+    </form>
+</body>
+</html>

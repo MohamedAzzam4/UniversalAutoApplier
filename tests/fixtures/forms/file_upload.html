@@ -1,0 +1,19 @@
+<!doctype html>
+<html lang="en">
+<head>
+    <title>Upload Your Resume</title>
+</head>
+<body>
+    <h1>Upload Documents</h1>
+    <form action="/upload" method="post" enctype="multipart/form-data">
+        <label for="resume">Upload resume</label>
+        <input type="file" id="resume" name="resume" accept=".pdf,.doc,.docx">
+
+        <label for="cover_letter">Upload cover letter</label>
+        <input type="file" id="cover_letter" name="cover_letter" accept=".pdf,.doc,.docx" multiple>
+
+        <button type="button" id="upload-btn">Upload</button>
+        <button type="button" id="continue-btn">Continue</button>
+    </form>
+</body>
+</html>
