@@ -1,15 +1,37 @@
 """adapters package.
 
-Reserved for future phases. See `docs/generalization/ROADMAP.md`:
+Phase 2 implements:
+- :class:`ApplicationAdapter` — base class / protocol for all adapters
+- :class:`AdapterRegistry` — deterministic adapter selection
+- :class:`GenericAdapter` — fallback for unknown platforms
+- :class:`SiemensAdapter` — narrow boundary to SiemensAutoApplier
 
-* Phase 1 -> `application_queue` (queue importer/exporter)
-* Phase 2 -> `adapters` (ApplicationAdapter, AdapterRegistry, SiemensAdapter)
-* Phase 3 -> `navigator` (PageObserver, ClickableClassifier, SafeExplorer)
-* Phase 4 -> `form_engine` (FormSchemaExtractor, FieldMapper, FillEngine)
-* Phase 5 -> `interventions` (InterventionStore, AnswerMemory, ReviewBeforeSubmit)
-* browser  -> Playwright wrapper used by navigator, form_engine, and adapters
+Phase 3+ will add:
+- :class:`GreenhouseAdapter`, :class:`LeverAdapter`, etc.
 
-No production behavior is implemented here in the bootstrap phase.
+See ``docs/generalization/ROADMAP.md`` for the full phase plan.
 """
 
 from __future__ import annotations
+
+from universal_auto_applier.adapters.base import ApplicationAdapter
+from universal_auto_applier.adapters.generic_adapter import GenericAdapter
+from universal_auto_applier.adapters.registry import (
+    AdapterRegistry,
+    NoAdapterError,
+    detect_platform,
+)
+from universal_auto_applier.adapters.siemens_adapter import (
+    SiemensAdapter,
+    SiemensAdapterConfig,
+)
+
+__all__ = [
+    "ApplicationAdapter",
+    "AdapterRegistry",
+    "NoAdapterError",
+    "GenericAdapter",
+    "SiemensAdapter",
+    "SiemensAdapterConfig",
+    "detect_platform",
+]
