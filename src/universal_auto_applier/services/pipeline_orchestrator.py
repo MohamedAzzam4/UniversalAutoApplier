@@ -57,6 +57,7 @@ from universal_auto_applier.interventions.navigation_bridge import (
 )
 from universal_auto_applier.interventions.review import (
     ReviewState,
+    check_submit_approval,
     create_review_state,
 )
 from universal_auto_applier.interventions.store import (
@@ -342,9 +343,12 @@ class PipelineOrchestrator:
     def _run_trusted_adapter_path(self, job: ApplicationJob, adapter: ApplicationAdapter) -> None:
         """Run the trusted adapter (Siemens) path.
 
-        For Phase 7, this calls the adapter's methods in sequence with
-        dry-run safety. The adapter itself handles the subprocess invocation
-        and dry-run flag enforcement.
+        Calls the adapter's methods in sequence with dry-run safety. The
+        adapter itself handles the subprocess invocation and dry-run flag
+        enforcement. Before any call to ``submit_or_pause``, the orchestrator
+        checks the review gate via ``check_submit_approval``. If approval
+        is missing or interventions remain, submit is blocked and the job
+        is set to ``review_ready`` or ``needs_user_input``.
         """
         self.state.current_phase = "navigate"
         self.state.last_action = "adapter.navigate"
@@ -370,10 +374,35 @@ class PipelineOrchestrator:
         # Create review state before submit.
         self.state.current_phase = "review"
         summary = FormFillSummary(total_fields=1, filled=1)
-        self._create_review_state_for_job(job, summary)
+        review_state = self._create_review_state_for_job(job, summary)
 
-        # Submit phase — always check review gate.
+        # Submit phase — check review gate BEFORE calling submit_or_pause.
+        # This is the hard safety gate: even if the adapter is configured
+        # with dry_run=False, the orchestrator will not call submit_or_pause
+        # unless the review state is approved and no interventions remain.
         self.state.current_phase = "submit"
+
+        # Check for unresolved interventions.
+        with session_scope(self.session_factory) as session:
+            pending = count_pending_interventions(session, job.application_id)
+
+        if pending > 0:
+            self._update_job_status(job, ApplicationStatus.NEEDS_USER_INPUT)
+            self._log(
+                "warning",
+                f"submit blocked: {pending} unresolved interventions remain",
+            )
+            return
+
+        if not check_submit_approval(review_state):
+            self._update_job_status(job, ApplicationStatus.REVIEW_READY)
+            self._log(
+                "warning",
+                "submit blocked: review approval required before submit_or_pause",
+            )
+            return
+
+        # Review gate passed — safe to call submit_or_pause.
         submit_result = adapter.submit_or_pause(job)
         self._log("info", f"adapter submit: status={submit_result.status}")
 
