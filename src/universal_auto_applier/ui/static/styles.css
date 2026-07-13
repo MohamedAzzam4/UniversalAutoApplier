@@ -408,3 +408,12 @@ code {
   text-align: center;
   padding: 16px;
 }
+
+/* ---- Phase 7: Pipeline controls ---- */
+.uaa-pipeline-controls {
+  display: flex;
+  gap: 12px;
+  align-items: center;
+  margin-top: 12px;
+  flex-wrap: wrap;
+}

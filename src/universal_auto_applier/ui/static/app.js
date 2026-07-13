@@ -111,10 +111,55 @@
         li.innerHTML = `<span class="uaa-component-name">${c.name}</span><span class="${pillClassFor(c.state)}">${c.state}</span>`;
         compList.appendChild(li);
       }
+
+      // Pipeline phase/action/error
+      const phaseEl = document.getElementById("pipeline-phase");
+      const actionEl = document.getElementById("pipeline-last-action");
+      const errorEl = document.getElementById("pipeline-last-error");
+      if (phaseEl) phaseEl.textContent = status.current_phase ? "Phase: " + status.current_phase : "";
+      if (actionEl) actionEl.textContent = status.last_action ? "Action: " + status.last_action : "";
+      if (errorEl) errorEl.textContent = status.last_error ? "Error: " + status.last_error : "";
     } catch (err) {
       console.error("[UAA] status load failed", err);
     }
   }
+
+  // ---- Pipeline start ----
+  document.getElementById("pipeline-start")?.addEventListener("click", async () => {
+    const btn = document.getElementById("pipeline-start");
+    if (btn) {
+      btn.disabled = true;
+      btn.textContent = "Running...";
+    }
+    try {
+      const resp = await postJSON("/api/pipeline/start", {
+        fixture_html: null,
+        max_jobs: 10,
+      });
+      loadStatus();
+      if (btn) {
+        btn.disabled = false;
+        btn.textContent = "Start Dry-Run";
+      }
+      alert(
+        "Pipeline " +
+          resp.status +
+          ". Processed: " +
+          resp.jobs_processed +
+          ", Succeeded: " +
+          resp.jobs_succeeded +
+          ", Failed: " +
+          resp.jobs_failed +
+          ". No real submissions occurred."
+      );
+    } catch (err) {
+      if (btn) {
+        btn.disabled = false;
+        btn.textContent = "Start Dry-Run";
+      }
+      alert("Pipeline start failed: " + err.message);
+    }
+  });
 
   // ---- Queue ----
   async function loadQueue() {

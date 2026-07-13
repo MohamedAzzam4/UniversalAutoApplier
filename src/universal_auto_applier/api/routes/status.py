@@ -53,7 +53,6 @@ def get_status(request: Request) -> PipelineStatus:
     with session_factory() as session:
         total = count_application_jobs(session)
 
-        # Count jobs by status.
         stmt = select(ApplicationJobRow.status, func.count()).group_by(ApplicationJobRow.status)
         rows = session.execute(stmt).all()
         by_status = {row[0]: row[1] for row in rows}
@@ -62,10 +61,26 @@ def get_status(request: Request) -> PipelineStatus:
 
     settings = app.state.settings
 
+    # Check for active pipeline state.
+    pipeline_state = getattr(app.state, "pipeline_state", None)
+    run_status = "idle"
+    current_phase = ""
+    active_job_id = None
+    last_action = ""
+    last_error = ""
+    if pipeline_state is not None:
+        run_status = pipeline_state.status
+        current_phase = pipeline_state.current_phase
+        active_job_id = pipeline_state.current_job_id
+        last_action = pipeline_state.last_action
+        last_error = pipeline_state.last_error
+
     return PipelineStatus(
-        run_status="idle",
-        current_phase="",
-        active_job_id=None,
+        run_status=run_status,
+        current_phase=current_phase,
+        active_job_id=active_job_id,
+        last_action=last_action,
+        last_error=last_error,
         submit_mode=settings.submit_mode,
         jobs_total=total,
         jobs_by_status=by_status,
