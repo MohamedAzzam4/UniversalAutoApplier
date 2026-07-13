@@ -153,7 +153,21 @@ class TestPasswordFieldBlocked:
 
         assert summary.blocked == 1
         assert summary.results[0].status == "blocked"
+        assert summary.results[0].field_type == "password"
         assert "Password" in summary.results[0].explanation
+
+    def test_password_field_type_preserved(self, tmp_path: Path) -> None:
+        """The FillResult must record field_type='password' so a future browser
+        executor knows this was a password field even though the schema
+        extractor mapped the HTML type to 'unknown'."""
+        fields = [
+            FormField(
+                selector="#pw", name="password", label="Password", type="unknown", required=True
+            )
+        ]
+        summary = fill_form(fields, _make_candidate(), _make_job(tmp_path))
+
+        assert summary.results[0].field_type == "password"
 
 
 class TestFileFieldValidation:

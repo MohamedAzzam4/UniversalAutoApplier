@@ -97,6 +97,7 @@ def _fill_single_field(
     if _is_password_field(field):
         return FillResult(
             field_selector=field.selector,
+            field_type="password",
             status="blocked",
             explanation="Password fields are never filled",
         )
@@ -106,11 +107,13 @@ def _fill_single_field(
         if field.required:
             return FillResult(
                 field_selector=field.selector,
+                field_type=field.type,
                 status="intervention_needed",
                 explanation="Required field has unknown type and no mapping",
             )
         return FillResult(
             field_selector=field.selector,
+            field_type=field.type,
             status="skipped",
             explanation="Optional field has unknown type",
         )
@@ -123,11 +126,13 @@ def _fill_single_field(
         if field.required:
             return FillResult(
                 field_selector=field.selector,
+                field_type=field.type,
                 status="intervention_needed",
                 explanation="Required field has no deterministic mapping",
             )
         return FillResult(
             field_selector=field.selector,
+            field_type=field.type,
             status="skipped",
             explanation="Optional field has no mapping",
         )
@@ -137,6 +142,7 @@ def _fill_single_field(
         if field.required:
             return FillResult(
                 field_selector=field.selector,
+                field_type=field.type,
                 status="intervention_needed",
                 value=mapping.value,
                 source=mapping.source,
@@ -145,6 +151,7 @@ def _fill_single_field(
             )
         return FillResult(
             field_selector=field.selector,
+            field_type=field.type,
             status="skipped",
             value=mapping.value,
             source=mapping.source,
@@ -157,6 +164,7 @@ def _fill_single_field(
         if not Path(mapping.value).exists():
             return FillResult(
                 field_selector=field.selector,
+                field_type=field.type,
                 status="intervention_needed",
                 value=mapping.value,
                 source=mapping.source,
@@ -167,6 +175,7 @@ def _fill_single_field(
     # Field is mapped with sufficient confidence.
     return FillResult(
         field_selector=field.selector,
+        field_type=field.type,
         status="filled",
         value=mapping.value,
         source=mapping.source,

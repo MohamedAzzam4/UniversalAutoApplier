@@ -582,9 +582,18 @@ class CandidateProfile(BaseModel):
 
 
 class FillResult(BaseModel):
-    """The outcome of filling a single field."""
+    """The outcome of filling a single field.
+
+    Contains executable metadata sufficient for a future browser executor
+    (Phase 8+) to perform the fill: the CSS selector, the field type
+    (which determines the Playwright fill method), the value to fill,
+    the data source, the confidence, and the status.
+    """
 
     field_selector: str
+    field_type: str = Field(
+        default="unknown", description="FormField type for browser executor routing."
+    )
     status: str = Field(..., description="filled, skipped, blocked, intervention_needed")
     value: str | None = None
     source: str | None = None
