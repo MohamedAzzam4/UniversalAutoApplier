@@ -1,0 +1,33 @@
+<!doctype html>
+<html lang="en">
+<head>
+    <title>Greenhouse - Apply - Software Engineer</title>
+</head>
+<body>
+    <h1>Apply to Software Engineer at Example Corp</h1>
+    <form action="/boards.greenhouse.io/example/submit" method="post" id="greenhouse-apply-form">
+        <label for="first_name">First name</label>
+        <input type="text" id="first_name" name="first_name" required>
+
+        <label for="last_name">Last name</label>
+        <input type="text" id="last_name" name="last_name" required>
+
+        <label for="email">Email address</label>
+        <input type="email" id="email" name="email" required>
+
+        <label for="phone">Phone number</label>
+        <input type="tel" id="phone" name="phone">
+
+        <label for="resume">Resume</label>
+        <input type="file" id="resume" name="resume" accept=".pdf,.doc,.docx" required>
+
+        <label for="cover_letter">Cover letter</label>
+        <input type="file" id="cover_letter" name="cover_letter" accept=".pdf,.doc,.docx">
+
+        <label for="linkedin">LinkedIn URL</label>
+        <input type="url" id="linkedin" name="linkedin" placeholder="https://linkedin.com/in/...">
+
+        <button type="submit" id="submit-app">Submit application</button>
+    </form>
+</body>
+</html>

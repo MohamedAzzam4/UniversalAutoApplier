@@ -95,9 +95,16 @@ class SiemensAdapter(ApplicationAdapter):
     This adapter does NOT contain any Siemens-specific selectors, page
     objects, or stage logic. It invokes the existing Siemens CLI as a
     subprocess and maps the structured result to :class:`AdapterResult`.
+
+    ``is_trusted`` is True for SiemensAdapter because it wraps a proven
+    workflow that has its own eligibility gate and submission guard.
+    However, the pipeline orchestrator's review gate
+    (:func:`check_submit_approval`) still must approve submission before
+    ``submit_or_pause`` is called, even for trusted adapters.
     """
 
     platform = Platform.SIEMENS
+    is_trusted: bool = True
 
     def __init__(self, config: SiemensAdapterConfig | None = None) -> None:
         self._config = config or SiemensAdapterConfig()

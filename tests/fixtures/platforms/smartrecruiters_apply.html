@@ -1,0 +1,40 @@
+<!doctype html>
+<html lang="en">
+<head>
+    <title>SmartRecruiters - Apply - Frontend Engineer</title>
+</head>
+<body>
+    <h1>Apply to Frontend Engineer at InnovateCo</h1>
+    <form action="/careers.smartrecruiters.com/innovateco/submit" method="post" id="sr-apply-form">
+        <label for="first_name">First name</label>
+        <input type="text" id="first_name" name="first_name" required>
+
+        <label for="last_name">Last name</label>
+        <input type="text" id="last_name" name="last_name" required>
+
+        <label for="email">Email address</label>
+        <input type="email" id="email" name="email" required>
+
+        <label for="phone">Phone number</label>
+        <input type="tel" id="phone" name="phone">
+
+        <label for="resume">Resume</label>
+        <input type="file" id="resume" name="resume" accept=".pdf" required>
+
+        <label for="cover_letter">Cover letter</label>
+        <input type="file" id="cover_letter" name="cover_letter" accept=".pdf">
+
+        <label for="website">Personal website</label>
+        <input type="url" id="website" name="website">
+
+        <label for="sponsorship">Do you require visa sponsorship?</label>
+        <select id="sponsorship" name="sponsorship" required>
+            <option value="">Select an option</option>
+            <option value="yes">Yes</option>
+            <option value="no">No</option>
+        </select>
+
+        <button type="submit" id="submit-app">Submit application</button>
+    </form>
+</body>
+</html>
