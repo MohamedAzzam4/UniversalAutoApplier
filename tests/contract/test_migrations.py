@@ -15,13 +15,16 @@ from sqlalchemy import create_engine, inspect
 from universal_auto_applier.persistence.db import build_engine_url
 from universal_auto_applier.persistence.migrations import apply_migrations
 
+# The current head revision. Update this when adding a new migration.
+CURRENT_HEAD = "0002_application_job_optional_fields"
+
 
 def test_apply_migrations_creates_required_tables(tmp_path: Path) -> None:
     db_path = tmp_path / "contract_uaa.sqlite"
     url = build_engine_url(db_path)
     head = apply_migrations(url)
 
-    assert head == "0001_initial_schema"
+    assert head == CURRENT_HEAD
 
     engine = create_engine(url)
     try:
@@ -47,7 +50,7 @@ def test_apply_migrations_is_idempotent(tmp_path: Path) -> None:
     url = build_engine_url(tmp_path / "idempotent_uaa.sqlite")
     head_first = apply_migrations(url)
     head_second = apply_migrations(url)
-    assert head_first == head_second == "0001_initial_schema"
+    assert head_first == head_second == CURRENT_HEAD
 
 
 def test_apply_migrations_sets_current_revision(tmp_path: Path) -> None:
@@ -62,4 +65,30 @@ def test_apply_migrations_sets_current_revision(tmp_path: Path) -> None:
     finally:
         engine.dispose()
 
-    assert current == "0001_initial_schema"
+    assert current == CURRENT_HEAD
+
+
+def test_phase1_columns_exist(tmp_path: Path) -> None:
+    """Phase 1 adds optional identity and descriptive columns."""
+    url = build_engine_url(tmp_path / "phase1_columns.sqlite")
+    apply_migrations(url)
+
+    engine = create_engine(url)
+    try:
+        inspector = inspect(engine)
+        columns = {col["name"] for col in inspector.get_columns("application_jobs")}
+    finally:
+        engine.dispose()
+
+    expected_new_columns = {
+        "job_id",
+        "external_job_id",
+        "date_posted",
+        "evaluated_at",
+        "tailored_at",
+        "evaluation_reason",
+        "german_filter_result",
+    }
+    assert expected_new_columns.issubset(columns), (
+        f"missing columns: {expected_new_columns - columns}"
+    )
