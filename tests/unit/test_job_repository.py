@@ -14,7 +14,7 @@ import pytest
 from universal_auto_applier.core.identity import compute_application_id
 from universal_auto_applier.core.models import ApplicationJob
 from universal_auto_applier.core.statuses import ApplicationStatus, Platform
-from universal_auto_applier.persistence.db import make_engine, make_session_factory, session_scope
+from universal_auto_applier.persistence.db import make_session_factory, session_scope
 from universal_auto_applier.persistence.job_repository import (
     count_application_jobs,
     get_application_job,
@@ -26,8 +26,22 @@ from universal_auto_applier.persistence.models import Base
 
 @pytest.fixture
 def session_factory(tmp_path: Path):
+    """Return a session factory bound to a fresh temp SQLite DB.
+
+    Uses NullPool to avoid ResourceWarning: unclosed database on Python 3.14.
+    """
+    from sqlalchemy import create_engine, event
+    from sqlalchemy.pool import NullPool
+
     db_path = tmp_path / "test_repo.sqlite"
-    engine = make_engine(f"sqlite:///{db_path}")
+    engine = create_engine(f"sqlite:///{db_path}", future=True, poolclass=NullPool)
+
+    @event.listens_for(engine, "connect")
+    def _enable_fk(dbapi_connection, _record):  # noqa: ANN001
+        cursor = dbapi_connection.cursor()
+        cursor.execute("PRAGMA foreign_keys=ON")
+        cursor.close()
+
     Base.metadata.create_all(engine)
     factory = make_session_factory(engine)
     yield factory

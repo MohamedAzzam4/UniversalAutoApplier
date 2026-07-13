@@ -16,6 +16,7 @@ import os
 import sys
 from collections.abc import Iterator
 from pathlib import Path
+from typing import Any
 
 import pytest
 from fastapi.testclient import TestClient
@@ -54,12 +55,34 @@ def settings(tmp_path: Path) -> Settings:  # noqa: F821 - forward ref
 
 @pytest.fixture
 def engine(tmp_path: Path) -> Iterator[Engine]:  # noqa: F821
-    """Yield a SQLAlchemy engine bound to a fresh temp SQLite database."""
-    from universal_auto_applier.persistence.db import build_engine_url, make_engine
+    """Yield a SQLAlchemy engine bound to a fresh temp SQLite database.
+
+    Uses NullPool so connections are closed immediately when sessions close.
+    This avoids ResourceWarning: unclosed database on Python 3.14, where
+    sqlite3 is stricter about finalizing connections.
+
+    The PRAGMA foreign_keys=ON event listener is the same as in
+    :func:`universal_auto_applier.persistence.db.make_engine`.
+    """
+    from sqlalchemy import create_engine, event
+    from sqlalchemy.pool import NullPool
+
+    from universal_auto_applier.persistence.db import build_engine_url
     from universal_auto_applier.persistence.models import Base
 
     db_path = tmp_path / "test_uaa.sqlite"
-    engine = make_engine(build_engine_url(db_path))
+    engine = create_engine(
+        build_engine_url(db_path),
+        future=True,
+        poolclass=NullPool,
+    )
+
+    @event.listens_for(engine, "connect")
+    def _enable_sqlite_foreign_keys(dbapi_connection: Any, _record: Any) -> None:
+        cursor = dbapi_connection.cursor()
+        cursor.execute("PRAGMA foreign_keys=ON")
+        cursor.close()
+
     Base.metadata.create_all(engine)
     try:
         yield engine
