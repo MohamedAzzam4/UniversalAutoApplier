@@ -306,6 +306,128 @@ class TestSiemensAdapterBoundary:
         assert "missing_siemens_job_id" in result.errors
 
 
+class TestDryRunSafety:
+    """Safety tests proving that navigate_to_form() and fill() can NEVER
+    pass --no-dry-run to the Siemens CLI, regardless of config.dry_run.
+
+    Only submit_or_pause() may pass --no-dry-run, and only when
+    config.dry_run is False.
+    """
+
+    def _make_fake_repo(self, tmp_path: Path) -> Path:
+        siemens_repo = tmp_path / "SiemensAutoApplier"
+        siemens_subdir = siemens_repo / "siemens-auto-apply"
+        siemens_subdir.mkdir(parents=True)
+        (siemens_subdir / "main.py").write_text("# fake")
+        return siemens_repo
+
+    def _mock_success(self) -> subprocess.CompletedProcess:
+        return subprocess.CompletedProcess(args=[], returncode=0, stdout="", stderr="")
+
+    def test_navigate_never_uses_no_dry_run_when_config_dry_run_false(self, tmp_path: Path) -> None:
+        """navigate_to_form() must NOT pass --no-dry-run even when
+        config.dry_run=False."""
+        repo = self._make_fake_repo(tmp_path)
+        adapter = SiemensAdapter(SiemensAdapterConfig(repo_path=repo, dry_run=False))
+        job = _make_siemens_job()
+
+        with patch(
+            "universal_auto_applier.adapters.siemens_adapter.subprocess.run",
+            return_value=self._mock_success(),
+        ) as mock_run:
+            adapter.navigate_to_form(job)
+
+        cmd = mock_run.call_args[0][0]
+        assert "--no-dry-run" not in cmd, (
+            "navigate_to_form() must never pass --no-dry-run (it could submit)"
+        )
+        assert "--dry-run" in cmd, "navigate_to_form() must always pass --dry-run"
+
+    def test_fill_never_uses_no_dry_run_when_config_dry_run_false(self, tmp_path: Path) -> None:
+        """fill() must NOT pass --no-dry-run even when config.dry_run=False."""
+        repo = self._make_fake_repo(tmp_path)
+        adapter = SiemensAdapter(SiemensAdapterConfig(repo_path=repo, dry_run=False))
+        job = _make_siemens_job()
+
+        with patch(
+            "universal_auto_applier.adapters.siemens_adapter.subprocess.run",
+            return_value=self._mock_success(),
+        ) as mock_run:
+            adapter.fill(job)
+
+        cmd = mock_run.call_args[0][0]
+        assert "--no-dry-run" not in cmd, "fill() must never pass --no-dry-run (it could submit)"
+        assert "--dry-run" in cmd, "fill() must always pass --dry-run"
+
+    def test_submit_uses_dry_run_when_config_dry_run_true(self, tmp_path: Path) -> None:
+        """submit_or_pause() passes --dry-run when config.dry_run=True."""
+        repo = self._make_fake_repo(tmp_path)
+        adapter = SiemensAdapter(SiemensAdapterConfig(repo_path=repo, dry_run=True))
+        job = _make_siemens_job()
+
+        with patch(
+            "universal_auto_applier.adapters.siemens_adapter.subprocess.run",
+            return_value=self._mock_success(),
+        ) as mock_run:
+            result = adapter.submit_or_pause(job)
+
+        cmd = mock_run.call_args[0][0]
+        assert "--dry-run" in cmd
+        assert "--no-dry-run" not in cmd
+        assert result.status == AdapterResultStatus.DRY_RUN
+
+    def test_submit_uses_no_dry_run_when_config_dry_run_false(self, tmp_path: Path) -> None:
+        """submit_or_pause() passes --no-dry-run when config.dry_run=False."""
+        repo = self._make_fake_repo(tmp_path)
+        adapter = SiemensAdapter(SiemensAdapterConfig(repo_path=repo, dry_run=False))
+        job = _make_siemens_job()
+
+        with patch(
+            "universal_auto_applier.adapters.siemens_adapter.subprocess.run",
+            return_value=self._mock_success(),
+        ) as mock_run:
+            result = adapter.submit_or_pause(job)
+
+        cmd = mock_run.call_args[0][0]
+        assert "--no-dry-run" in cmd
+        assert "--dry-run" not in cmd
+        assert result.status == AdapterResultStatus.SUBMITTED
+
+    def test_navigate_result_is_dry_run_even_when_config_dry_run_false(
+        self, tmp_path: Path
+    ) -> None:
+        """navigate_to_form() result must be DRY_RUN, never SUBMITTED,
+        even when config.dry_run=False."""
+        repo = self._make_fake_repo(tmp_path)
+        adapter = SiemensAdapter(SiemensAdapterConfig(repo_path=repo, dry_run=False))
+        job = _make_siemens_job()
+
+        with patch(
+            "universal_auto_applier.adapters.siemens_adapter.subprocess.run",
+            return_value=self._mock_success(),
+        ):
+            result = adapter.navigate_to_form(job)
+
+        assert result.status == AdapterResultStatus.DRY_RUN
+        assert result.status != AdapterResultStatus.SUBMITTED
+
+    def test_fill_result_is_dry_run_even_when_config_dry_run_false(self, tmp_path: Path) -> None:
+        """fill() result must be DRY_RUN, never SUBMITTED, even when
+        config.dry_run=False."""
+        repo = self._make_fake_repo(tmp_path)
+        adapter = SiemensAdapter(SiemensAdapterConfig(repo_path=repo, dry_run=False))
+        job = _make_siemens_job()
+
+        with patch(
+            "universal_auto_applier.adapters.siemens_adapter.subprocess.run",
+            return_value=self._mock_success(),
+        ):
+            result = adapter.fill(job)
+
+        assert result.status == AdapterResultStatus.DRY_RUN
+        assert result.status != AdapterResultStatus.SUBMITTED
+
+
 class TestAdapterResultMapping:
     """Contract tests for AdapterResult success/failure mapping."""
 

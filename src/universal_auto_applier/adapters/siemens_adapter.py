@@ -4,18 +4,36 @@ Per ``ROADMAP.md`` WP 2.3 and ``ADR_001_ARCHITECTURE.md`` D4:
 
 - ``SiemensAdapter`` lives inside UniversalAutoApplier.
 - It invokes the existing Siemens workflow through a narrow integration
-  boundary (CLI subprocess or importable entry point).
+  boundary (CLI subprocess).
 - It exchanges a typed request and a structured :class:`AdapterResult`; it
   does **not** parse human log text to determine success.
 - Siemens selectors, page objects, and stage logic stay in
   SiemensAutoApplier. No code is copied.
 
-Boundary mechanism:
+Boundary mechanism (Phase 2):
 The adapter invokes ``python main.py --job-id <id> --dry-run`` (or
-``--no-dry-run``) as a subprocess. The subprocess exit code and the
-structured ``JobResult`` dataclass in SiemensAutoApplier determine the
-:class:`AdapterResult`. The adapter does NOT parse human-readable log
-lines.
+``--no-dry-run`` for submit phase only) as a subprocess. The subprocess
+**exit code** is mapped to an :class:`AdapterResult`. The adapter does
+NOT parse human-readable log lines and does NOT consume Siemens's
+internal ``JobResult`` dataclass (that would require importing Siemens
+code, which is out of scope for Phase 2).
+
+Phase 2 maps exit codes only:
+    0   -> success/dry_run (depending on the dry-run flag passed)
+    1   -> failed
+    2   -> blocked (config error)
+    130 -> failed (interrupted)
+
+A future phase may upgrade the boundary to a machine-readable structured
+protocol (e.g., JSON output from the Siemens CLI) without parsing human
+logs. That upgrade is deferred and tracked as a limitation.
+
+Safety:
+- ``navigate_to_form()`` and ``fill()`` ALWAYS pass ``--dry-run`` to the
+  Siemens CLI, regardless of ``config.dry_run``. These phases must never
+  submit an application.
+- Only ``submit_or_pause()`` may pass ``--no-dry-run``, and only when
+  ``config.dry_run`` is False.
 
 If ``UAA_SIEMENS_REPO`` is not configured, the adapter reports
 ``not_configured`` via the health endpoint and returns a structured
@@ -143,16 +161,22 @@ class SiemensAdapter(ApplicationAdapter):
         For Phase 2, this invokes the Siemens CLI in dry-run mode and
         maps the result. The actual navigation is performed by the
         existing Siemens ``ApplyWorkflow``; this adapter only wraps it.
+
+        Safety: this phase ALWAYS passes ``--dry-run`` to the Siemens CLI,
+        regardless of ``config.dry_run``. Navigation must never submit.
         """
-        return self._invoke_siemens_cli(job, phase=Phase.NAVIGATE)
+        return self._invoke_siemens_cli(job, phase=Phase.NAVIGATE, force_dry_run=True)
 
     def fill(self, job: ApplicationJob) -> AdapterResult:
         """Fill the Siemens application form.
 
         For Phase 2, this invokes the Siemens CLI in dry-run mode and
         maps the result.
+
+        Safety: this phase ALWAYS passes ``--dry-run`` to the Siemens CLI,
+        regardless of ``config.dry_run``. Form filling must never submit.
         """
-        return self._invoke_siemens_cli(job, phase=Phase.FILL)
+        return self._invoke_siemens_cli(job, phase=Phase.FILL, force_dry_run=True)
 
     def submit_or_pause(self, job: ApplicationJob) -> AdapterResult:
         """Submit or pause for the Siemens application.
@@ -162,13 +186,17 @@ class SiemensAdapter(ApplicationAdapter):
         the result is mapped to ``dry_run`` status. If dry_run is False,
         the CLI is invoked with ``--no-dry-run`` and the result is mapped
         to ``submitted`` or ``failed``.
+
+        This is the ONLY phase that may pass ``--no-dry-run``.
         """
-        return self._invoke_siemens_cli(job, phase=Phase.SUBMIT)
+        return self._invoke_siemens_cli(job, phase=Phase.SUBMIT, force_dry_run=False)
 
     def _invoke_siemens_cli(
         self,
         job: ApplicationJob,
         phase: Phase,
+        *,
+        force_dry_run: bool = False,
     ) -> AdapterResult:
         """Invoke the Siemens CLI and map the result to AdapterResult.
 
@@ -179,11 +207,21 @@ class SiemensAdapter(ApplicationAdapter):
         4. Maps the exit code to an :class:`AdapterResult`.
 
         The adapter does NOT parse human-readable log lines. It relies on
-        the subprocess exit code and (if available) structured output.
+        the subprocess exit code only.
+
+        Safety: when ``force_dry_run`` is True, the CLI is ALWAYS invoked
+        with ``--dry-run``, regardless of ``config.dry_run``. This prevents
+        ``navigate_to_form()`` and ``fill()`` from accidentally submitting
+        an application. Only ``submit_or_pause()`` passes
+        ``force_dry_run=False``, allowing ``--no-dry-run`` when
+        ``config.dry_run`` is False.
 
         Args:
             job: The job to apply to.
             phase: The current phase (navigate, fill, submit).
+            force_dry_run: If True, force ``--dry-run`` regardless of
+                ``config.dry_run``. Used by navigate/fill to prevent
+                accidental submission.
 
         Returns:
             A structured :class:`AdapterResult`.
@@ -237,7 +275,11 @@ class SiemensAdapter(ApplicationAdapter):
             str(siemens_job_id),
         ]
 
-        if self._config.dry_run:
+        # Safety: navigate_to_form() and fill() always pass --dry-run,
+        # regardless of config.dry_run. Only submit_or_pause() respects
+        # config.dry_run and may pass --no-dry-run.
+        effective_dry_run = force_dry_run or self._config.dry_run
+        if effective_dry_run:
             cmd.append("--dry-run")
         else:
             cmd.append("--no-dry-run")
@@ -246,11 +288,12 @@ class SiemensAdapter(ApplicationAdapter):
             cmd.append("--headless")
 
         logger.info(
-            "[%s] siemens invoke: %s (phase=%s, dry_run=%s)",
+            "[%s] siemens invoke: %s (phase=%s, dry_run=%s, forced=%s)",
             job.application_id[:12],
             " ".join(cmd),
             phase,
-            self._config.dry_run,
+            effective_dry_run,
+            force_dry_run,
         )
 
         try:
@@ -285,7 +328,10 @@ class SiemensAdapter(ApplicationAdapter):
         #   2 = config error
         #   130 = interrupted
         if result.returncode == 0:
-            if self._config.dry_run:
+            # Use the effective dry_run flag (which accounts for force_dry_run)
+            # to determine the result status. This ensures navigate/fill never
+            # report SUBMITTED even if config.dry_run is False.
+            if effective_dry_run:
                 status = AdapterResultStatus.DRY_RUN
                 message = "Siemens CLI completed in dry-run mode"
             else:
