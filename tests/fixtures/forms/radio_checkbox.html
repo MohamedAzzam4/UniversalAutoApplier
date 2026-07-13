@@ -1,0 +1,23 @@
+<!doctype html>
+<html lang="en">
+<head>
+    <title>Radio and Checkbox Form</title>
+</head>
+<body>
+    <h1>Screening Questions</h1>
+    <form action="/screening" method="post">
+        <fieldset>
+            <legend>Do you require visa sponsorship?</legend>
+            <label><input type="radio" name="sponsorship" value="yes" required> Yes</label>
+            <label><input type="radio" name="sponsorship" value="no" required> No</label>
+        </fieldset>
+        <fieldset>
+            <legend>Which programs are you proficient in?</legend>
+            <label><input type="checkbox" name="programs" value="python"> Python</label>
+            <label><input type="checkbox" name="programs" value="java"> Java</label>
+            <label><input type="checkbox" name="programs" value="javascript"> JavaScript</label>
+        </fieldset>
+        <button type="button" id="next-btn">Next</button>
+    </form>
+</body>
+</html>

@@ -1,0 +1,28 @@
+<!doctype html>
+<html lang="en">
+<head>
+    <title>Dropdown Form</title>
+</head>
+<body>
+    <h1>Application Form - Preferences</h1>
+    <form action="/preferences" method="post">
+        <label for="country">Country</label>
+        <select id="country" name="country" required>
+            <option value="">Select a country</option>
+            <option value="de">Germany</option>
+            <option value="us">United States</option>
+            <option value="uk">United Kingdom</option>
+        </select>
+
+        <label for="experience">Years of experience</label>
+        <select id="experience" name="experience">
+            <option value="0-2">0-2 years</option>
+            <option value="3-5">3-5 years</option>
+            <option value="6-10">6-10 years</option>
+            <option value="10+">10+ years</option>
+        </select>
+
+        <button type="button" id="continue-btn">Continue</button>
+    </form>
+</body>
+</html>
