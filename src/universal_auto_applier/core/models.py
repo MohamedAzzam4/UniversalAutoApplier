@@ -469,6 +469,154 @@ class PageObservation(BaseModel):
     screenshot: str | None = Field(default=None, description="Path to screenshot file.")
 
 
+# ---------------------------------------------------------------------------
+# FormField, FieldMapping, CandidateProfile (Phase 4)
+# ---------------------------------------------------------------------------
+
+# Supported field types per DATA_CONTRACTS.md.
+FORM_FIELD_TYPES: frozenset[str] = frozenset(
+    {
+        "text",
+        "email",
+        "phone",
+        "textarea",
+        "select",
+        "radio",
+        "checkbox",
+        "file",
+        "date",
+        "number",
+        "unknown",
+    }
+)
+
+# Allowed mapping sources per DATA_CONTRACTS.md.
+FIELD_MAPPING_SOURCES: frozenset[str] = frozenset(
+    {
+        "candidate_profile",
+        "application_job",
+        "document_path",
+        "answer_memory",
+        "adapter_default",
+        "ai_suggestion",
+        "user_input",
+        "unknown",
+    }
+)
+
+
+class FieldOption(BaseModel):
+    """An option for a select, radio, or checkbox field."""
+
+    value: str
+    label: str = Field(default="")
+    selected: bool = False
+
+
+class FormField(BaseModel):
+    """A form field extracted from the page.
+
+    See ``DATA_CONTRACTS.md`` -> ``FormField``.
+    """
+
+    selector: str
+    name: str = Field(default="")
+    label: str = Field(default="")
+    type: str = Field(default="unknown")
+    required: bool = False
+    options: list[FieldOption] = Field(default_factory=list[FieldOption])
+    current_value: str = Field(default="")
+    nearby_text: str = Field(default="")
+    confidence: float = Field(default=0.0, ge=0.0, le=1.0)
+
+    @field_validator("type")
+    @classmethod
+    def _validate_type(cls, v: str) -> str:
+        if v not in FORM_FIELD_TYPES:
+            return "unknown"
+        return v
+
+
+class FieldMapping(BaseModel):
+    """The result of mapping a form field to candidate/job data.
+
+    See ``DATA_CONTRACTS.md`` -> ``FieldMapping``.
+    """
+
+    field_selector: str
+    value: str
+    source: str
+    confidence: float = Field(default=0.0, ge=0.0, le=1.0)
+    requires_user_confirmation: bool = False
+    explanation: str = Field(default="")
+
+    @field_validator("source")
+    @classmethod
+    def _validate_source(cls, v: str) -> str:
+        if v not in FIELD_MAPPING_SOURCES:
+            return "unknown"
+        return v
+
+
+class CandidateProfile(BaseModel):
+    """Candidate data used for deterministic field mapping.
+
+    This is a minimal profile for Phase 4. It covers the fields referenced
+    in ROADMAP.md WP 4.2 examples. Future phases may extend it.
+    """
+
+    first_name: str | None = None
+    last_name: str | None = None
+    full_name: str | None = None
+    email: str | None = None
+    phone: str | None = None
+    linkedin_url: str | None = None
+    city: str | None = None
+    country: str | None = None
+    requires_sponsorship: bool | None = None
+    work_authorization: str | None = None
+    years_of_experience: int | None = None
+    current_position: str | None = None
+    website: str | None = None
+    github_url: str | None = None
+
+
+class FillResult(BaseModel):
+    """The outcome of filling a single field.
+
+    Contains executable metadata sufficient for a future browser executor
+    (Phase 8+) to perform the fill: the CSS selector, the field type
+    (which determines the Playwright fill method), the value to fill,
+    the data source, the confidence, and the status.
+    """
+
+    field_selector: str
+    field_type: str = Field(
+        default="unknown", description="FormField type for browser executor routing."
+    )
+    status: str = Field(..., description="filled, skipped, blocked, intervention_needed")
+    value: str | None = None
+    source: str | None = None
+    explanation: str = Field(default="")
+    confidence: float = Field(default=0.0, ge=0.0, le=1.0)
+
+
+class FormFillSummary(BaseModel):
+    """Summary of filling all fields on a form."""
+
+    total_fields: int = 0
+    filled: int = 0
+    skipped: int = 0
+    blocked: int = 0
+    intervention_needed: int = 0
+    results: list[FillResult] = Field(default_factory=list[FillResult])
+
+    @property
+    def all_required_fields_resolved(self) -> bool:
+        """True if no required fields need intervention."""
+        return self.intervention_needed == 0
+
+
 __all__ = [
     # Health
     "ComponentHealth",
@@ -490,4 +638,13 @@ __all__ = [
     "InputInfo",
     "FileInputInfo",
     "PageObservation",
+    # Phase 4 contracts
+    "FORM_FIELD_TYPES",
+    "FIELD_MAPPING_SOURCES",
+    "FieldOption",
+    "FormField",
+    "FieldMapping",
+    "CandidateProfile",
+    "FillResult",
+    "FormFillSummary",
 ]
