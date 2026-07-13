@@ -52,12 +52,16 @@ def _make_valid_job_line(
     external_job_id: str = "job-123",
     company: str = "Example GmbH",
     title: str = "Working Student AI",
-    cv_pdf: str | None = "/tmp/example-cv.pdf",
-    cover_letter_pdf: str | None = "/tmp/example-cover.pdf",
+    cv_pdf: str | None = None,
+    cover_letter_pdf: str | None = None,
     status: str = "evaluated",
     score: float = 4.1,
 ) -> str:
-    """Return a single valid JSONL line."""
+    """Return a single valid JSONL line.
+
+    Paths default to None (no documents). Tests that need documents should
+    pass absolute paths from tmp_path (which is cross-platform).
+    """
     application_id = compute_application_id(
         platform=platform, external_job_id=external_job_id, url=url
     )
@@ -100,12 +104,19 @@ class TestImportValidQueue:
         assert not result.has_errors
 
     def test_imported_jobs_appear_in_db(self, tmp_path: Path, session_factory) -> None:
+        cv_path = tmp_path / "cv.pdf"
+        cover_path = tmp_path / "cover.pdf"
+        cv_path.write_bytes(b"fake")
+        cover_path.write_bytes(b"fake")
+
         queue_path = tmp_path / "queue.jsonl"
         queue_path.write_text(
             _make_valid_job_line(
                 url="https://example.com/jobs/1",
                 external_job_id="j1",
                 company="Acme Corp",
+                cv_pdf=str(cv_path),
+                cover_letter_pdf=str(cover_path),
             )
             + "\n",
             encoding="utf-8",
@@ -265,9 +276,13 @@ class TestImportArtifactPaths:
         assert "cover_letter_pdf" in result.errors[0].error
 
     def test_ready_to_apply_verifies_file_existence(self, tmp_path: Path, session_factory) -> None:
+        # Use an absolute path that does not exist. On Windows, /tmp/ is not
+        # absolute, so we construct a path under tmp_path that we don't create.
+        nonexistent_cv = tmp_path / "nonexistent_cv.pdf"
+        nonexistent_cover = tmp_path / "nonexistent_cover.pdf"
         line = _make_valid_job_line(
-            cv_pdf="/nonexistent/cv.pdf",
-            cover_letter_pdf="/nonexistent/cover.pdf",
+            cv_pdf=str(nonexistent_cv),
+            cover_letter_pdf=str(nonexistent_cover),
             status="ready_to_apply",
         )
         queue_path = tmp_path / "queue.jsonl"
