@@ -37,12 +37,21 @@ class Settings(BaseModel):
     siemens_repo: Path | None = Field(default=None)
     browser_headless: bool = Field(default=False)
     submit_mode: SubmitMode = Field(default="review")
-    # Execution mode: sequential (default) runs the pipeline phases one
-    # after another per job. Parallel allows ready-to-apply jobs to be
-    # processed while the orchestrator continues queuing more.
+    # Execution mode: sequential (default) runs the UAA apply pipeline
+    # one job at a time. Parallel allows ready-to-apply jobs to be
+    # processed concurrently by a thread pool bounded by apply_workers.
+    # NOTE: This only parallelizes the UAA apply phase (the
+    # PipelineOrchestrator.run loop). It does NOT parallelize
+    # JobHunter's scan/evaluate/tailor phases — those run in JobHunter,
+    # not in UAA. The scan_workers/evaluate_workers/tailor_workers
+    # config fields are reserved for future JobHunter-side concurrency
+    # but are not yet wired to any parallel execution in this branch.
     execution_mode: ExecutionMode = Field(default="sequential")
     # Worker counts for each phase. Conservative defaults (1 = serial).
-    # Increasing these enables concurrent processing within each phase.
+    # Currently, only apply_workers is used (by the UAA pipeline
+    # orchestrator's parallel mode). scan_workers, evaluate_workers,
+    # and tailor_workers are reserved for future JobHunter-side
+    # parallelism and have no effect in this branch.
     scan_workers: int = Field(default=1, ge=1, le=16)
     evaluate_workers: int = Field(default=1, ge=1, le=16)
     tailor_workers: int = Field(default=1, ge=1, le=16)
