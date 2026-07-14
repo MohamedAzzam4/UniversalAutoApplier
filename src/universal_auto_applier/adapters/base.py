@@ -31,9 +31,18 @@ class ApplicationAdapter(ABC):
     and override the phase methods they support. The default implementations
     return ``AdapterResult.failed`` so that calling an unsupported phase is
     safe and produces a structured result rather than a crash.
+
+    ``is_trusted`` defaults to False. Only adapters that wrap a proven,
+    trusted workflow (e.g. :class:`SiemensAdapter` wrapping the existing
+    Siemens ``ApplyWorkflow``) should set ``is_trusted = True``. The
+    pipeline orchestrator uses ``is_trusted`` to decide whether
+    ``submit_or_pause`` may be called after the review gate approves.
+    Untrusted adapters never submit, even when the review state is
+    approved — their ``submit_or_pause`` always returns ``review_ready``.
     """
 
     platform: Platform = Platform.UNKNOWN
+    is_trusted: bool = False
 
     @abstractmethod
     def can_handle(self, job: ApplicationJob) -> bool:

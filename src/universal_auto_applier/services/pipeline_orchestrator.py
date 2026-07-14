@@ -116,7 +116,25 @@ class PipelineOrchestrator:
         self._log_buffer: list[dict[str, Any]] = []
 
     def _build_default_registry(self) -> AdapterRegistry:
-        """Build the default adapter registry from settings."""
+        """Build the default adapter registry from settings.
+
+        Registration order matters: the registry selects the first
+        adapter whose ``can_handle`` returns True. Siemens is registered
+        first (trusted, narrow hostname match), then the five ATS
+        platform adapters (each with a narrow hostname match), then
+        the Generic fallback last (its ``can_handle`` always returns
+        True).
+        """
+        from universal_auto_applier.adapters.greenhouse_adapter import GreenhouseAdapter
+        from universal_auto_applier.adapters.lever_adapter import LeverAdapter
+        from universal_auto_applier.adapters.linkedin_easy_apply_adapter import (
+            LinkedInEasyApplyAdapter,
+        )
+        from universal_auto_applier.adapters.smartrecruiters_adapter import (
+            SmartRecruitersAdapter,
+        )
+        from universal_auto_applier.adapters.workday_adapter import WorkdayAdapter
+
         registry = AdapterRegistry()
         siemens_config = SiemensAdapterConfig(
             repo_path=self.settings.siemens_repo,
@@ -124,7 +142,12 @@ class PipelineOrchestrator:
             headless=self.settings.browser_headless,
         )
         registry.register(SiemensAdapter(siemens_config))
-        registry.register(GenericAdapter())
+        registry.register(GreenhouseAdapter(self.candidate))
+        registry.register(LeverAdapter(self.candidate))
+        registry.register(WorkdayAdapter(self.candidate))
+        registry.register(SmartRecruitersAdapter(self.candidate))
+        registry.register(LinkedInEasyApplyAdapter(self.candidate))
+        registry.register(GenericAdapter(self.candidate))
         return registry
 
     def _log(self, level: str, message: str, **kwargs: Any) -> None:
@@ -218,7 +241,13 @@ class PipelineOrchestrator:
                 return
 
             # Route: trusted adapter vs generic.
-            if adapter.__class__.__name__ == "SiemensAdapter":
+            # ``is_trusted`` is a class-level attribute on ApplicationAdapter
+            # (default False). Only adapters that wrap a proven workflow
+            # (e.g. SiemensAdapter) set it to True. All ATS platform adapters
+            # (Greenhouse, Lever, Workday, SmartRecruiters, LinkedIn Easy Apply)
+            # and the Generic fallback are untrusted and route through the
+            # generic path, which never submits.
+            if getattr(adapter, "is_trusted", False):
                 self._run_trusted_adapter_path(job, adapter)
             else:
                 self._run_generic_path(job, adapter, fixture_html)

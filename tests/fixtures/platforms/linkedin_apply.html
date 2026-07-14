@@ -1,0 +1,34 @@
+<!doctype html>
+<html lang="en">
+<head>
+    <title>LinkedIn - Easy Apply - Senior Backend Engineer</title>
+</head>
+<body>
+    <h1>Apply to Senior Backend Engineer at CloudCorp</h1>
+    <form action="/linkedin.com/jobs/apply/submit" method="post" id="li-apply-form">
+        <label for="full_name">Full name</label>
+        <input type="text" id="full_name" name="full_name" required>
+
+        <label for="email">Email address</label>
+        <input type="email" id="email" name="email" required>
+
+        <label for="phone">Phone number</label>
+        <input type="tel" id="phone" name="phone">
+
+        <label for="resume">Resume</label>
+        <input type="file" id="resume" name="resume" accept=".pdf" required>
+
+        <label for="work_auth">Are you authorized to work in the EU?</label>
+        <select id="work_auth" name="work_auth" required>
+            <option value="">Select an option</option>
+            <option value="yes">Yes</option>
+            <option value="no">No</option>
+        </select>
+
+        <label for="years_exp">Years of experience</label>
+        <input type="number" id="years_exp" name="years_exp" min="0" max="50">
+
+        <button type="submit" id="submit-app">Submit application</button>
+    </form>
+</body>
+</html>
