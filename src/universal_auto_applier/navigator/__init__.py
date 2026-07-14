@@ -10,6 +10,13 @@ See ``docs/generalization/ROADMAP.md`` Phase 3 for details.
 
 from __future__ import annotations
 
+from universal_auto_applier.navigator.apply_path_finder import (
+    LiveClickable,
+    LivePageAnalysis,
+    analyze_page,
+    choose_safe_action,
+    click_action,
+)
 from universal_auto_applier.navigator.clickable_classifier import (
     ClassificationResult,
     classify_clickable,
@@ -30,4 +37,9 @@ __all__ = [
     "ExplorationResult",
     "ExplorationStep",
     "DEFAULT_MAX_STEPS",
+    "LiveClickable",
+    "LivePageAnalysis",
+    "analyze_page",
+    "choose_safe_action",
+    "click_action",
 ]

@@ -16,6 +16,7 @@ from universal_auto_applier.form_engine.field_mapper import (
     map_fields,
 )
 from universal_auto_applier.form_engine.fill_engine import fill_form
+from universal_auto_applier.form_engine.live_executor import LiveFormExecution, execute_live_form
 from universal_auto_applier.form_engine.schema_extractor import extract_form_fields
 
 __all__ = [
@@ -24,4 +25,6 @@ __all__ = [
     "map_fields",
     "fill_form",
     "CONFIDENCE_THRESHOLD",
+    "LiveFormExecution",
+    "execute_live_form",
 ]

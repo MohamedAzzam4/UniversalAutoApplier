@@ -36,6 +36,10 @@ class Settings(BaseModel):
     jobhunter_queue: Path | None = Field(default=None)
     siemens_repo: Path | None = Field(default=None)
     browser_headless: bool = Field(default=False)
+    browser_profile_dir: Path | None = Field(default=None)
+    browser_channel: str | None = Field(default=None)
+    browser_timeout_ms: int = Field(default=30_000, ge=1_000, le=120_000)
+    browser_max_steps: int = Field(default=20, ge=1, le=100)
     submit_mode: SubmitMode = Field(default="review")
     # Execution mode: sequential (default) runs the UAA apply pipeline
     # one job at a time. Parallel allows ready-to-apply jobs to be
@@ -136,6 +140,10 @@ def load_settings(env: dict[str, str] | None = None) -> Settings:
         jobhunter_queue=_get_path("UAA_JOBHUNTER_QUEUE"),
         siemens_repo=_get_path("UAA_SIEMENS_REPO"),
         browser_headless=browser_headless,
+        browser_profile_dir=_get_path("UAA_BROWSER_PROFILE_DIR"),
+        browser_channel=source.get("UAA_BROWSER_CHANNEL", "").strip() or None,
+        browser_timeout_ms=_parse_int("UAA_BROWSER_TIMEOUT_MS", 30_000, 1_000, 120_000),
+        browser_max_steps=_parse_int("UAA_BROWSER_MAX_STEPS", 20, 1, 100),
         submit_mode=submit_mode_raw,  # type: ignore[arg-type]
         execution_mode=execution_mode_raw,  # type: ignore[arg-type]
         scan_workers=_parse_int("UAA_SCAN_WORKERS", 1),

@@ -79,6 +79,8 @@ def profile_from_metadata(metadata: dict[str, Any] | None) -> CandidateProfile |
         "current_position",
         "website",
         "github_url",
+        "salutation",
+        "academic_title",
     }
     filtered: dict[str, Any] = {
         k: v for k, v in snap.items() if k in known_fields and v is not None
@@ -183,6 +185,8 @@ def profile_from_config(config_path: Path | None = None) -> CandidateProfile | N
             city=city,
             country=country,
             current_position=str(subtitle_raw) if subtitle_raw else "",
+            salutation=str(cand.get("salutation", "")) or None,
+            academic_title=str(cand.get("academic_title", "")) or None,
         )
         logger.info(
             "candidate profile loaded from %s: email=%s, name=%s",

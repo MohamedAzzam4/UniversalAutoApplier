@@ -579,6 +579,8 @@ class CandidateProfile(BaseModel):
     current_position: str | None = None
     website: str | None = None
     github_url: str | None = None
+    salutation: str | None = None
+    academic_title: str | None = None
 
 
 class FillResult(BaseModel):
