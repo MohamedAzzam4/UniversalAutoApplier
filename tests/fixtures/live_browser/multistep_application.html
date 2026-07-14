@@ -1,6 +1,6 @@
 <!doctype html>
 <html lang="en">
-<head><meta charset="utf-8"><title>Multi-step application</title></head>
+<head><meta charset="utf-8"><title>Multi-step application - Step 1</title></head>
 <body data-submitted="false">
   <main>
     <h1>Step 1: Personal Information</h1>
@@ -17,24 +17,9 @@
         <label><input type="radio" name="docker_exp" value="No"> No</label>
       </fieldset>
 
-      <button type="button" id="next-btn">Next</button>
+      <a href="multistep_step2.html" id="next-btn" class="uaa-btn">Next</a>
       <button type="submit" id="submit-btn" style="display:none">Submit application</button>
     </form>
   </main>
-  <script>
-    document.getElementById('next-btn').addEventListener('click', function() {
-      var step1 = document.getElementById('step1');
-      var dockerChecked = document.querySelector('input[name="docker_exp"]:checked');
-      if (dockerChecked && dockerChecked.value === 'Yes') {
-        var condField = document.createElement('fieldset');
-        condField.id = 'conditional-field';
-        condField.innerHTML = '<legend>How many years of Docker experience?</legend>' +
-          '<input id="docker_years" name="docker_years" type="number" required>';
-        step1.insertBefore(condField, document.getElementById('next-btn'));
-      }
-      document.getElementById('next-btn').style.display = 'none';
-      document.getElementById('submit-btn').style.display = 'block';
-    });
-  </script>
 </body>
 </html>

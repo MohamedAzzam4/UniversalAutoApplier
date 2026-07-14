@@ -257,6 +257,7 @@
     } catch (err) {
       console.error("[UAA] interventions load failed", err);
     }
+    await updateResumeVisibility();
   }
 
   async function resolveIntervention(ivId, action, rememberChecked) {
@@ -274,7 +275,7 @@
     if (action === "approve" || action === "edit") {
       answer = prompt("Enter the answer:");
       if (answer === null) return; // cancelled
-      saveToMemory = rememberChecked || confirm("Save this answer to memory for future reuse?");
+      saveToMemory = rememberChecked;
     }
 
     try {
@@ -283,10 +284,66 @@
         answer: answer || undefined,
         save_to_memory: saveToMemory,
       });
-      loadInterventions();
+      await loadInterventions();
       loadStatus();
     } catch (err) {
       alert("Failed to resolve: " + err.message);
+    }
+  }
+
+  // ---- Resume / Retry ----
+  document.getElementById("resume-btn")?.addEventListener("click", async () => {
+    const btn = document.getElementById("resume-btn");
+    const msg = document.getElementById("resume-msg");
+    if (btn) btn.disabled = true;
+    if (msg) msg.textContent = "Retrying application...";
+    try {
+      // Find the most recently resolved intervention's application_id.
+      const data = await fetchJSON("/api/interventions?pending_only=false");
+      const resolved = data.interventions.filter(iv => iv.status !== "pending");
+      if (resolved.length === 0) {
+        if (msg) msg.textContent = "No resolved interventions to resume.";
+        if (btn) btn.disabled = false;
+        return;
+      }
+      const appId = resolved[0].application_id;
+      const resp = await postJSON(`/api/queue/${appId}/retry`, {});
+      if (msg) msg.textContent = "Application re-queued. Starting pipeline...";
+      // Start the pipeline for this application.
+      try {
+        await postJSON("/api/pipeline/start", { fixture_html: null, max_jobs: 1 });
+        if (msg) msg.textContent = "Pipeline completed. Check status.";
+      } catch (pipelineErr) {
+        if (msg) msg.textContent = "Pipeline error: " + pipelineErr.message;
+      }
+      loadStatus();
+    } catch (err) {
+      if (msg) msg.textContent = "Retry failed: " + err.message;
+    } finally {
+      if (btn) btn.disabled = false;
+    }
+  });
+
+  async function updateResumeVisibility() {
+    const section = document.getElementById("resume-section");
+    const btn = document.getElementById("resume-btn");
+    if (!section || !btn) return;
+    try {
+      // Fetch ALL interventions (pending + resolved).
+      const allData = await fetchJSON("/api/interventions?pending_only=false");
+      const hasAny = allData.total > 0;
+      if (hasAny) {
+        // Show the resume button whenever there are any interventions
+        // (resolved or pending). The click handler checks at click time
+        // whether retry is actually possible.
+        section.style.display = "block";
+        btn.disabled = false;
+      } else {
+        section.style.display = "none";
+      }
+    } catch (err) {
+      console.error("[UAA] updateResumeVisibility failed:", err);
+      section.style.display = "none";
     }
   }
 

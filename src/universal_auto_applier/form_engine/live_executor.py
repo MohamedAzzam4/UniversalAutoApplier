@@ -347,11 +347,18 @@ def execute_live_form(
     candidate: CandidateProfile,
     job: ApplicationJob,
 ) -> LiveFormExecution:
-    """Fill the current rendered form page and upload known documents."""
+    """Fill the current rendered form page and upload known documents.
+
+    After filling radio/select/checkbox fields that may trigger conditional
+    field revelation (via JavaScript change handlers), the executor re-observes
+    the page to detect newly visible fields. This handles conditional questions
+    that appear only after a parent answer is selected.
+    """
     targets = _extract_live_fields(page)
     target_by_token = {target.token: target for target in targets}
     summary = fill_form([target.field for target in targets], candidate, job)
     execution = LiveFormExecution()
+    filled_tokens: set[str] = set()
 
     for result in summary.results:
         target = target_by_token[result.field_selector]
@@ -361,11 +368,14 @@ def execute_live_form(
             try:
                 _execute_field(target, result.value)
                 if target.field.type == "file":
-                    # File inputs commonly trigger an asynchronous ATS upload.
-                    # Give the page's change handler time to transfer and render
-                    # its completion/error state before evidence is captured.
                     page.wait_for_timeout(1_000)
+                elif target.field.type in ("radio", "select", "checkbox"):
+                    # Radio/select/checkbox changes may trigger JavaScript
+                    # that reveals conditional fields. Wait briefly for the
+                    # DOM to update.
+                    page.wait_for_timeout(500)
                 execution.filled += 1
+                filled_tokens.add(target.token)
             except Exception as exc:
                 status = "failed"
                 explanation = f"Playwright fill failed: {exc}"
@@ -404,6 +414,63 @@ def execute_live_form(
                 field_token=target.token,
             )
         )
+
+    # Re-observe the page after filling to detect newly revealed
+    # conditional fields (e.g., a text input that appears only after
+    # selecting "Yes" on a radio question).
+    #
+    # Bounded: this is a SINGLE re-observation pass, not a loop. It
+    # processes only fields that were NOT in the initial extraction.
+    # It does not recursively re-observe after filling revealed fields.
+    # This prevents infinite loops and avoids re-filling unchanged fields.
+    _MAX_REOBSERVE_PASSES = 1
+    for _pass in range(_MAX_REOBSERVE_PASSES):
+        if not filled_tokens:
+            break
+        new_targets = _extract_live_fields(page)
+        existing_tokens = {f.field_token for f in execution.fields if f.field_token}
+        revealed_targets = [
+            t
+            for t in new_targets
+            if t.token not in existing_tokens and t.token not in filled_tokens
+        ]
+        if not revealed_targets:
+            break
+        # Process the newly revealed fields with the fill engine.
+        revealed_fields = [t.field for t in revealed_targets]
+        revealed_summary = fill_form(revealed_fields, candidate, job)
+        revealed_by_token = {t.token: t for t in revealed_targets}
+
+        for result in revealed_summary.results:
+            target = revealed_by_token.get(result.field_selector)
+            if target is None:
+                continue
+            status = result.status
+            explanation = result.explanation
+            if status == "filled" and result.value is not None:
+                try:
+                    _execute_field(target, result.value)
+                    execution.filled += 1
+                except Exception as exc:
+                    status = "failed"
+                    explanation = f"Playwright fill failed: {exc}"
+
+            if target.field.required and status in {"blocked", "intervention_needed", "failed"}:
+                execution.required_unresolved += 1
+            execution.fields.append(
+                LiveFieldRecord(
+                    page_url=page.url,
+                    selector=target.selector_hint,
+                    label=target.field.label,
+                    field_type=target.field.type,
+                    status=cast(Any, status),
+                    source=result.source,
+                    explanation=explanation,
+                    field_token=target.token,
+                )
+            )
+        # Only newly filled tokens from this pass could trigger another
+        # reveal, but we stop here (bounded to 1 pass).
 
     execution.validation_errors = _validation_errors(page)
     return execution
