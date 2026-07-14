@@ -1,0 +1,22 @@
+<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8"><title>Radio group without fieldset</title></head>
+<body data-submitted="false">
+  <main>
+    <h1>Bare Radio Group</h1>
+    <form onsubmit="document.body.dataset.submitted='true'; return false;">
+      <label for="first_name">First name</label>
+      <input id="first_name" name="first_name" required>
+
+      <label for="email">Email address</label>
+      <input id="email" name="email" type="email" required>
+
+      <p>Do you have experience with Kubernetes?</p>
+      <label><input type="radio" name="k8s_exp" value="Yes" required> Yes</label>
+      <label><input type="radio" name="k8s_exp" value="No"> No</label>
+
+      <button type="submit">Submit application</button>
+    </form>
+  </main>
+</body>
+</html>

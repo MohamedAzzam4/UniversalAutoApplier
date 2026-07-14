@@ -44,6 +44,15 @@ class LiveFieldRecord(BaseModel):
     category: str = ""
     risk_level: str = ""
     requires_confirmation: bool = False
+    # For radio/select/checkbox: available option labels.
+    options: list[str] = Field(default_factory=list[str])
+    # For radio/checkbox/select: value currently selected in the DOM, recorded
+    # separately from ``proposed_answer`` so callers can distinguish "what the
+    # form already had" from "what the runner filled".
+    selected_value: str = ""
+    # The value actually written by the runner (deterministic or LLM). Empty
+    # when no fill was attempted (skipped/blocked/intervention_needed).
+    filled_value: str = ""
 
 
 class LiveUploadRecord(BaseModel):

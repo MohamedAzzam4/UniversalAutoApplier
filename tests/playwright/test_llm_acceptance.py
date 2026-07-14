@@ -201,7 +201,7 @@ class TestConditionalQuestion:
         self, context: BrowserContext, fixture_server: str, tmp_path: Path
     ) -> None:
         """Mocked Gemma answers Docker parent. JS reveals child field.
-        Executor re-observes and detects it. Exact assertions.
+        Executor re-observes and detects it. Exact assertions, no `or "failed"`.
         """
         url = f"{fixture_server}/conditional_application.html"
         job = _make_job(tmp_path, url, "cond-1")
@@ -240,19 +240,28 @@ class TestConditionalQuestion:
 
         # Exact field record with that label.
         child = next(f for f in report.fields if f.label == "How many years of Docker experience?")
-        # Exact field token exists (non-empty).
+        # Exact stable token exists (non-empty).
         assert child.field_token != ""
-        # Exact status: the child field is required and not deterministically
-        # mappable. The LLM mock may try to answer it and fail (it's a
-        # number field), or the fill engine may leave it as intervention_needed.
-        # Both "failed" and "intervention_needed" count as unresolved.
-        assert child.status in ("intervention_needed", "failed"), (
-            f"Expected intervention_needed or failed, got {child.status}"
+        # Exact field type is number.
+        assert child.field_type == "number"
+        # Exact status: intervention_needed (the LLM mock returns "Yes"
+        # which fails typed-answer validation for a number field — never
+        # "failed", because a safely-unresolved question is not a failure).
+        assert child.status == "intervention_needed", (
+            f"Expected intervention_needed, got {child.status!r}. "
+            f"Explanation: {child.explanation!r}"
         )
 
-        # Exact unresolved count is 1.
-        unresolved = [f for f in report.fields if f.status in ("intervention_needed", "failed")]
-        assert len(unresolved) == 1
+        # Status "failed" is prohibited anywhere in the report.
+        failed = [f for f in report.fields if f.status == "failed"]
+        assert failed == [], f"No field should be 'failed', got: {failed}"
+
+        # Exact pending count is 1.
+        pending = [f for f in report.fields if f.status == "intervention_needed"]
+        assert len(pending) == 1, (
+            f"Expected exactly 1 intervention_needed, got {len(pending)}: "
+            f"{[(f.label, f.status) for f in report.fields]}"
+        )
 
         # Exact final status.
         assert report.status == "needs_user_input"
@@ -269,7 +278,8 @@ class TestMultiStepForm:
         self, context: BrowserContext, fixture_server: str, tmp_path: Path
     ) -> None:
         """Step 1 filled, safe Next clicked, step 2 reached.
-        Step 2 has required Kubernetes question → needs_user_input.
+        Step 2 has required Kubernetes radio question. Exact assertions on
+        the radio group — no weakening to assert an individual option label.
         """
         url = f"{fixture_server}/multistep_application.html"
         job = _make_job(
@@ -305,38 +315,52 @@ class TestMultiStepForm:
         # Exact step-2 URL.
         assert "multistep_step2" in report.final_url
 
-        # Exact Kubernetes field — the executor extracts radio groups
-        # by their nearby_text/legend. The label may be the legend text
-        # or the radio option text. Check for the legend in nearby_text.
+        # Exact Kubernetes radio group field — must be the question text
+        # (legend), not the "Yes"/"No" option labels. The executor extracts
+        # one logical radio-group field whose label IS the question.
         k8s = next(
-            (
-                f
-                for f in report.fields
-                if "kubernetes" in f.label.lower()
-                or "kubernetes" in (getattr(f, "field_token", "") or "").lower()
-                or any("kubernetes" in s.lower() for s in [f.label])
-            ),
+            (f for f in report.fields if f.label == "Do you have experience with Kubernetes?"),
             None,
         )
-        # If the executor doesn't use the legend as label, check by
-        # looking at fields from step 2 (the second set of fields).
-        if k8s is None:
-            # Step 2 fields are the ones after the first 3 (step 1).
-            step2_fields = report.fields[3:] if len(report.fields) > 3 else []
-            # The Kubernetes radio group should be among step 2 fields.
-            k8s = next(
-                (f for f in step2_fields if f.field_type == "radio"),
-                None,
-            )
-        assert k8s is not None, f"Kubernetes radio field not found in: {labels}"
+        assert k8s is not None, (
+            f"Kubernetes radio group with exact question label not found in: {labels}"
+        )
+
+        # Exact stable group token exists (non-empty).
         assert k8s.field_token != ""
 
-        # The runner fills all fields on step 2 (the candidate CV mentions
-        # Kubernetes, so the Docker/Kubernetes questions are answered by
-        # _try_positive_candidate_evidence). The submit button on step 2
-        # is detected → review_ready.
+        # Exact field type is radio.
+        assert k8s.field_type == "radio"
+
+        # Options include both Yes and No.
+        assert "Yes" in k8s.options, f"Options missing 'Yes': {k8s.options}"
+        assert "No" in k8s.options, f"Options missing 'No': {k8s.options}"
+
+        # Selected answer is recorded separately (filled_value, distinct
+        # from the option labels and from proposed_answer).
+        assert k8s.filled_value != "", (
+            f"Kubernetes radio group should have a filled_value recorded separately, "
+            f"got empty. Field: {k8s!r}"
+        )
+        assert k8s.filled_value in ("Yes", "No"), (
+            f"Filled value must be one of the available options, got {k8s.filled_value!r}"
+        )
+
+        # The runner fills the Kubernetes question via deterministic
+        # positive-evidence mapping (CV mentions Kubernetes). After the
+        # fill, the runner detects the Submit button on step 2 and stops
+        # at review_ready.
         assert report.status == "review_ready", f"Expected review_ready, got {report.status}"
+
+        # Final Submit was not clicked.
         assert report.submitted is False
+
+        # Confirm the page's data-submitted attribute is still "false".
+        if report.dom_snapshot_path:
+            dom = Path(report.dom_snapshot_path).read_text(encoding="utf-8")
+            assert 'data-submitted="false"' in dom or "data-submitted='false'" in dom, (
+                "Page data-submitted should be 'false' — the submit button was clicked!"
+            )
 
 
 # ---------------------------------------------------------------------------

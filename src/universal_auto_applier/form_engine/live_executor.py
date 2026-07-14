@@ -61,8 +61,81 @@ _FIELD_METADATA_JS = r"""
     required: el.required || el.getAttribute('aria-required') === 'true' ||
       /\*/.test(label) || /\*/.test(nearby),
     value: el.value || '',
+    checked: el.checked || false,
     placeholder: el.getAttribute('placeholder') || ''
   };
+}
+"""
+
+# Dedicated metadata extractor for radio groups. Returns the question text
+# (from fieldset legend, aria-labelledby, aria-label, or nearest group
+# container) and the currently-checked radio's value.
+#
+# This must NOT use the option label (e.g. "Yes"/"No") as the question text,
+# because that loses the actual question being asked.
+_RADIO_GROUP_METADATA_JS = r"""
+(radioArray) => {
+  const text = (node) => (node && (node.innerText || node.textContent) || '').trim();
+  const radios = radioArray || [];
+  if (radios.length === 0) return { questionText: '', selectedValue: '' };
+  const first = radios[0];
+
+  // 1. Fieldset legend (highest priority).
+  const fieldset = first.closest('fieldset');
+  const legend = fieldset ? fieldset.querySelector('legend') : null;
+  const legendText = text(legend);
+
+  // 2. aria-labelledby on any radio (points to a separate label element).
+  let labelledByText = '';
+  for (const r of radios) {
+    const lb = r.getAttribute('aria-labelledby');
+    if (lb) {
+      const el = document.getElementById(lb);
+      if (el) { labelledByText = text(el); break; }
+    }
+  }
+
+  // 3. aria-label on any radio.
+  let ariaLabelText = '';
+  for (const r of radios) {
+    const al = r.getAttribute('aria-label');
+    if (al) { ariaLabelText = al.trim(); break; }
+  }
+
+  // 4. Nearest [role="group"] or .form-group / .field / .question container.
+  const container = first.closest(
+    '[role="group"], .form-group, .field-border, .field, .question, .control'
+  );
+  let containerAriaLabel = '';
+  let containerLabelledByText = '';
+  if (container) {
+    const cal = container.getAttribute('aria-label');
+    if (cal) containerAriaLabel = cal.trim();
+    const clb = container.getAttribute('aria-labelledby');
+    if (clb) {
+      const el = document.getElementById(clb);
+      if (el) containerLabelledByText = text(el);
+    }
+  }
+
+  // Question text priority: legend > aria-labelledby (radio) > aria-label
+  // (radio) > container aria-labelledby > container aria-label > container
+  // text > name attribute. Never falls back to an option label.
+  const questionText = legendText
+    || labelledByText
+    || ariaLabelText
+    || containerLabelledByText
+    || containerAriaLabel
+    || (container ? text(container) : '')
+    || first.getAttribute('name') || '';
+
+  // Selected value: the value of the checked radio, if any.
+  let selectedValue = '';
+  for (const r of radios) {
+    if (r.checked) { selectedValue = r.value || ''; break; }
+  }
+
+  return { questionText, selectedValue };
 }
 """
 
@@ -203,20 +276,55 @@ def _extract_live_fields(page: Page) -> list[_LiveFieldTarget]:
                 target_locator = frame.locator(group_selector)
                 options = []
                 required = False
-                nearby = ""
+                question_label = ""
+                selected_value = ""
                 for option_index in range(target_locator.count()):
                     option_locator = target_locator.nth(option_index)
                     option_meta = _metadata(option_locator)
+                    option_value = str(option_meta.get("value", ""))
+                    option_label = str(option_meta.get("label", ""))
+                    is_checked = bool(option_meta.get("checked", False))
                     options.append(
                         FieldOption(
-                            value=str(option_meta.get("value", "")),
-                            label=str(option_meta.get("label", "")),
+                            value=option_value,
+                            label=option_label,
+                            selected=is_checked,
                         )
                     )
                     required = required or bool(option_meta.get("required", False))
-                    nearby = nearby or str(option_meta.get("nearby", ""))
+                    if is_checked:
+                        selected_value = option_value
+                    # Capture the question text from the first radio's
+                    # nearby text (legend / aria / container). This is the
+                    # fallback if the dedicated radio-group JS below fails
+                    # or returns empty.
+                    if not question_label:
+                        question_label = str(option_meta.get("nearby", ""))
+
+                # Use the dedicated radio-group metadata extractor for the
+                # authoritative question text and selected value. It knows
+                # how to distinguish the question (legend/aria) from the
+                # option labels (Yes/No).
+                try:
+                    group_meta_raw = target_locator.evaluate_all(_RADIO_GROUP_METADATA_JS)
+                    if isinstance(group_meta_raw, dict):
+                        group_meta: dict[str, Any] = cast(dict[str, Any], group_meta_raw)
+                        group_question = str(group_meta.get("questionText", "")).strip()
+                        if group_question:
+                            question_label = group_question
+                        group_selected = str(group_meta.get("selectedValue", "")).strip()
+                        if group_selected:
+                            selected_value = group_selected
+                except Exception:
+                    # Fallback to the per-option nearby text already captured.
+                    pass
+
+                # Override the per-radio metadata so the FormField reflects
+                # the logical question, not the first option's label.
+                meta["label"] = question_label
+                meta["nearby"] = question_label
+                meta["value"] = selected_value
                 meta["required"] = required
-                meta["nearby"] = nearby
 
             tag = str(meta.get("tag", "input"))
             field_model = FormField(
@@ -294,6 +402,80 @@ def _set_checkbox(locator: Locator, value: str) -> None:
     raise ValueError(f"checkbox answer must be yes/no, got {value!r}")
 
 
+def validate_typed_answer(
+    field_type: str,
+    value: str | None,
+    options: list[FieldOption] | None = None,
+) -> tuple[bool, str]:
+    """Validate a proposed answer against the field's declared type.
+
+    Runs BEFORE Playwright touches the field. Invalid answers are routed to
+    ``intervention_needed`` (never ``failed``). A safely-unresolved question
+    must not be classified as a failure.
+
+    Returns:
+        ``(True, "")`` if the value is acceptable for the field type.
+        ``(False, reason)`` if the value cannot be filled safely.
+
+    Rules:
+    - ``number``: must parse as int or float (e.g. "5", "3.5"). "Yes" is
+      rejected.
+    - ``date``: must look like a calendar date (YYYY-MM-DD, DD.MM.YYYY, or
+      MM/DD/YYYY). Free-form text is rejected.
+    - ``checkbox``: must normalize to yes/no/true/false.
+    - ``select`` and ``radio``: must match one of the available options
+      (after normalization). Answers outside the option set are rejected.
+    - ``text`` / ``textarea`` / ``email`` / ``phone``: any non-empty string
+      is accepted (the LLM validator already enforces evidence and length).
+    """
+    if value is None:
+        return False, "empty value"
+    candidate = str(value).strip()
+    if not candidate:
+        return False, "empty value"
+
+    if field_type == "number":
+        try:
+            float(candidate)
+        except ValueError:
+            return False, f"not a number: {candidate!r}"
+        return True, ""
+
+    if field_type == "date":
+        # Accept YYYY-MM-DD, DD.MM.YYYY, MM/DD/YYYY. Reject free-form text.
+        if not re.match(
+            r"^\d{4}-\d{1,2}-\d{1,2}$|^\d{1,2}\.\d{1,2}\.\d{4}$|^\d{1,2}/\d{1,2}/\d{4}$",
+            candidate,
+        ):
+            return False, f"not a date: {candidate!r}"
+        return True, ""
+
+    if field_type == "checkbox":
+        desired = _normalize_option(candidate)
+        if desired not in ("yes", "no"):
+            return False, f"checkbox answer must be yes/no, got {candidate!r}"
+        return True, ""
+
+    if field_type in ("select", "radio"):
+        opts = options or []
+        if not opts:
+            # No options known — accept and let Playwright raise if it fails.
+            return True, ""
+        desired = _normalize_option(candidate)
+        for opt in opts:
+            candidates = {
+                _normalize_option(opt.value),
+                _normalize_option(opt.label),
+            }
+            if desired in candidates:
+                return True, ""
+        option_labels = [opt.label or opt.value for opt in opts]
+        return False, f"answer {candidate!r} not in options {option_labels!r}"
+
+    # text / textarea / email / phone: any non-empty string is acceptable.
+    return True, ""
+
+
 def _execute_field(target: _LiveFieldTarget, value: str) -> None:
     field_type = target.field.type
     if field_type in {"text", "email", "phone", "textarea", "date", "number"}:
@@ -364,27 +546,46 @@ def execute_live_form(
         target = target_by_token[result.field_selector]
         status = result.status
         explanation = result.explanation
+        filled_value = ""
         if status == "filled" and result.value is not None:
-            try:
-                _execute_field(target, result.value)
-                if target.field.type == "file":
-                    page.wait_for_timeout(1_000)
-                elif target.field.type in ("radio", "select", "checkbox"):
-                    # Radio/select/checkbox changes may trigger JavaScript
-                    # that reveals conditional fields. Wait briefly for the
-                    # DOM to update.
-                    page.wait_for_timeout(500)
-                execution.filled += 1
-                filled_tokens.add(target.token)
-            except Exception as exc:
-                status = "failed"
-                explanation = f"Playwright fill failed: {exc}"
-                logger.warning(
-                    "[%s] fill failed selector=%s: %s",
+            # Validate the typed answer BEFORE Playwright touches the field.
+            # Invalid answers become intervention_needed (never ``failed``)
+            # so a safely-unresolved question is not misclassified.
+            is_valid, reason = validate_typed_answer(
+                target.field.type, result.value, target.field.options
+            )
+            if not is_valid:
+                status = "intervention_needed"
+                explanation = f"typed-answer validation failed: {reason}"
+                logger.info(
+                    "[%s] rejected typed answer for %s (%s): %s",
                     job.application_id[:12],
                     target.selector_hint,
-                    exc,
+                    target.field.type,
+                    reason,
                 )
+            else:
+                try:
+                    _execute_field(target, result.value)
+                    filled_value = str(result.value)
+                    if target.field.type == "file":
+                        page.wait_for_timeout(1_000)
+                    elif target.field.type in ("radio", "select", "checkbox"):
+                        # Radio/select/checkbox changes may trigger JavaScript
+                        # that reveals conditional fields. Wait briefly for the
+                        # DOM to update.
+                        page.wait_for_timeout(500)
+                    execution.filled += 1
+                    filled_tokens.add(target.token)
+                except Exception as exc:
+                    status = "failed"
+                    explanation = f"Playwright fill failed: {exc}"
+                    logger.warning(
+                        "[%s] fill failed selector=%s: %s",
+                        job.application_id[:12],
+                        target.selector_hint,
+                        exc,
+                    )
 
             if target.field.type == "file":
                 path = Path(result.value)
@@ -412,6 +613,9 @@ def execute_live_form(
                 source=result.source,
                 explanation=explanation,
                 field_token=target.token,
+                options=[opt.label or opt.value for opt in target.field.options],
+                selected_value=target.field.current_value,
+                filled_value=filled_value,
             )
         )
 
@@ -447,13 +651,24 @@ def execute_live_form(
                 continue
             status = result.status
             explanation = result.explanation
+            filled_value = ""
             if status == "filled" and result.value is not None:
-                try:
-                    _execute_field(target, result.value)
-                    execution.filled += 1
-                except Exception as exc:
-                    status = "failed"
-                    explanation = f"Playwright fill failed: {exc}"
+                # Validate typed answer BEFORE Playwright filling. Same rule
+                # as the initial pass: invalid → intervention_needed (not failed).
+                is_valid, reason = validate_typed_answer(
+                    target.field.type, result.value, target.field.options
+                )
+                if not is_valid:
+                    status = "intervention_needed"
+                    explanation = f"typed-answer validation failed: {reason}"
+                else:
+                    try:
+                        _execute_field(target, result.value)
+                        filled_value = str(result.value)
+                        execution.filled += 1
+                    except Exception as exc:
+                        status = "failed"
+                        explanation = f"Playwright fill failed: {exc}"
 
             if target.field.required and status in {"blocked", "intervention_needed", "failed"}:
                 execution.required_unresolved += 1
@@ -467,6 +682,9 @@ def execute_live_form(
                     source=result.source,
                     explanation=explanation,
                     field_token=target.token,
+                    options=[opt.label or opt.value for opt in target.field.options],
+                    selected_value=target.field.current_value,
+                    filled_value=filled_value,
                 )
             )
         # Only newly filled tokens from this pass could trigger another
@@ -571,52 +789,92 @@ def execute_live_form_with_llm(
                 continue
 
             if resolution.can_auto_fill and resolution.proposed_answer is not None:
-                # Try to fill the field with the LLM answer.
-                try:
-                    _execute_field(target, resolution.proposed_answer.normalized_value)
+                proposed = resolution.proposed_answer
+                fill_value = proposed.normalized_value or proposed.value
+                # Validate the LLM answer against the declared field type
+                # BEFORE Playwright touches the field. Invalid typed answers
+                # become intervention_needed (never ``failed``).
+                is_valid, reason = validate_typed_answer(
+                    target.field.type, fill_value, target.field.options
+                )
+                if not is_valid:
                     execution.fields[i] = LiveFieldRecord(
                         page_url=record.page_url,
                         selector=record.selector,
                         label=record.label,
                         field_type=record.field_type,
-                        status="filled",
+                        status="intervention_needed",
                         source="llm_grounded",
-                        explanation=resolution.proposed_answer.explanation,
+                        explanation=f"LLM answer failed type validation: {reason}",
                         field_token=token,
-                        proposed_answer=resolution.proposed_answer.value,
-                        confidence=resolution.proposed_answer.confidence,
-                        evidence_summary="; ".join(
-                            e.fact for e in resolution.proposed_answer.evidence
-                        ),
-                        category=str(resolution.category),
-                        risk_level=str(resolution.risk_level),
-                        requires_confirmation=False,
-                    )
-                    execution.filled += 1
-                    if target.field.required:
-                        execution.required_unresolved = max(0, execution.required_unresolved - 1)
-                except Exception as exc:
-                    execution.fields[i] = LiveFieldRecord(
-                        page_url=record.page_url,
-                        selector=record.selector,
-                        label=record.label,
-                        field_type=record.field_type,
-                        status="failed",
-                        source="llm_grounded",
-                        explanation=f"LLM answer fill failed: {exc}",
-                        field_token=token,
-                        proposed_answer=resolution.proposed_answer.value,
-                        confidence=resolution.proposed_answer.confidence,
+                        proposed_answer=proposed.value,
+                        confidence=proposed.confidence,
+                        evidence_summary="; ".join(e.fact for e in proposed.evidence),
                         category=str(resolution.category),
                         risk_level=str(resolution.risk_level),
                         requires_confirmation=True,
+                        options=[opt.label or opt.value for opt in target.field.options],
+                        selected_value=target.field.current_value,
                     )
-                    logger.warning(
-                        "[%s] LLM fill failed for %s: %s",
+                    logger.info(
+                        "[%s] rejected LLM typed answer for %s (%s): %s",
                         job.application_id[:12],
                         record.label,
-                        exc,
+                        target.field.type,
+                        reason,
                     )
+                else:
+                    # Try to fill the field with the validated LLM answer.
+                    try:
+                        _execute_field(target, fill_value)
+                        execution.fields[i] = LiveFieldRecord(
+                            page_url=record.page_url,
+                            selector=record.selector,
+                            label=record.label,
+                            field_type=record.field_type,
+                            status="filled",
+                            source="llm_grounded",
+                            explanation=proposed.explanation,
+                            field_token=token,
+                            proposed_answer=proposed.value,
+                            confidence=proposed.confidence,
+                            evidence_summary="; ".join(e.fact for e in proposed.evidence),
+                            category=str(resolution.category),
+                            risk_level=str(resolution.risk_level),
+                            requires_confirmation=False,
+                            options=[opt.label or opt.value for opt in target.field.options],
+                            selected_value=target.field.current_value,
+                            filled_value=fill_value,
+                        )
+                        execution.filled += 1
+                        if target.field.required:
+                            execution.required_unresolved = max(
+                                0, execution.required_unresolved - 1
+                            )
+                    except Exception as exc:
+                        execution.fields[i] = LiveFieldRecord(
+                            page_url=record.page_url,
+                            selector=record.selector,
+                            label=record.label,
+                            field_type=record.field_type,
+                            status="failed",
+                            source="llm_grounded",
+                            explanation=f"LLM answer fill failed: {exc}",
+                            field_token=token,
+                            proposed_answer=proposed.value,
+                            confidence=proposed.confidence,
+                            category=str(resolution.category),
+                            risk_level=str(resolution.risk_level),
+                            requires_confirmation=True,
+                            options=[opt.label or opt.value for opt in target.field.options],
+                            selected_value=target.field.current_value,
+                        )
+                        logger.warning(
+                            "[%s] LLM fill failed for %s: %s",
+                            job.application_id[:12],
+                            record.label,
+                            exc,
+                        )
             else:
                 # LLM could not resolve — keep as intervention_needed with
                 # LLM metadata for the dashboard.
@@ -639,6 +897,8 @@ def execute_live_form_with_llm(
                     category=str(resolution.category),
                     risk_level=str(resolution.risk_level),
                     requires_confirmation=True,
+                    options=[opt.label or opt.value for opt in target.field.options],
+                    selected_value=target.field.current_value,
                 )
             break
 
@@ -647,4 +907,9 @@ def execute_live_form_with_llm(
     return execution
 
 
-__all__ = ["LiveFormExecution", "execute_live_form", "execute_live_form_with_llm"]
+__all__ = [
+    "LiveFormExecution",
+    "execute_live_form",
+    "execute_live_form_with_llm",
+    "validate_typed_answer",
+]

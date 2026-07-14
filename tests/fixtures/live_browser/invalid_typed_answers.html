@@ -1,0 +1,31 @@
+<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8"><title>Invalid typed answer form</title></head>
+<body data-submitted="false">
+  <main>
+    <h1>Invalid Typed Answer Form</h1>
+    <form onsubmit="document.body.dataset.submitted='true'; return false;">
+      <label for="first_name">First name</label>
+      <input id="first_name" name="first_name" required>
+
+      <label for="email">Email address</label>
+      <input id="email" name="email" type="email" required>
+
+      <label for="years">How many years of Docker experience?</label>
+      <input id="years" name="years" type="number" required>
+
+      <label for="start_date">Earliest start date</label>
+      <input id="start_date" name="start_date" type="date" required>
+
+      <label for="country">Country</label>
+      <select id="country" name="country" required>
+        <option value="">Select…</option>
+        <option value="de">Germany</option>
+        <option value="us">United States</option>
+      </select>
+
+      <button type="submit">Submit application</button>
+    </form>
+  </main>
+</body>
+</html>
