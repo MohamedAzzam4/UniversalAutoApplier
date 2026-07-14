@@ -1,0 +1,38 @@
+<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8"><title>LLM application form</title></head>
+<body data-submitted="false">
+  <main>
+    <h1>LLM Application Form</h1>
+    <form onsubmit="document.body.dataset.submitted='true'; return false;">
+      <label for="first_name">First name</label>
+      <input id="first_name" name="first_name" required>
+
+      <label for="last_name">Last name</label>
+      <input id="last_name" name="last_name" required>
+
+      <label for="email">Email address</label>
+      <input id="email" name="email" type="email" required>
+
+      <label for="confirm_email">Confirm Email address</label>
+      <input id="confirm_email" name="confirm_email" type="email" required>
+
+      <fieldset>
+        <legend>Do you have experience with Python?</legend>
+        <label><input type="radio" name="python_exp" value="Yes" required> Yes</label>
+        <label><input type="radio" name="python_exp" value="No"> No</label>
+      </fieldset>
+
+      <fieldset>
+        <legend>What is your salary expectation?</legend>
+        <input id="salary" name="salary" type="text" required>
+      </fieldset>
+
+      <label for="cv">Resume / CV</label>
+      <input id="cv" name="resume" type="file" required>
+
+      <button type="submit">Submit application</button>
+    </form>
+  </main>
+</body>
+</html>
