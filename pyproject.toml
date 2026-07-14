@@ -49,6 +49,11 @@ dependencies = [
     "alembic==1.18.5",
     "playwright==1.57.0",
     "uvicorn[standard]==0.44.0",
+    # LLM question resolution: Google AI Studio (Gemma) provider.
+    # Used by universal_auto_applier.llm.qa_service for grounded form-question
+    # answering. If not installed, the service reports "llm_not_configured"
+    # and the executor creates interventions for unresolved questions.
+    "google-genai>=1.0.0",
 ]
 
 [project.optional-dependencies]

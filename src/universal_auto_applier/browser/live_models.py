@@ -37,6 +37,13 @@ class LiveFieldRecord(BaseModel):
     status: Literal["filled", "skipped", "blocked", "intervention_needed", "failed"]
     source: str | None = None
     explanation: str = ""
+    field_token: str = ""
+    proposed_answer: str | None = None
+    confidence: float | None = None
+    evidence_summary: str = ""
+    category: str = ""
+    risk_level: str = ""
+    requires_confirmation: bool = False
 
 
 class LiveUploadRecord(BaseModel):

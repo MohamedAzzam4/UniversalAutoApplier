@@ -401,6 +401,7 @@ def execute_live_form(
                 status=cast(Any, status),
                 source=result.source,
                 explanation=explanation,
+                field_token=target.token,
             )
         )
 
@@ -433,6 +434,13 @@ def execute_live_form_with_llm(
     - If the LLM service is not configured, unresolved fields become
       interventions (the pipeline does not crash).
 
+    Stable field identity:
+    - Each field has a ``field_token`` (e.g. ``live-field-0-3``) that is
+      assigned during DOM extraction and propagated through
+      deterministic execution → unresolved result → LLM resolution →
+      Playwright fill. This ensures two similar fields cannot receive
+      each other's answers.
+
     Args:
         page: The Playwright page with a rendered form.
         candidate: The resolved candidate profile.
@@ -451,15 +459,18 @@ def execute_live_form_with_llm(
     if execution.required_unresolved == 0:
         return execution
 
-    # For each field that was not filled, try the LLM resolver.
-    # We need to re-extract the live fields to get the locators.
+    # Re-extract live fields to get the locators (same extraction as
+    # execute_live_form, so tokens match).
     targets = _extract_live_fields(page)
+    target_by_token: dict[str, _LiveFieldTarget] = {t.token: t for t in targets}
 
-    # Build a map of field tokens that need LLM resolution.
+    # Build a set of field tokens that need LLM resolution.
+    # Uses the stable field_token propagated from execute_live_form.
     unresolved_tokens: set[str] = set()
     for record in execution.fields:
         if record.status in ("blocked", "intervention_needed", "failed"):
-            unresolved_tokens.add(_token_from_selector(record.selector))
+            if record.field_token:
+                unresolved_tokens.add(record.field_token)
 
     if not unresolved_tokens:
         return execution
@@ -470,9 +481,12 @@ def execute_live_form_with_llm(
 
     service = qa_service or create_qa_service()
 
-    # Process each unresolved field.
-    for target in targets:
-        if target.token not in unresolved_tokens:
+    # Process each unresolved field using stable token matching.
+    for token in unresolved_tokens:
+        target = target_by_token.get(token)
+        if target is None:
+            # Token not found in re-extracted targets (page may have
+            # changed). Leave as intervention_needed.
             continue
 
         # Resolve the question.
@@ -484,9 +498,9 @@ def execute_live_form_with_llm(
             answer_memory_facts=answer_memory_facts,
         )
 
-        # Find the existing field record and update it.
+        # Find the existing field record by stable token and update it.
         for i, record in enumerate(execution.fields):
-            if _token_from_selector(record.selector) != target.token:
+            if record.field_token != token:
                 continue
 
             if resolution.can_auto_fill and resolution.proposed_answer is not None:
@@ -501,9 +515,17 @@ def execute_live_form_with_llm(
                         status="filled",
                         source="llm_grounded",
                         explanation=resolution.proposed_answer.explanation,
+                        field_token=token,
+                        proposed_answer=resolution.proposed_answer.value,
+                        confidence=resolution.proposed_answer.confidence,
+                        evidence_summary="; ".join(
+                            e.fact for e in resolution.proposed_answer.evidence
+                        ),
+                        category=str(resolution.category),
+                        risk_level=str(resolution.risk_level),
+                        requires_confirmation=False,
                     )
                     execution.filled += 1
-                    # Decrement required_unresolved if this was a required field.
                     if target.field.required:
                         execution.required_unresolved = max(0, execution.required_unresolved - 1)
                 except Exception as exc:
@@ -515,6 +537,12 @@ def execute_live_form_with_llm(
                         status="failed",
                         source="llm_grounded",
                         explanation=f"LLM answer fill failed: {exc}",
+                        field_token=token,
+                        proposed_answer=resolution.proposed_answer.value,
+                        confidence=resolution.proposed_answer.confidence,
+                        category=str(resolution.category),
+                        risk_level=str(resolution.risk_level),
+                        requires_confirmation=True,
                     )
                     logger.warning(
                         "[%s] LLM fill failed for %s: %s",
@@ -523,41 +551,33 @@ def execute_live_form_with_llm(
                         exc,
                     )
             else:
-                # LLM could not resolve — keep as intervention_needed.
+                # LLM could not resolve — keep as intervention_needed with
+                # LLM metadata for the dashboard.
                 reason = resolution.refusal or resolution.unresolved_reason or "unresolved"
+                proposed = resolution.proposed_answer
                 execution.fields[i] = LiveFieldRecord(
                     page_url=record.page_url,
                     selector=record.selector,
                     label=record.label,
                     field_type=record.field_type,
                     status="intervention_needed",
-                    source="llm_grounded" if resolution.proposed_answer else None,
+                    source="llm_grounded" if proposed else None,
                     explanation=f"LLM unresolved: {reason}",
+                    field_token=token,
+                    proposed_answer=proposed.value if proposed else None,
+                    confidence=proposed.confidence if proposed else None,
+                    evidence_summary=(
+                        "; ".join(e.fact for e in proposed.evidence) if proposed else ""
+                    ),
+                    category=str(resolution.category),
+                    risk_level=str(resolution.risk_level),
+                    requires_confirmation=True,
                 )
             break
 
     # Re-check validation errors after LLM fills.
     execution.validation_errors = _validation_errors(page)
     return execution
-
-
-def _token_from_selector(selector: str) -> str:
-    """Extract the field token from a selector hint.
-
-    The live executor uses tokens like ``live-field-0-1`` as field
-    selectors. The selector hint is a human-readable CSS selector. We
-    need to map back from the hint to the token.
-
-    Since the hint is built from the field's id/name, and the token is
-    assigned sequentially, we can't directly reverse the mapping.
-    Instead, we store the token in the field record's ``source`` field
-    during LLM processing.
-
-    For now, this function is a placeholder that returns the selector
-    unchanged. The actual token matching is done by the caller using
-    the field's label and selector.
-    """
-    return selector
 
 
 __all__ = ["LiveFormExecution", "execute_live_form", "execute_live_form_with_llm"]

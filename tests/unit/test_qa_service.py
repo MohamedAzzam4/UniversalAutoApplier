@@ -152,15 +152,22 @@ class TestLLMConfig:
     def test_default_config(self) -> None:
         cfg = load_llm_config(env={})
         assert cfg.provider == "gemma"
-        assert cfg.model == "gemma-4-26b-a4b-it"
+        assert cfg.model is None  # Not defaulted; user must set explicitly.
         assert cfg.timeout_ms == 30_000
         assert cfg.retry_count == 2
         assert cfg.min_auto_fill_confidence == 0.8
-        assert not cfg.is_configured  # No API key.
+        assert not cfg.is_configured  # No API key and no model.
 
-    def test_config_with_api_key(self) -> None:
+    def test_config_with_api_key_only_not_configured(self) -> None:
+        """API key alone is not enough — model must also be set."""
         cfg = load_llm_config(env={"UAA_LLM_API_KEY": "test-key"})
         assert cfg.api_key == "test-key"
+        assert not cfg.is_configured  # Missing model.
+
+    def test_config_with_api_key_and_model(self) -> None:
+        cfg = load_llm_config(env={"UAA_LLM_API_KEY": "test-key", "UAA_LLM_MODEL": "test-model"})
+        assert cfg.api_key == "test-key"
+        assert cfg.model == "test-model"
         assert cfg.is_configured
 
     def test_mock_provider_always_configured(self) -> None:
@@ -184,7 +191,7 @@ class TestLLMConfig:
 class TestMalformedJSON:
     def test_malformed_json_produces_unresolved(self) -> None:
         """Malformed JSON from the LLM produces an unresolved resolution."""
-        config = LLMServiceConfig(provider="gemma", api_key="test-key")
+        config = LLMServiceConfig(provider="gemma", api_key="test-key", model="test-model")
         service = GemmaQuestionAnsweringService(config)
 
         # Mock _call_gemma to return malformed JSON.
@@ -200,7 +207,7 @@ class TestMalformedJSON:
 
     def test_json_in_code_fence_parsed(self) -> None:
         """JSON wrapped in markdown code fences is parsed correctly."""
-        config = LLMServiceConfig(provider="gemma", api_key="test-key")
+        config = LLMServiceConfig(provider="gemma", api_key="test-key", model="test-model")
         service = GemmaQuestionAnsweringService(config)
 
         valid_json = '```json\n{"answer": "Yes", "confidence": 0.9, "evidence_facts": ["CV mentions Python"], "explanation": "found", "refused": false, "refusal_reason": ""}\n```'
@@ -216,7 +223,7 @@ class TestMalformedJSON:
 
     def test_missing_answer_field_produces_refusal(self) -> None:
         """JSON with empty answer is treated as a refusal."""
-        config = LLMServiceConfig(provider="gemma", api_key="test-key")
+        config = LLMServiceConfig(provider="gemma", api_key="test-key", model="test-model")
         service = GemmaQuestionAnsweringService(config)
 
         json_no_answer = '{"answer": "", "confidence": 0.0, "evidence_facts": [], "explanation": "", "refused": true, "refusal_reason": "no_evidence"}'
@@ -237,7 +244,9 @@ class TestMalformedJSON:
 
 class TestErrorHandling:
     def test_timeout_produces_unresolved(self) -> None:
-        config = LLMServiceConfig(provider="gemma", api_key="test-key", retry_count=0)
+        config = LLMServiceConfig(
+            provider="gemma", api_key="test-key", model="test-model", retry_count=0
+        )
         service = GemmaQuestionAnsweringService(config)
         with patch.object(service, "_call_gemma", return_value=(None, "timeout")):
             question = _make_question()
@@ -249,7 +258,9 @@ class TestErrorHandling:
         assert resolution.unresolved_reason == "timeout"
 
     def test_quota_failure_produces_unresolved(self) -> None:
-        config = LLMServiceConfig(provider="gemma", api_key="test-key", retry_count=0)
+        config = LLMServiceConfig(
+            provider="gemma", api_key="test-key", model="test-model", retry_count=0
+        )
         service = GemmaQuestionAnsweringService(config)
         with patch.object(service, "_call_gemma", return_value=(None, "quota_exceeded")):
             question = _make_question()
@@ -261,7 +272,9 @@ class TestErrorHandling:
         assert resolution.unresolved_reason == "quota_exceeded"
 
     def test_unavailable_model_produces_unresolved(self) -> None:
-        config = LLMServiceConfig(provider="gemma", api_key="test-key", retry_count=0)
+        config = LLMServiceConfig(
+            provider="gemma", api_key="test-key", model="test-model", retry_count=0
+        )
         service = GemmaQuestionAnsweringService(config)
         with patch.object(service, "_call_gemma", return_value=(None, "model_unavailable")):
             question = _make_question()

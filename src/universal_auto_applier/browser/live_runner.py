@@ -10,6 +10,7 @@ import logging
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import Any
 
 from playwright.sync_api import (
     Browser,
@@ -23,7 +24,10 @@ from playwright.sync_api import (
 from universal_auto_applier.browser.live_models import LiveClickRecord, LiveRunReport
 from universal_auto_applier.candidate_profile_loader import resolve_candidate_profile
 from universal_auto_applier.core.models import ApplicationJob, CandidateProfile
-from universal_auto_applier.form_engine.live_executor import execute_live_form
+from universal_auto_applier.form_engine.live_executor import (
+    execute_live_form,
+    execute_live_form_with_llm,
+)
 from universal_auto_applier.navigator.apply_path_finder import (
     analyze_page,
     choose_safe_action,
@@ -68,8 +72,18 @@ class LiveBrowserRunner:
         self,
         job: ApplicationJob,
         candidate: CandidateProfile | None = None,
+        qa_service: Any = None,
     ) -> LiveRunReport:
-        """Launch Chromium and execute one live dry-run."""
+        """Launch Chromium and execute one live dry-run.
+
+        Args:
+            job: The application job to apply to.
+            candidate: Optional resolved candidate profile. If None,
+                resolved from job metadata.
+            qa_service: Optional QuestionAnsweringService for LLM-backed
+                question resolution. If None, deterministic-only behavior
+                is preserved.
+        """
         artifact_dir = self._new_artifact_dir(job)
         browser: Browser | None = None
         context: BrowserContext | None = None
@@ -94,6 +108,7 @@ class LiveBrowserRunner:
                     job,
                     candidate=candidate,
                     artifact_dir=artifact_dir,
+                    qa_service=qa_service,
                 )
         except Exception as exc:
             report = LiveRunReport(
@@ -128,8 +143,19 @@ class LiveBrowserRunner:
         *,
         candidate: CandidateProfile | None = None,
         artifact_dir: Path | None = None,
+        qa_service: Any = None,
     ) -> LiveRunReport:
-        """Execute in an existing context; used by fixture tests and ``run``."""
+        """Execute in an existing context; used by fixture tests and ``run``.
+
+        Args:
+            context: The browser context to use.
+            job: The application job.
+            candidate: Optional resolved candidate profile.
+            artifact_dir: Optional directory for evidence artifacts.
+            qa_service: Optional QuestionAnsweringService for LLM-backed
+                question resolution. If None, only deterministic mapping
+                is used (existing behavior).
+        """
         run_dir = artifact_dir or self._new_artifact_dir(job)
         run_dir.mkdir(parents=True, exist_ok=True)
         resolved_candidate = candidate or resolve_candidate_profile(job.metadata)
@@ -188,7 +214,14 @@ class LiveBrowserRunner:
                     break
 
                 if analysis.is_application_form:
-                    execution = execute_live_form(page, resolved_candidate, job)
+                    # Use LLM-enhanced execution when a QA service is
+                    # provided; otherwise fall back to deterministic-only.
+                    if qa_service is not None:
+                        execution = execute_live_form_with_llm(
+                            page, resolved_candidate, job, qa_service=qa_service
+                        )
+                    else:
+                        execution = execute_live_form(page, resolved_candidate, job)
                     report.fields.extend(execution.fields)
                     report.uploads.extend(execution.uploads)
                     self._screenshot(
