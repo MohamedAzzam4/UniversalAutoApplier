@@ -20,6 +20,7 @@ from typing import Literal
 from pydantic import BaseModel, Field, field_validator
 
 SubmitMode = Literal["dry_run", "review", "trusted_auto_submit"]
+ExecutionMode = Literal["sequential", "parallel"]
 
 
 class Settings(BaseModel):
@@ -36,6 +37,20 @@ class Settings(BaseModel):
     siemens_repo: Path | None = Field(default=None)
     browser_headless: bool = Field(default=False)
     submit_mode: SubmitMode = Field(default="review")
+    # Execution mode: sequential (default) runs the pipeline phases one
+    # after another per job. Parallel allows ready-to-apply jobs to be
+    # processed while the orchestrator continues queuing more.
+    execution_mode: ExecutionMode = Field(default="sequential")
+    # Worker counts for each phase. Conservative defaults (1 = serial).
+    # Increasing these enables concurrent processing within each phase.
+    scan_workers: int = Field(default=1, ge=1, le=16)
+    evaluate_workers: int = Field(default=1, ge=1, le=16)
+    tailor_workers: int = Field(default=1, ge=1, le=16)
+    apply_workers: int = Field(default=1, ge=1, le=16)
+    # Optional path to a candidate profile YAML (JobHunter's profile.yml).
+    # Loaded by candidate_profile_loader.profile_from_config when the
+    # per-job metadata does not contain a profile snapshot.
+    candidate_profile: Path | None = Field(default=None)
 
     model_config = {"frozen": True, "extra": "ignore"}
 
@@ -91,6 +106,19 @@ def load_settings(env: dict[str, str] | None = None) -> Settings:
     browser_headless = _parse_bool(browser_headless_raw) if browser_headless_raw else False
 
     submit_mode_raw = source.get("UAA_SUBMIT_MODE", "review").strip() or "review"
+    execution_mode_raw = source.get("UAA_EXECUTION_MODE", "sequential").strip() or "sequential"
+
+    def _parse_int(name: str, default: int, min_v: int = 1, max_v: int = 16) -> int:
+        raw = source.get(name, "").strip()
+        if not raw:
+            return default
+        try:
+            val = int(raw)
+        except ValueError:
+            raise ValueError(f"{name} must be an integer, got {raw!r}") from None
+        if val < min_v or val > max_v:
+            raise ValueError(f"{name} must be between {min_v} and {max_v}, got {val}")
+        return val
 
     return Settings(
         host=host,
@@ -100,4 +128,10 @@ def load_settings(env: dict[str, str] | None = None) -> Settings:
         siemens_repo=_get_path("UAA_SIEMENS_REPO"),
         browser_headless=browser_headless,
         submit_mode=submit_mode_raw,  # type: ignore[arg-type]
+        execution_mode=execution_mode_raw,  # type: ignore[arg-type]
+        scan_workers=_parse_int("UAA_SCAN_WORKERS", 1),
+        evaluate_workers=_parse_int("UAA_EVALUATE_WORKERS", 1),
+        tailor_workers=_parse_int("UAA_TAILOR_WORKERS", 1),
+        apply_workers=_parse_int("UAA_APPLY_WORKERS", 1),
+        candidate_profile=_get_path("UAA_CANDIDATE_PROFILE"),
     )

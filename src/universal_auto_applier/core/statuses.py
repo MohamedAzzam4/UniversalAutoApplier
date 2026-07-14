@@ -56,7 +56,9 @@ ALLOWED_TRANSITIONS: dict[ApplicationStatus, frozenset[ApplicationStatus]] = {
     ),
     ApplicationStatus.REJECTED: frozenset(),
     ApplicationStatus.TAILORED: frozenset({ApplicationStatus.READY_TO_APPLY}),
-    ApplicationStatus.READY_TO_APPLY: frozenset({ApplicationStatus.QUEUED}),
+    ApplicationStatus.READY_TO_APPLY: frozenset(
+        {ApplicationStatus.QUEUED, ApplicationStatus.IN_PROGRESS}
+    ),
     ApplicationStatus.QUEUED: frozenset({ApplicationStatus.IN_PROGRESS, ApplicationStatus.SKIPPED}),
     ApplicationStatus.IN_PROGRESS: frozenset(
         {
