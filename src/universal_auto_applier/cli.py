@@ -9,6 +9,7 @@ from urllib.parse import urlsplit
 
 from playwright.sync_api import sync_playwright
 
+from universal_auto_applier.browser.live_models import LiveRunReport
 from universal_auto_applier.browser.live_runner import LiveBrowserConfig, LiveBrowserRunner
 from universal_auto_applier.candidate_profile_loader import resolve_candidate_profile
 from universal_auto_applier.config import Settings
@@ -141,7 +142,23 @@ def _live_dry_run(settings: Settings, args: argparse.Namespace) -> int:
         max_steps=args.max_steps or settings.browser_max_steps,
     )
     candidate = resolve_candidate_profile(job.metadata, settings.candidate_profile)
-    report = LiveBrowserRunner(config).run(job, candidate)
+
+    # Create the LLM QA service. When configuration is valid (API key +
+    # model), the run uses LLM-assisted question resolution. When
+    # configuration is absent, deterministic-only mode continues safely.
+    from universal_auto_applier.llm.qa_service import create_qa_service
+
+    qa_service = create_qa_service()
+    if qa_service.is_configured:
+        print("llm_mode: llm_assisted")
+    else:
+        print("llm_mode: deterministic_only")
+        qa_service = None  # Don't pass an unconfigured service.
+
+    report = LiveBrowserRunner(config).run(job, candidate, qa_service=qa_service)
+
+    # Persist interventions for unresolved/confirmation-required fields.
+    _persist_interventions(settings, job.application_id, report)
 
     print(f"status: {report.status}")
     print(f"stopped_reason: {report.stopped_reason}")
@@ -156,6 +173,38 @@ def _live_dry_run(settings: Settings, args: argparse.Namespace) -> int:
     if report.status == "needs_user_input":
         return 3
     return 2
+
+
+def _persist_interventions(settings: Settings, application_id: str, report: LiveRunReport) -> None:
+    """Persist interventions for fields that need user input.
+
+    For every LiveFieldRecord with status=intervention_needed or
+    requires_confirmation=True, create a persisted intervention using
+    the existing intervention store. Uses the deterministic intervention
+    ID to prevent duplicates on reprocessing.
+    """
+    from universal_auto_applier.core.statuses import InterventionKind
+    from universal_auto_applier.interventions.store import create_intervention
+
+    engine, session_factory = _open_store(settings)
+    try:
+        with session_scope(session_factory) as session:
+            for field in report.fields:
+                if field.status != "intervention_needed" and not field.requires_confirmation:
+                    continue
+                create_intervention(
+                    session,
+                    application_id=application_id,
+                    kind=InterventionKind.FIELD_ANSWER,
+                    question=field.label or field.field_token or "Unknown question",
+                    options=[],
+                    suggested_answer=field.proposed_answer,
+                    confidence=field.confidence,
+                    field_selector=field.field_token or field.selector,
+                    page_url=field.page_url,
+                )
+    finally:
+        engine.dispose()
 
 
 def _browser_session(settings: Settings, args: argparse.Namespace) -> int:
