@@ -297,7 +297,6 @@
     if (btn) btn.disabled = true;
     if (msg) msg.textContent = "Retrying application...";
     try {
-      // Find the most recently resolved intervention's application_id.
       const data = await fetchJSON("/api/interventions?pending_only=false");
       const resolved = data.interventions.filter(iv => iv.status !== "pending");
       if (resolved.length === 0) {
@@ -306,16 +305,16 @@
         return;
       }
       const appId = resolved[0].application_id;
-      const resp = await postJSON(`/api/queue/${appId}/retry`, {});
+      await postJSON(`/api/queue/${appId}/retry`, {});
       if (msg) msg.textContent = "Application re-queued. Starting pipeline...";
-      // Start the pipeline for this application.
       try {
         await postJSON("/api/pipeline/start", { fixture_html: null, max_jobs: 1 });
-        if (msg) msg.textContent = "Pipeline completed. Check status.";
+        if (msg) msg.textContent = "Pipeline completed.";
       } catch (pipelineErr) {
         if (msg) msg.textContent = "Pipeline error: " + pipelineErr.message;
       }
-      loadStatus();
+      await loadStatus();
+      await loadInterventions();
     } catch (err) {
       if (msg) msg.textContent = "Retry failed: " + err.message;
     } finally {
