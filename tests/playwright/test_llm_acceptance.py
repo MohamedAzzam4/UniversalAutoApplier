@@ -765,49 +765,29 @@ class TestDashboardResumeUI:
             page.wait_for_selector('button[data-action="approve"]', timeout=5_000)
 
             # While intervention is pending, Resume should be disabled.
-            # Wait for the resume section to appear.
             page.wait_for_selector("#resume-btn", timeout=10_000)
             resume_btn = page.locator("#resume-btn")
-            # Give updateResumeVisibility time to run.
             page.wait_for_timeout(2_000)
             assert resume_btn.is_disabled(), (
                 "Resume should be disabled while interventions are pending"
             )
 
-            # Resolve the intervention through the API (simulating what
-            # the Approve button does, but more reliably for testing).
-            # Use page.evaluate to call the API from the browser context.
-            iv_id = page.evaluate("""
-                async () => {
-                    const resp = await fetch('/api/interventions?pending_only=true');
-                    const data = await resp.json();
-                    if (data.interventions.length > 0) {
-                        return data.interventions[0].intervention_id;
-                    }
-                    return null;
-                }
-            """)
-            assert iv_id is not None, "Expected at least 1 pending intervention"
-            page.evaluate(
-                """
-                async (ivId) => {
-                    await fetch('/api/interventions/' + ivId + '/resolve', {
-                        method: 'POST',
-                        headers: {'Content-Type': 'application/json'},
-                        body: JSON.stringify({resolution: 'approved', answer: '50000', save_to_memory: true})
-                    });
-                }
-            """,
-                iv_id,
-            )
+            # Resolve through visible UI: click Approve, enter answer in
+            # the prompt dialog, and check Remember.
+            page.on("dialog", lambda dialog: dialog.accept("50000"))
+            page.click('button[data-action="approve"]')
 
-            # Navigate to trigger a fresh loadInterventions.
+            # Wait for the intervention list to refresh (card disappears).
+            page.wait_for_selector("#intervention-list .uaa-empty", timeout=10_000)
+
+            # Navigate away and back to trigger a fresh loadInterventions
+            # + updateResumeVisibility cycle.
             page.click('a[data-view="dashboard"]')
             page.wait_for_timeout(500)
             page.click('a[data-view="interventions"]')
             page.wait_for_timeout(3_000)
 
-            # Resume should now be enabled.
+            # Resume should now be enabled (all interventions resolved).
             enabled = False
             for _attempt in range(30):
                 if resume_btn.is_enabled():
@@ -816,7 +796,7 @@ class TestDashboardResumeUI:
                 page.wait_for_timeout(500)
             assert enabled, "Resume should be enabled after all interventions resolved"
 
-            # Click Resume/Retry.
+            # Click Resume/Retry through visible UI.
             page.click("#resume-btn")
             page.wait_for_timeout(3_000)
 
