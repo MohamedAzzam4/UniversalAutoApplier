@@ -209,25 +209,47 @@
       for (const iv of data.interventions) {
         const card = document.createElement("div");
         card.className = "uaa-intervention-card";
+        const llmMeta = iv.llm_metadata || {};
+        const metaParts = [];
+        if (llmMeta.category) metaParts.push("Category: " + esc(llmMeta.category));
+        if (llmMeta.risk_level) metaParts.push("Risk: " + esc(llmMeta.risk_level));
+        if (llmMeta.evidence_summary) metaParts.push("Evidence: " + esc(llmMeta.evidence_summary));
+        if (llmMeta.unresolved_reason) metaParts.push("Reason: " + esc(llmMeta.unresolved_reason));
+        if (llmMeta.field_token) metaParts.push("Token: " + esc(llmMeta.field_token));
+        if (llmMeta.answer_source) metaParts.push("Source: " + esc(llmMeta.answer_source));
+        const metaHtml = metaParts.length > 0
+          ? '<div class="uaa-iv-llm-meta">' + metaParts.join("<br>") + "</div>"
+          : "";
+        const optionsHtml = (iv.options && iv.options.length > 0)
+          ? '<p class="uaa-iv-options">Options: ' + iv.options.map(esc).join(", ") + "</p>"
+          : "";
         card.innerHTML = `
           <div class="uaa-iv-header">
             <span class="uaa-iv-kind">${esc(iv.kind)}</span>
             <span class="uaa-pill ${iv.status === "pending" ? "uaa-pill-not_configured" : "uaa-pill-ready"}">${esc(iv.status)}</span>
           </div>
           <p class="uaa-iv-question">${esc(iv.question)}</p>
+          ${optionsHtml}
           <p class="uaa-iv-meta">Job: ${esc(iv.application_id.substring(0, 12))}... · Confidence: ${iv.confidence != null ? iv.confidence : "—"}</p>
           ${iv.suggested_answer ? `<p class="uaa-iv-suggested">Suggested: <code>${esc(iv.suggested_answer)}</code></p>` : ""}
+          ${metaHtml}
           <div class="uaa-iv-actions" data-iv-id="${esc(iv.intervention_id)}">
             <button class="uaa-btn uaa-btn-success" data-action="approve">Approve</button>
             <button class="uaa-btn" data-action="edit">Edit</button>
             <button class="uaa-btn" data-action="skip">Skip</button>
             <button class="uaa-btn uaa-btn-danger" data-action="block">Block</button>
-          </div>`;
+          </div>
+          <label class="uaa-iv-remember">
+            <input type="checkbox" class="uaa-iv-remember-cb" checked> Remember answer
+          </label>`;
 
         // Wire action buttons
         const actions = card.querySelectorAll(".uaa-iv-actions button");
         actions.forEach((btn) => {
-          btn.addEventListener("click", () => resolveIntervention(iv.intervention_id, btn.dataset.action));
+          btn.addEventListener("click", () => {
+            const rememberCb = card.querySelector(".uaa-iv-remember-cb");
+            resolveIntervention(iv.intervention_id, btn.dataset.action, rememberCb ? rememberCb.checked : false);
+          });
         });
 
         container.appendChild(card);
@@ -237,7 +259,7 @@
     }
   }
 
-  async function resolveIntervention(ivId, action) {
+  async function resolveIntervention(ivId, action, rememberChecked) {
     const resolutionMap = {
       approve: "approved",
       edit: "edited",
@@ -252,7 +274,7 @@
     if (action === "approve" || action === "edit") {
       answer = prompt("Enter the answer:");
       if (answer === null) return; // cancelled
-      saveToMemory = confirm("Save this answer to memory for future reuse?");
+      saveToMemory = rememberChecked || confirm("Save this answer to memory for future reuse?");
     }
 
     try {

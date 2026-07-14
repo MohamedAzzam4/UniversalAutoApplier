@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import sys
 from pathlib import Path
+from typing import Any
 from urllib.parse import urlsplit
 
 from playwright.sync_api import sync_playwright
@@ -192,6 +193,18 @@ def _persist_interventions(settings: Settings, application_id: str, report: Live
             for field in report.fields:
                 if field.status != "intervention_needed" and not field.requires_confirmation:
                     continue
+                llm_metadata: dict[str, Any] | None = None
+                if field.category or field.risk_level or field.evidence_summary:
+                    llm_metadata = {
+                        "available_options": [],
+                        "evidence_summary": field.evidence_summary or "",
+                        "category": field.category or "",
+                        "risk_level": field.risk_level or "",
+                        "requires_confirmation": field.requires_confirmation,
+                        "unresolved_reason": field.explanation or "",
+                        "field_token": field.field_token or "",
+                        "answer_source": field.source or "",
+                    }
                 create_intervention(
                     session,
                     application_id=application_id,
@@ -202,6 +215,7 @@ def _persist_interventions(settings: Settings, application_id: str, report: Live
                     confidence=field.confidence,
                     field_selector=field.field_token or field.selector,
                     page_url=field.page_url,
+                    llm_metadata=llm_metadata,
                 )
     finally:
         engine.dispose()

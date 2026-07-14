@@ -335,6 +335,12 @@ class Intervention(BaseModel):
     field_selector: str | None = Field(default=None)
     page_url: str | None = Field(default=None)
     screenshot: str | None = Field(default=None)
+    llm_metadata: dict[str, Any] | None = Field(
+        default=None,
+        description="Structured LLM metadata: available_options, evidence_summary, "
+        "category, risk_level, requires_confirmation, unresolved_reason, "
+        "field_token, answer_source.",
+    )
     created_at: datetime
     resolved_at: datetime | None = Field(default=None)
 

@@ -20,6 +20,7 @@ from __future__ import annotations
 import hashlib
 import logging
 from datetime import UTC, datetime
+from typing import Any
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -65,6 +66,7 @@ def _row_to_intervention(row: InterventionRow) -> Intervention:
         field_selector=row.field_selector,
         page_url=row.page_url,
         screenshot=row.screenshot,
+        llm_metadata=row.llm_metadata_json,
         created_at=row.created_at,
         resolved_at=row.resolved_at,
     )
@@ -82,6 +84,7 @@ def create_intervention(
     field_selector: str | None = None,
     page_url: str | None = None,
     screenshot: str | None = None,
+    llm_metadata: dict[str, Any] | None = None,
 ) -> InterventionRow:
     """Create a new intervention or return the existing one if it already exists.
 
@@ -100,6 +103,10 @@ def create_intervention(
         field_selector: CSS selector of the related field, if applicable.
         page_url: URL of the page where the intervention was triggered.
         screenshot: Path to a screenshot, if available.
+        llm_metadata: Optional structured LLM metadata dict containing
+            available_options, evidence_summary, category, risk_level,
+            requires_confirmation, unresolved_reason, field_token,
+            answer_source.
 
     Returns:
         The :class:`InterventionRow` (newly created or existing).
@@ -128,6 +135,7 @@ def create_intervention(
         field_selector=field_selector,
         page_url=page_url,
         screenshot=screenshot,
+        llm_metadata_json=llm_metadata,
         created_at=_utcnow(),
         resolved_at=None,
     )
