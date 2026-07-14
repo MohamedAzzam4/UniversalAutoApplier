@@ -37,14 +37,18 @@ def retry_job(request: Request, application_id: str) -> RetryResponse:
     1. Checks the job exists.
     2. Rejects retry if the job is in a terminal status (applied, rejected,
        skipped, closed).
-    3. If the job is in a retryable status (failed, blocked, needs_review),
-       marks it as queued for the next pipeline run.
-    4. Does NOT execute any browser or submission action.
+    3. If the job is in needs_user_input, rejects retry if there are
+       pending interventions for that application (all blocking
+       interventions must be resolved first).
+    4. If the job is in a retryable status (failed, blocked, needs_review,
+       needs_user_input with no pending interventions), marks it as queued.
+    5. Does NOT execute any browser or submission action.
 
     The actual retry execution (re-navigation, re-filling) belongs to
     Phase 8 (pipeline orchestration).
     """
     from universal_auto_applier.core.statuses import ALLOWED_TRANSITIONS, ApplicationStatus
+    from universal_auto_applier.interventions.store import count_pending_interventions
     from universal_auto_applier.persistence.job_repository import get_application_job
     from universal_auto_applier.persistence.models import ApplicationJobRow
 
@@ -75,6 +79,16 @@ def retry_job(request: Request, application_id: str) -> RetryResponse:
                 status_code=409,
                 detail=f"Cannot retry job from status {current_status}: transition to queued not allowed",
             )
+
+        # For NEEDS_USER_INPUT, enforce that all blocking interventions
+        # are resolved before allowing retry.
+        if current_status == ApplicationStatus.NEEDS_USER_INPUT:
+            pending = count_pending_interventions(session, application_id)
+            if pending > 0:
+                raise HTTPException(
+                    status_code=409,
+                    detail=f"Cannot retry: {pending} pending intervention(s) must be resolved first",
+                )
 
         # Re-queue the job.
         row = session.get(ApplicationJobRow, application_id)
