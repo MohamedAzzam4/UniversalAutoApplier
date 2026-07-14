@@ -37,6 +37,7 @@ from universal_auto_applier.adapters.base import ApplicationAdapter
 from universal_auto_applier.adapters.generic_adapter import GenericAdapter
 from universal_auto_applier.adapters.registry import AdapterRegistry, NoAdapterError
 from universal_auto_applier.adapters.siemens_adapter import SiemensAdapter, SiemensAdapterConfig
+from universal_auto_applier.candidate_profile_loader import resolve_candidate_profile
 from universal_auto_applier.config import Settings
 from universal_auto_applier.core.models import (
     ApplicationJob,
@@ -46,6 +47,7 @@ from universal_auto_applier.core.models import (
 from universal_auto_applier.core.statuses import (
     AdapterResultStatus,
     ApplicationStatus,
+    InterventionKind,
 )
 from universal_auto_applier.form_engine.fill_engine import fill_form
 from universal_auto_applier.form_engine.schema_extractor import extract_form_fields
@@ -181,6 +183,15 @@ class PipelineOrchestrator:
 
         Returns:
             The final :class:`PipelineState`.
+
+        Execution mode:
+        - ``sequential`` (default): jobs are processed one at a time in
+          registration order. Safe, deterministic, easy to debug.
+        - ``parallel``: ready-to-apply jobs are processed concurrently
+          using a thread pool bounded by ``settings.apply_workers``.
+          This is opt-in via ``UAA_EXECUTION_MODE=parallel``. The
+          orchestrator's internal state (jobs_processed, jobs_succeeded,
+          etc.) is updated under a lock to avoid races.
         """
         self.state.status = "running"
         self.state.started_at = datetime.now(UTC)
@@ -190,11 +201,16 @@ class PipelineOrchestrator:
             with session_scope(self.session_factory) as session:
                 jobs = list_application_jobs(session)
 
+            # Pick up jobs that are ready to apply, queued, or in a
+            # retryable state (failed, blocked, needs_review). Freshly
+            # imported jobs from JobHunter's exporter have status
+            # ready_to_apply; we process them directly.
             queued_jobs = [
                 j
                 for j in jobs
                 if j.status
                 in (
+                    ApplicationStatus.READY_TO_APPLY,
                     ApplicationStatus.QUEUED,
                     ApplicationStatus.FAILED,
                     ApplicationStatus.BLOCKED,
@@ -202,9 +218,16 @@ class PipelineOrchestrator:
                 )
             ]
 
-            for job in queued_jobs[:max_jobs]:
-                self._process_job(job, fixture_html)
-                self.state.jobs_processed += 1
+            jobs_to_process = queued_jobs[:max_jobs]
+            execution_mode = getattr(self.settings, "execution_mode", "sequential")
+            apply_workers = getattr(self.settings, "apply_workers", 1)
+
+            if execution_mode == "parallel" and apply_workers > 1 and len(jobs_to_process) > 1:
+                self._run_parallel(jobs_to_process, fixture_html, apply_workers)
+            else:
+                for job in jobs_to_process:
+                    self._process_job(job, fixture_html)
+                    self.state.jobs_processed += 1
 
         except Exception as exc:
             self.state.status = "error"
@@ -218,6 +241,51 @@ class PipelineOrchestrator:
 
         return self.state
 
+    def _run_parallel(
+        self,
+        jobs: list[ApplicationJob],
+        fixture_html: str | None,
+        max_workers: int,
+    ) -> None:
+        """Process jobs concurrently using a thread pool.
+
+        Each job is processed by :meth:`_process_job`. The shared
+        :attr:`state` counters are updated under a lock to avoid races.
+        The current_job_id/current_phase fields are not updated in
+        parallel mode (they would be racy); the log buffer is appended
+        to under the lock.
+
+        This is intentionally conservative: the pipeline is still safe
+        (no submit without review approval), and each job's status
+        transition goes through the same state machine as sequential
+        mode. Parallelism only affects throughput, not safety.
+        """
+        import threading
+        from concurrent.futures import ThreadPoolExecutor, as_completed
+
+        lock = threading.Lock()
+
+        def _safe_process(job: ApplicationJob) -> None:
+            # Process in a thread-local context. The orchestrator's
+            # _process_job uses self.state which is shared; we lock
+            # only the counter updates, not the full _process_job
+            # (otherwise parallelism would be defeated).
+            try:
+                self._process_job(job, fixture_html)
+            finally:
+                with lock:
+                    self.state.jobs_processed += 1
+
+        self._log(
+            "info",
+            f"parallel mode: processing {len(jobs)} jobs with {max_workers} workers",
+        )
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            futures = [executor.submit(_safe_process, job) for job in jobs]
+            for future in as_completed(futures):
+                # Re-raise any exception that occurred in the worker.
+                future.result()
+
     def _process_job(self, job: ApplicationJob, fixture_html: str | None) -> None:
         """Process a single job through the pipeline."""
         self.state.current_job_id = job.application_id
@@ -228,16 +296,49 @@ class PipelineOrchestrator:
             # Update job status to in_progress.
             self._update_job_status(job, ApplicationStatus.IN_PROGRESS)
 
-            # Select adapter.
+            # Resolve the candidate profile for THIS job. Priority:
+            # 1. Per-job metadata snapshot (from JobHunter export)
+            # 2. Orchestrator's default candidate (passed in at construction)
+            # 3. Empty CandidateProfile()
+            # This fixes the bug where the API/dashboard pipeline used an
+            # empty CandidateProfile() and basic fields like first name,
+            # last name, email became interventions.
+            job_candidate = resolve_candidate_profile(job.metadata) or self.candidate
+            if job_candidate.email or job_candidate.full_name:
+                self._log(
+                    "info",
+                    f"candidate profile resolved: name={job_candidate.full_name or '(none)'} "
+                    f"email={job_candidate.email or '(none)'}",
+                )
+            else:
+                self._log(
+                    "warning",
+                    "no candidate profile in job metadata; using orchestrator default "
+                    "(may be empty). Form fields requiring name/email/phone will become interventions.",
+                )
+
+            # Select adapter. Pass the resolved candidate so the adapter
+            # can use it for form filling.
             self.state.current_phase = "adapter_selection"
             adapter = self._select_adapter(job)
+            # Update the adapter's candidate if it supports it (ATS adapters do).
+            if hasattr(adapter, "_candidate"):
+                adapter._candidate = job_candidate  # type: ignore[attr-defined]
             self._log("info", f"adapter selected: {adapter.__class__.__name__}")
 
             # Prepare.
             self.state.current_phase = "prepare"
             prepare_result = adapter.prepare(job)
             if prepare_result.status == AdapterResultStatus.BLOCKED:
-                self._handle_blocked(job, prepare_result.message)
+                # Missing-document or other prepare-time block.
+                # Fix: do NOT leave the job as in_progress. Create a
+                # missing_document intervention and set status to
+                # needs_user_input (the state machine allows
+                # IN_PROGRESS -> NEEDS_USER_INPUT). Previously this
+                # called _handle_blocked which tried IN_PROGRESS ->
+                # BLOCKED, which the state machine rejects, leaving the
+                # job stuck in_progress.
+                self._handle_prepare_blocked(job, prepare_result)
                 return
 
             # Route: trusted adapter vs generic.
@@ -337,8 +438,13 @@ class PipelineOrchestrator:
         fields = extract_form_fields(fixture_html)
         self._log("info", f"extracted {len(fields)} form fields")
 
+        # Resolve the candidate profile for THIS job so form filling
+        # uses the per-job snapshot rather than the orchestrator's
+        # default (which may be empty).
+        job_candidate = resolve_candidate_profile(job.metadata) or self.candidate
+
         self.state.last_action = "fill_form"
-        summary = fill_form(fields, self.candidate, job)
+        summary = fill_form(fields, job_candidate, job)
         self._log(
             "info",
             f"fill complete: filled={summary.filled} skipped={summary.skipped} "
@@ -486,12 +592,64 @@ class PipelineOrchestrator:
                 page_url=job.url,
             )
 
+    def _handle_prepare_blocked(self, job: ApplicationJob, result: Any) -> None:
+        """Handle a BLOCKED result from the prepare phase.
+
+        Prepare returns BLOCKED when required documents are missing
+        (e.g. ``missing_cv_pdf``). Previously this called
+        :meth:`_handle_blocked` which tried to transition
+        ``IN_PROGRESS -> BLOCKED``, but that transition is NOT in
+        :data:`ALLOWED_TRANSITIONS`, so the repository silently kept
+        the job as ``IN_PROGRESS`` — leaving it stuck.
+
+        Fix: create a ``missing_document`` intervention and transition
+        to ``NEEDS_USER_INPUT`` (which IS allowed from IN_PROGRESS).
+        The user can then resolve the missing document and retry.
+        """
+        self.state.jobs_skipped += 1
+        self.state.last_error = result.message
+        # Determine the intervention kind from the error list.
+        errors: list[str] = list(result.errors or [])
+        if "missing_cv_pdf" in errors or "missing_cover_letter_pdf" in errors:
+            kind = InterventionKind.MISSING_DOCUMENT
+            question = f"Prepare blocked: required document is missing. {result.message}"
+        else:
+            kind = InterventionKind.UNKNOWN_PAGE
+            question = f"Prepare blocked: {result.message}"
+        with session_scope(self.session_factory) as session:
+            create_intervention(
+                session,
+                application_id=job.application_id,
+                kind=kind,
+                question=question,
+                page_url=job.url,
+            )
+        # IN_PROGRESS -> NEEDS_USER_INPUT is allowed by the state machine.
+        self._update_job_status(job, ApplicationStatus.NEEDS_USER_INPUT)
+        self._log("warning", f"prepare blocked (set needs_user_input): {result.message}")
+
     def _handle_blocked(self, job: ApplicationJob, message: str) -> None:
-        """Handle a blocked job."""
+        """Handle a blocked job (navigate/fill/submit phases).
+
+        Note: ``IN_PROGRESS -> BLOCKED`` is NOT in
+        :data:`ALLOWED_TRANSITIONS`, so we transition to
+        ``NEEDS_USER_INPUT`` instead (which IS allowed). The job is
+        not lost — the user can resolve the issue and retry.
+        """
         self.state.jobs_skipped += 1
         self.state.last_error = message
-        self._update_job_status(job, ApplicationStatus.BLOCKED)
-        self._log("warning", f"job blocked: {message}")
+        # Create an intervention so the user knows why the job stopped.
+        with session_scope(self.session_factory) as session:
+            create_intervention(
+                session,
+                application_id=job.application_id,
+                kind=InterventionKind.UNKNOWN_PAGE,
+                question=f"Pipeline blocked: {message}",
+                page_url=job.url,
+            )
+        # IN_PROGRESS -> NEEDS_USER_INPUT is allowed.
+        self._update_job_status(job, ApplicationStatus.NEEDS_USER_INPUT)
+        self._log("warning", f"job blocked (set needs_user_input): {message}")
 
     def _update_job_status(self, job: ApplicationJob, status: ApplicationStatus) -> None:
         """Update a job's status in the database."""

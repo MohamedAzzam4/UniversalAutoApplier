@@ -52,7 +52,18 @@ def start_pipeline(request: Request, body: PipelineStartRequest) -> PipelineStar
     - Default mode is review (dry-run). No real submission occurs.
     - The orchestrator checks review approval before any submit_or_pause call.
     - This endpoint does NOT submit applications.
+
+    Candidate profile:
+    - The orchestrator resolves the candidate profile per-job from
+      ``ApplicationJob.metadata["candidate_profile"]`` (written by
+      JobHunter's exporter). If the job has no profile snapshot, the
+      orchestrator falls back to the candidate passed here.
+    - We attempt to load a default candidate from
+      ``UAA_CANDIDATE_PROFILE`` (a YAML file path env var). If not
+      set, we pass an empty CandidateProfile() and the orchestrator
+      will log a warning per job without a profile snapshot.
     """
+    from universal_auto_applier.candidate_profile_loader import profile_from_config
     from universal_auto_applier.config import Settings
     from universal_auto_applier.core.models import CandidateProfile
     from universal_auto_applier.services.pipeline_orchestrator import PipelineOrchestrator
@@ -67,11 +78,16 @@ def start_pipeline(request: Request, body: PipelineStartRequest) -> PipelineStar
     settings: Settings = app.state.settings
     session_factory = app.state.session_factory
 
+    # Resolve a default candidate profile from UAA_CANDIDATE_PROFILE if
+    # available. Per-job metadata snapshots take priority inside the
+    # orchestrator; this is just the fallback.
+    default_candidate = profile_from_config() or CandidateProfile()
+
     # Create and run the orchestrator.
     orchestrator = PipelineOrchestrator(
         settings=settings,
         session_factory=session_factory,
-        candidate=CandidateProfile(),
+        candidate=default_candidate,
     )
 
     # Set the pipeline state on app.state BEFORE running so the status
