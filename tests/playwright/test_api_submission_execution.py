@@ -4,13 +4,10 @@ Proves that ``POST /api/submit/{application_id}/submit`` actually
 executes the coordinator (not just checks gates) when a context factory
 is registered. Uses local Playwright fixtures only.
 
-Test matrix:
-- valid approved API request clicks exactly once and confirms submission
-- feature disabled causes zero clicks
-- no approval causes zero clicks
-- stale snapshot causes zero clicks
-- ambiguous control causes zero clicks
-- duplicate submit after first is blocked (one-click guarantee)
+These tests do NOT use the pytest-playwright ``context`` fixture — they
+create their own browser via ``FixtureContextFactory`` which works in
+any thread (including TestClient's thread). They are marked as
+``playwright`` so they are excluded from the default non-Playwright run.
 """
 
 from __future__ import annotations
@@ -41,6 +38,8 @@ from universal_auto_applier.persistence.migrations import apply_migrations
 from universal_auto_applier.persistence.models import Base
 from universal_auto_applier.submission.execution_service import FixtureContextFactory
 
+# These tests launch their own browser via FixtureContextFactory.
+# They do NOT use the pytest-playwright context fixture.
 pytestmark = pytest.mark.playwright
 
 FIXTURE_DIR = Path(__file__).parent.parent / "fixtures" / "live_browser"
