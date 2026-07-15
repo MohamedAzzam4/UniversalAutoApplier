@@ -1,0 +1,29 @@
+<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8"><title>Application step 2</title></head>
+<body data-submitted="false">
+  <main>
+    <h1>Documents and questions</h1>
+    <form onsubmit="document.body.dataset.submitted='true'; return false;">
+      <label for="phone">Phone number</label>
+      <input id="phone" name="phone" type="tel" required>
+
+      <label for="cv">Upload CV</label>
+      <input id="cv" name="cv" type="file" accept="application/pdf" required>
+
+      <label for="cover">Upload cover letter</label>
+      <input id="cover" name="cover_letter" type="file" accept="application/pdf" required>
+
+      <div class="field-border">
+        <label for="python_group">Do you have experience with Python? *</label>
+        <div id="python_group">
+          <label><input type="radio" name="python_experience" value="Yes"> Yes</label>
+          <label><input type="radio" name="python_experience" value="No"> No</label>
+        </div>
+      </div>
+
+      <button type="submit">Submit application</button>
+    </form>
+  </main>
+</body>
+</html>

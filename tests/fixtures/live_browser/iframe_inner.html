@@ -1,0 +1,18 @@
+<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8"><title>iframe inner form</title></head>
+<body>
+  <h1>Inner iframe form</h1>
+  <form id="inner-form">
+    <!-- Same id and name as the outer page's first_name field, but in a
+         different frame. The stable token must NOT collide. -->
+    <label for="first_name">First name (inside iframe)</label>
+    <input id="first_name" name="first_name" type="text" required>
+
+    <label for="email">Email address (inside iframe)</label>
+    <input id="email" name="email" type="email" required>
+
+    <button type="submit">Submit inner form</button>
+  </form>
+</body>
+</html>

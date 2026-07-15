@@ -75,8 +75,7 @@ uaa.sqlite
 uaa.sqlite3
 
 # Local data directory (configurable; default below)
-.uaa_data/
-.uaa_data_test/
+.uaa_data*/
 data/
 artifacts/
 screenshots/

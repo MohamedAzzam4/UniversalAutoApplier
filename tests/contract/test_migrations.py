@@ -16,7 +16,7 @@ from universal_auto_applier.persistence.db import build_engine_url
 from universal_auto_applier.persistence.migrations import apply_migrations
 
 # The current head revision. Update this when adding a new migration.
-CURRENT_HEAD = "0003_application_job_documents"
+CURRENT_HEAD = "0004_intervention_llm_metadata"
 
 
 def test_apply_migrations_creates_required_tables(tmp_path: Path) -> None:

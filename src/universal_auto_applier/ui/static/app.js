@@ -203,41 +203,63 @@
 
       if (data.interventions.length === 0) {
         container.innerHTML = '<p class="uaa-empty">No pending interventions.</p>';
-        return;
-      }
+      } else {
+        for (const iv of data.interventions) {
+          const card = document.createElement("div");
+          card.className = "uaa-intervention-card";
+          const llmMeta = iv.llm_metadata || {};
+          const metaParts = [];
+          if (llmMeta.category) metaParts.push("Category: " + esc(llmMeta.category));
+          if (llmMeta.risk_level) metaParts.push("Risk: " + esc(llmMeta.risk_level));
+          if (llmMeta.evidence_summary) metaParts.push("Evidence: " + esc(llmMeta.evidence_summary));
+          if (llmMeta.unresolved_reason) metaParts.push("Reason: " + esc(llmMeta.unresolved_reason));
+          if (llmMeta.field_token) metaParts.push("Token: " + esc(llmMeta.field_token));
+          if (llmMeta.answer_source) metaParts.push("Source: " + esc(llmMeta.answer_source));
+          const metaHtml = metaParts.length > 0
+            ? '<div class="uaa-iv-llm-meta">' + metaParts.join("<br>") + "</div>"
+            : "";
+          const optionsHtml = (iv.options && iv.options.length > 0)
+            ? '<p class="uaa-iv-options">Options: ' + iv.options.map(esc).join(", ") + "</p>"
+            : "";
+          card.innerHTML = `
+            <div class="uaa-iv-header">
+              <span class="uaa-iv-kind">${esc(iv.kind)}</span>
+              <span class="uaa-pill ${iv.status === "pending" ? "uaa-pill-not_configured" : "uaa-pill-ready"}">${esc(iv.status)}</span>
+            </div>
+            <p class="uaa-iv-question">${esc(iv.question)}</p>
+            ${optionsHtml}
+            <p class="uaa-iv-meta">Job: ${esc(iv.application_id.substring(0, 12))}... · Confidence: ${iv.confidence != null ? iv.confidence : "—"}</p>
+            ${iv.suggested_answer ? `<p class="uaa-iv-suggested">Suggested: <code>${esc(iv.suggested_answer)}</code></p>` : ""}
+            ${metaHtml}
+            <div class="uaa-iv-actions" data-iv-id="${esc(iv.intervention_id)}">
+              <button class="uaa-btn uaa-btn-success" data-action="approve">Approve</button>
+              <button class="uaa-btn" data-action="edit">Edit</button>
+              <button class="uaa-btn" data-action="skip">Skip</button>
+              <button class="uaa-btn uaa-btn-danger" data-action="block">Block</button>
+            </div>
+            <label class="uaa-iv-remember">
+              <input type="checkbox" class="uaa-iv-remember-cb" checked> Remember answer
+            </label>`;
 
-      for (const iv of data.interventions) {
-        const card = document.createElement("div");
-        card.className = "uaa-intervention-card";
-        card.innerHTML = `
-          <div class="uaa-iv-header">
-            <span class="uaa-iv-kind">${esc(iv.kind)}</span>
-            <span class="uaa-pill ${iv.status === "pending" ? "uaa-pill-not_configured" : "uaa-pill-ready"}">${esc(iv.status)}</span>
-          </div>
-          <p class="uaa-iv-question">${esc(iv.question)}</p>
-          <p class="uaa-iv-meta">Job: ${esc(iv.application_id.substring(0, 12))}... · Confidence: ${iv.confidence != null ? iv.confidence : "—"}</p>
-          ${iv.suggested_answer ? `<p class="uaa-iv-suggested">Suggested: <code>${esc(iv.suggested_answer)}</code></p>` : ""}
-          <div class="uaa-iv-actions" data-iv-id="${esc(iv.intervention_id)}">
-            <button class="uaa-btn uaa-btn-success" data-action="approve">Approve</button>
-            <button class="uaa-btn" data-action="edit">Edit</button>
-            <button class="uaa-btn" data-action="skip">Skip</button>
-            <button class="uaa-btn uaa-btn-danger" data-action="block">Block</button>
-          </div>`;
+          // Wire action buttons
+          const actions = card.querySelectorAll(".uaa-iv-actions button");
+          actions.forEach((btn) => {
+            btn.addEventListener("click", () => {
+              const rememberCb = card.querySelector(".uaa-iv-remember-cb");
+              resolveIntervention(iv.intervention_id, btn.dataset.action, rememberCb ? rememberCb.checked : false);
+            });
+          });
 
-        // Wire action buttons
-        const actions = card.querySelectorAll(".uaa-iv-actions button");
-        actions.forEach((btn) => {
-          btn.addEventListener("click", () => resolveIntervention(iv.intervention_id, btn.dataset.action));
-        });
-
-        container.appendChild(card);
+          container.appendChild(card);
+        }
       }
     } catch (err) {
       console.error("[UAA] interventions load failed", err);
     }
+    await updateResumeVisibility();
   }
 
-  async function resolveIntervention(ivId, action) {
+  async function resolveIntervention(ivId, action, rememberChecked) {
     const resolutionMap = {
       approve: "approved",
       edit: "edited",
@@ -252,7 +274,7 @@
     if (action === "approve" || action === "edit") {
       answer = prompt("Enter the answer:");
       if (answer === null) return; // cancelled
-      saveToMemory = confirm("Save this answer to memory for future reuse?");
+      saveToMemory = rememberChecked;
     }
 
     try {
@@ -261,10 +283,68 @@
         answer: answer || undefined,
         save_to_memory: saveToMemory,
       });
-      loadInterventions();
+      await loadInterventions();
       loadStatus();
     } catch (err) {
       alert("Failed to resolve: " + err.message);
+    }
+  }
+
+  // ---- Resume / Retry ----
+  document.getElementById("resume-btn")?.addEventListener("click", async () => {
+    const btn = document.getElementById("resume-btn");
+    const msg = document.getElementById("resume-msg");
+    if (btn) btn.disabled = true;
+    if (msg) msg.textContent = "Retrying application...";
+    try {
+      const data = await fetchJSON("/api/interventions?pending_only=false");
+      const resolved = data.interventions.filter(iv => iv.status !== "pending");
+      if (resolved.length === 0) {
+        if (msg) msg.textContent = "No resolved interventions to resume.";
+        if (btn) btn.disabled = false;
+        return;
+      }
+      const appId = resolved[0].application_id;
+      await postJSON(`/api/queue/${appId}/retry`, {});
+      if (msg) msg.textContent = "Application re-queued. Starting pipeline...";
+      try {
+        await postJSON("/api/pipeline/start", { fixture_html: null, max_jobs: 1 });
+        if (msg) msg.textContent = "Pipeline completed.";
+      } catch (pipelineErr) {
+        if (msg) msg.textContent = "Pipeline error: " + pipelineErr.message;
+      }
+      await loadStatus();
+      await loadInterventions();
+    } catch (err) {
+      if (msg) msg.textContent = "Retry failed: " + err.message;
+    } finally {
+      if (btn) btn.disabled = false;
+    }
+  });
+
+  async function updateResumeVisibility() {
+    const section = document.getElementById("resume-section");
+    const btn = document.getElementById("resume-btn");
+    if (!section || !btn) return;
+    try {
+      const pendingData = await fetchJSON("/api/interventions?pending_only=true");
+      const allData = await fetchJSON("/api/interventions?pending_only=false");
+      const hasResolved = allData.total > 0;
+      const hasPending = pendingData.total > 0;
+      if (hasResolved && !hasPending) {
+        // All interventions resolved — Resume enabled.
+        section.style.display = "block";
+        btn.disabled = false;
+      } else if (hasResolved && hasPending) {
+        // Some pending — Resume visible but disabled.
+        section.style.display = "block";
+        btn.disabled = true;
+      } else {
+        section.style.display = "none";
+      }
+    } catch (err) {
+      console.error("[UAA] updateResumeVisibility failed:", err);
+      section.style.display = "none";
     }
   }
 

@@ -29,6 +29,7 @@ class InterventionResponse(BaseModel):
     field_selector: str | None = None
     page_url: str | None = None
     screenshot: str | None = None
+    llm_metadata: dict[str, Any] | None = None
     created_at: str = ""
     resolved_at: str | None = None
 
@@ -82,6 +83,7 @@ def list_interventions(
                 field_selector=i.field_selector,
                 page_url=i.page_url,
                 screenshot=i.screenshot,
+                llm_metadata=i.llm_metadata,
                 created_at=i.created_at.isoformat() if i.created_at else "",
                 resolved_at=i.resolved_at.isoformat() if i.resolved_at else None,
             )

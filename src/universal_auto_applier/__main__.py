@@ -7,9 +7,9 @@ Bootstraps the local system. Default behavior:
 * run database migrations to head,
 * print the dashboard URL.
 
-This module intentionally does NOT start any application worker, browser
-process, or submission logic. The bootstrap phase only proves the skeleton
-runs and the health endpoint responds.
+The default command starts the dashboard. Explicit subcommands can list jobs
+or run one live browser dry-run. The live command fills and uploads but never
+clicks final submit.
 """
 
 from __future__ import annotations
@@ -43,6 +43,11 @@ def main(argv: list[str] | None = None) -> int:
     _configure_logging(verbose)
 
     settings: Settings = load_settings()
+    if argv and argv[0] in {"list-jobs", "browser-session", "live-dry-run"}:
+        from universal_auto_applier.cli import run_command
+
+        return run_command(argv, settings)
+
     logger.info("starting UniversalAutoApplier on %s:%s", settings.host, settings.port)
     logger.info("data dir: %s", settings.data_dir)
     logger.info("submit mode: %s", settings.submit_mode)

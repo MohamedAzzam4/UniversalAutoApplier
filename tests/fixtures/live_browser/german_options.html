@@ -1,0 +1,54 @@
+<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8"><title>German options form (ja/nein + salutation)</title></head>
+<body data-submitted="false">
+  <main>
+    <h1>German Options Form</h1>
+    <form onsubmit="document.body.dataset.submitted='true'; return false;">
+      <label for="first_name">First name</label>
+      <input id="first_name" name="first_name" required>
+
+      <label for="email">Email address</label>
+      <input id="email" name="email" type="email" required>
+
+      <!-- Salutation select with a placeholder option ("Please choose")
+           and real options. The placeholder must be preserved in the
+           options list (existing policy does not classify placeholders
+           for removal). -->
+      <label for="salutation">Salutation</label>
+      <select id="salutation" name="salutation" required>
+        <option value="">Please choose</option>
+        <option value="not_specified">Not specified</option>
+        <option value="mr">Mr.</option>
+        <option value="ms">Ms.</option>
+        <option value="diverse">Diverse</option>
+      </select>
+
+      <!-- German radio group: options are "ja" / "nein" (Yes/No in
+           German). A deterministic "Yes" answer must select "ja" and
+           record filled_value="ja" (NOT "Yes"). -->
+      <fieldset>
+        <legend>Do you have experience with Python?</legend>
+        <label><input type="radio" name="python_exp" value="ja" required> ja</label>
+        <label><input type="radio" name="python_exp" value="nein"> nein</label>
+      </fieldset>
+
+      <!-- Second German radio group: Docker experience. A deterministic
+           "No" answer must select "nein" and record filled_value="nein". -->
+      <fieldset>
+        <legend>Do you have experience with Docker?</legend>
+        <label><input type="radio" name="docker_exp" value="ja" required> ja</label>
+        <label><input type="radio" name="docker_exp" value="nein"> nein</label>
+      </fieldset>
+
+      <!-- Unresolved required field to guarantee at least one intervention. -->
+      <fieldset>
+        <legend>What is your salary expectation?</legend>
+        <input id="salary" name="salary" type="text" required>
+      </fieldset>
+
+      <button type="submit">Submit application</button>
+    </form>
+  </main>
+</body>
+</html>

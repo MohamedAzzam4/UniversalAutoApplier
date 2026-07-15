@@ -111,6 +111,24 @@ python -m universal_auto_applier
 
 The dashboard URL is printed on startup. Default: `http://127.0.0.1:8000/`.
 
+### Live browser dry-run
+
+After importing JobHunter's queue, list the available jobs and run exactly
+one application in UAA's own Playwright browser:
+
+```powershell
+python -m universal_auto_applier list-jobs
+python -m universal_auto_applier browser-session --url https://www.linkedin.com/login
+python -m universal_auto_applier live-dry-run --application-id <ID_PREFIX> --headed
+```
+
+The runner opens the queued job URL, follows safe apply/continue links (also
+across new tabs), fills mapped fields, uploads the tailored CV and cover
+letter, saves screenshots/DOM/trace evidence, and stops before final submit.
+Its persistent login profile defaults to `.uaa_data/browser-profile`.
+See `docs/generalization/LIVE_BROWSER_DRY_RUN.md` for configuration and
+result meanings.
+
 ### Refreshing an existing checkout (line endings)
 
 The repo enforces LF line endings via `.gitattributes` (`* text=auto eol=lf`).

@@ -1,0 +1,24 @@
+<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8"><title>ARIA-labelled radio group</title></head>
+<body data-submitted="false">
+  <main>
+    <h1>ARIA Radio Group</h1>
+    <form onsubmit="document.body.dataset.submitted='true'; return false;">
+      <label for="first_name">First name</label>
+      <input id="first_name" name="first_name" required>
+
+      <label for="email">Email address</label>
+      <input id="email" name="email" type="email" required>
+
+      <div role="group" aria-labelledby="k8s-question-label">
+        <p id="k8s-question-label">Do you have experience with Kubernetes?</p>
+        <label><input type="radio" name="k8s_exp" value="Yes" required> Yes</label>
+        <label><input type="radio" name="k8s_exp" value="No"> No</label>
+      </div>
+
+      <button type="submit">Submit application</button>
+    </form>
+  </main>
+</body>
+</html>

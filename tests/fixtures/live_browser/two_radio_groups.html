@@ -1,0 +1,34 @@
+<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8"><title>Two similar radio groups form</title></head>
+<body data-submitted="false">
+  <main>
+    <h1>Two Similar Radio Groups</h1>
+    <form onsubmit="document.body.dataset.submitted='true'; return false;">
+      <label for="first_name">First name</label>
+      <input id="first_name" name="first_name" required>
+
+      <label for="email">Email address</label>
+      <input id="email" name="email" type="email" required>
+
+      <!-- First radio group: Kubernetes experience. -->
+      <fieldset>
+        <legend>Do you have experience with Kubernetes?</legend>
+        <label><input type="radio" name="k8s_exp" value="Yes" required> Yes</label>
+        <label><input type="radio" name="k8s_exp" value="No"> No</label>
+      </fieldset>
+
+      <!-- Second radio group: Docker experience. Same Yes/No options,
+           different question text and different `name` attribute. The two
+           groups must have DISTINCT tokens. -->
+      <fieldset>
+        <legend>Do you have experience with Docker?</legend>
+        <label><input type="radio" name="docker_exp" value="Yes" required> Yes</label>
+        <label><input type="radio" name="docker_exp" value="No"> No</label>
+      </fieldset>
+
+      <button type="submit">Submit application</button>
+    </form>
+  </main>
+</body>
+</html>

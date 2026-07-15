@@ -1,8 +1,8 @@
 # Dry-Run Levels
 
 This document defines the four dry-run levels for UniversalAutoApplier.
-Each level increases in realism and risk. The default CI and local test
-suite only run Level 0.
+Each level increases in realism and risk. Default tests run deterministic
+fixture coverage; CI also runs the local Playwright suite where configured.
 
 ## Level 0 - Fixture Dry-Run
 
@@ -22,20 +22,21 @@ suite only run Level 0.
 - Verifies browser execution behavior (Playwright locators, fill methods,
   file uploads, screenshots).
 - Safe for CI if the fixture server is stable.
-- Not yet implemented. Deferred to Phase 8 (full pipeline) when
-  Playwright integration lands.
+- Implemented by `LiveBrowserRunner` and
+  `tests/playwright/test_live_browser_executor.py`.
 
 ## Level 2 - Live External Dry-Run
 
 - Uses real job/application pages on the internet.
-- Requires explicit environment variables:
-  - `UAA_LIVE_DRY_RUN=1`
-  - `UAA_ALLOWLISTED_DOMAINS=jobs.siemens.com,boards.greenhouse.io`
+- Requires the explicit `live-dry-run` CLI command and an imported
+  application ID.
 - Never presses the final submit button.
 - Captures screenshot, DOM snapshot, Playwright trace/video, and logs.
 - Not part of default CI. Must be explicitly opted in.
-- Not yet implemented. Deferred to Phase 8+ when browser-backed
-  navigation is available.
+- Implemented as an opt-in one-job command. The corresponding pytest test
+  additionally requires `UAA_ENABLE_LIVE_TEST=1` and
+  `UAA_LIVE_APPLICATION_ID`; it is marked `live` and excluded from normal
+  CI selection.
 
 ## Level 3 - Trusted Adapter Controlled Submit
 
@@ -57,6 +58,6 @@ suite only run Level 0.
 | Level | Browser | Network | Submit | Default CI | Implemented |
 |-------|---------|---------|--------|------------|-------------|
 | 0     | No      | No      | No     | Yes        | Yes         |
-| 1     | Yes     | Local   | No     | Optional   | No (Phase 8)|
-| 2     | Yes     | External| No     | No         | No (Phase 8+)|
+| 1     | Yes     | Local   | No     | Optional   | Yes         |
+| 2     | Yes     | External| No     | No         | Yes         |
 | 3     | Yes     | External| Yes    | No         | No (Phase 8+)|
