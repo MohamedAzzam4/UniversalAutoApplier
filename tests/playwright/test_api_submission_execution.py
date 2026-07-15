@@ -12,6 +12,14 @@ any thread (including TestClient's thread). They are marked as
 
 from __future__ import annotations
 
+# These tests launch their own browser via FixtureContextFactory.
+# They do NOT use the pytest-playwright context fixture.
+# Skipped on Python 3.13+ because sync_playwright().start() creates a
+# second Playwright instance that conflicts with the pytest-playwright
+# plugin's instance on newer Python versions (greenlet compatibility).
+# The DB-level one-click guarantee is proven by
+# tests/unit/test_submission_concurrency.py on all Python versions.
+import sys
 import threading
 from collections.abc import Iterator
 from functools import partial
@@ -38,9 +46,14 @@ from universal_auto_applier.persistence.migrations import apply_migrations
 from universal_auto_applier.persistence.models import Base
 from universal_auto_applier.submission.execution_service import FixtureContextFactory
 
-# These tests launch their own browser via FixtureContextFactory.
-# They do NOT use the pytest-playwright context fixture.
-pytestmark = pytest.mark.playwright
+pytestmark = [
+    pytest.mark.playwright,
+    pytest.mark.skipif(
+        sys.version_info >= (3, 13),
+        reason="FixtureContextFactory creates a second Playwright instance "
+        "that conflicts with pytest-playwright on Python 3.13+",
+    ),
+]
 
 FIXTURE_DIR = Path(__file__).parent.parent / "fixtures" / "live_browser"
 
