@@ -255,16 +255,155 @@ class TestGateUnresolvedRequiredFields:
 
 class TestGateHighRiskUnconfirmed:
     def test_high_risk_unconfirmed_blocks(self, tmp_path: Path) -> None:
-        """Direct gate: high_risk_unconfirmed_count > 0 blocks
-        submission, even if no pending interventions exist."""
+        """Direct gate: a high-risk field without explicit confirmation
+        blocks submission, even if no pending interventions exist."""
         settings = _make_settings(tmp_path)
         job = _make_job(tmp_path)
         engine, sf = _setup(tmp_path, settings, job)
         try:
             coord = SubmissionCoordinator(settings, sf)
-            snap = _make_snapshot(job.application_id, high_risk_unconfirmed=1)
+            # Create a snapshot with a high-risk field that is NOT confirmed.
+            snap = _make_snapshot(
+                job.application_id,
+                fields=[
+                    {
+                        "field_token": "lf-salary",
+                        "filled_value": "50000",
+                        "requires_confirmation": True,
+                        "risk_level": "high",
+                    }
+                ],
+            )
             coord.approve_snapshot(application_id=job.application_id, snapshot=snap)
+            # No confirmations registered → gate blocks.
             gate = coord.check_gates(application_id=job.application_id, current_snapshot=snap)
+            assert not gate.allowed
+            assert "high-risk" in gate.reason
+        finally:
+            engine.dispose()
+
+    def test_high_risk_confirmed_passes(self, tmp_path: Path) -> None:
+        """When the user explicitly confirms the high-risk field, the
+        gate passes."""
+        settings = _make_settings(tmp_path)
+        job = _make_job(tmp_path)
+        engine, sf = _setup(tmp_path, settings, job)
+        try:
+            coord = SubmissionCoordinator(settings, sf)
+            snap = _make_snapshot(
+                job.application_id,
+                fields=[
+                    {
+                        "field_token": "lf-salary",
+                        "filled_value": "50000",
+                        "requires_confirmation": True,
+                        "risk_level": "high",
+                    }
+                ],
+            )
+            approval_id = coord.approve_snapshot(application_id=job.application_id, snapshot=snap)
+
+            # Confirm the high-risk field.
+            from universal_auto_applier.submission.store import confirm_high_risk_fields
+
+            with session_scope(sf) as session:
+                confirm_high_risk_fields(session, approval_id, ["lf-salary"])
+
+            gate = coord.check_gates(application_id=job.application_id, current_snapshot=snap)
+            assert gate.allowed, f"Expected gates to pass after confirmation, got: {gate.reason}"
+        finally:
+            engine.dispose()
+
+    def test_changing_answer_invalidates_confirmation(self, tmp_path: Path) -> None:
+        """Changing the high-risk answer produces a new snapshot hash,
+        which invalidates the entire approval (including its confirmations).
+        The user must re-approve and re-confirm."""
+        settings = _make_settings(tmp_path)
+        job = _make_job(tmp_path)
+        engine, sf = _setup(tmp_path, settings, job)
+        try:
+            coord = SubmissionCoordinator(settings, sf)
+            snap1 = _make_snapshot(
+                job.application_id,
+                fields=[
+                    {
+                        "field_token": "lf-salary",
+                        "filled_value": "50000",
+                        "requires_confirmation": True,
+                        "risk_level": "high",
+                    }
+                ],
+            )
+            approval_id = coord.approve_snapshot(application_id=job.application_id, snapshot=snap1)
+            from universal_auto_applier.submission.store import confirm_high_risk_fields
+
+            with session_scope(sf) as session:
+                confirm_high_risk_fields(session, approval_id, ["lf-salary"])
+
+            # Change the answer — new snapshot hash.
+            snap2 = _make_snapshot(
+                job.application_id,
+                fields=[
+                    {
+                        "field_token": "lf-salary",
+                        "filled_value": "60000",
+                        "requires_confirmation": True,
+                        "risk_level": "high",
+                    }
+                ],
+            )
+            gate = coord.check_gates(application_id=job.application_id, current_snapshot=snap2)
+            assert not gate.allowed
+            assert gate.state == SubmissionResultState.APPROVAL_STALE
+        finally:
+            engine.dispose()
+
+    def test_old_confirmation_cannot_carry_over(self, tmp_path: Path) -> None:
+        """Confirmations from an old approval do not carry over to a new
+        approval. Approving a new snapshot revokes the old approval."""
+        settings = _make_settings(tmp_path)
+        job = _make_job(tmp_path)
+        engine, sf = _setup(tmp_path, settings, job)
+        try:
+            coord = SubmissionCoordinator(settings, sf)
+            snap1 = _make_snapshot(
+                job.application_id,
+                fields=[
+                    {
+                        "field_token": "lf-salary",
+                        "filled_value": "50000",
+                        "requires_confirmation": True,
+                        "risk_level": "high",
+                    }
+                ],
+            )
+            approval_id_1 = coord.approve_snapshot(
+                application_id=job.application_id, snapshot=snap1
+            )
+            from universal_auto_applier.submission.store import confirm_high_risk_fields
+
+            with session_scope(sf) as session:
+                confirm_high_risk_fields(session, approval_id_1, ["lf-salary"])
+
+            # Approve a new snapshot with the same field but different value.
+            snap2 = _make_snapshot(
+                job.application_id,
+                fields=[
+                    {
+                        "field_token": "lf-salary",
+                        "filled_value": "60000",
+                        "requires_confirmation": True,
+                        "risk_level": "high",
+                    }
+                ],
+            )
+            approval_id_2 = coord.approve_snapshot(
+                application_id=job.application_id, snapshot=snap2
+            )
+            assert approval_id_1 != approval_id_2
+
+            # The new approval has NO confirmed fields.
+            gate = coord.check_gates(application_id=job.application_id, current_snapshot=snap2)
             assert not gate.allowed
             assert "high-risk" in gate.reason
         finally:

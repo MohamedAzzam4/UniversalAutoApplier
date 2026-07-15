@@ -41,6 +41,7 @@ def upgrade() -> None:
         ),
         sa.Column("snapshot_hash", sa.String(length=64), nullable=False, index=True),
         sa.Column("snapshot_json", sa.JSON(), nullable=True),
+        sa.Column("confirmed_high_risk_fields_json", sa.JSON(), nullable=True),
         sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
         sa.Column("consumed_at", sa.DateTime(timezone=True), nullable=True),
         sa.Column("revoked_at", sa.DateTime(timezone=True), nullable=True),

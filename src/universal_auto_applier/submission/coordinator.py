@@ -240,12 +240,21 @@ class SubmissionCoordinator:
                     )
 
             # Gate 4c: no high-risk unconfirmed answers (direct field check).
+            # Check against the approval's confirmed_high_risk_fields list.
+            # A high-risk field is "confirmed" if its field_token is in the
+            # approval's confirmed_high_risk_fields_json list.
             if current_snapshot is not None:
-                high_risk = current_snapshot.high_risk_unconfirmed_count
-                if high_risk > 0:
+                confirmed_tokens = set(approval.confirmed_high_risk_fields_json or [])
+                unconfirmed_high_risk = sum(
+                    1
+                    for f in current_snapshot.fields
+                    if (f.requires_confirmation or f.risk_level.lower() == "high")
+                    and f.field_token not in confirmed_tokens
+                )
+                if unconfirmed_high_risk > 0:
                     return GateResult(
                         allowed=False,
-                        reason=f"{high_risk} high-risk answers lack explicit confirmation",
+                        reason=f"{unconfirmed_high_risk} high-risk answers lack explicit confirmation",
                         state=SubmissionResultState.SUBMISSION_NOT_ALLOWED,
                     )
 

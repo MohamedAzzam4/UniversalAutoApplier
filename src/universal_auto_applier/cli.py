@@ -356,31 +356,28 @@ def _browser_session(settings: Settings, args: argparse.Namespace) -> int:
     return 0
 
 
+"""Execute the controlled final submission for an approved application.
+
+This is the ONLY CLI command that can click the final submit control.
+It delegates to :class:`SubmissionExecutionService` which guarantees
+same-page execution (observation, gate checks, claim, click, and
+result detection all happen on one live ``Page``).
+
+Call path:
+CLI ``live-submit`` → ``SubmissionExecutionService.execute_controlled_submission``
+→ ``coordinator.execute_submission_from_page`` (same Page)
+
+Requires:
+- ``UAA_ENABLE_REAL_SUBMISSION=true``
+- An active approval (``--approval-id``) for this application
+- ``--confirm`` flag (deliberate confirmation)
+"""
+
+
 def _live_submit(settings: Settings, args: argparse.Namespace) -> int:
-    """Execute the controlled final submission for an approved application.
-
-    This is the ONLY CLI command that can click the final submit control.
-    It requires:
-    - ``UAA_ENABLE_REAL_SUBMISSION=true``
-    - An active approval (``--approval-id``) for this application
-    - ``--confirm`` flag (deliberate confirmation)
-
-    The command:
-    1. Opens the browser profile.
-    2. Navigates to the application URL.
-    3. Fills the form (deterministic + LLM).
-    4. Re-observes the page and computes the current snapshot.
-    5. Compares the current snapshot with the approved snapshot.
-    6. Checks all gates via SubmissionCoordinator.
-    7. If all gates pass: acquires a claim, clicks submit ONCE, waits
-       for confirmation, records the result.
-    8. If any gate fails: returns the appropriate state, no click.
-    """
-    from universal_auto_applier.browser.live_runner import LiveBrowserRunner
-    from universal_auto_applier.submission.coordinator import SubmissionCoordinator
-    from universal_auto_applier.submission.store import (
-        build_snapshot,
-        get_active_approval,
+    from universal_auto_applier.submission.execution_service import (
+        PlaywrightContextFactory,
+        SubmissionExecutionService,
     )
 
     if not settings.enable_real_submission:
@@ -402,183 +399,33 @@ def _live_submit(settings: Settings, args: argparse.Namespace) -> int:
 
     application_id = job.application_id
 
-    # Verify the approval exists and is active.
-    engine, session_factory = _open_store(settings)
-    try:
-        with session_scope(session_factory) as session:
-            approval = get_active_approval(session, application_id)
-            if approval is None:
-                print(
-                    f"ERROR: no active approval for application {application_id[:12]}. "
-                    "Approve a snapshot first via the dashboard or CLI."
-                )
-                return 2
-            if approval.approval_id != args.approval_id:
-                print(
-                    f"ERROR: approval ID {args.approval_id!r} does not match the active "
-                    f"approval {approval.approval_id!r} for this application."
-                )
-                return 2
-            approved_snapshot_hash = approval.snapshot_hash
-    finally:
-        engine.dispose()
-
-    # Build the browser config.
+    # Build the browser context factory.
     profile_dir = args.profile_dir or settings.browser_profile_dir
     if args.ephemeral_profile:
         profile_dir = None
     headless = args.headless if args.headless is not None else settings.browser_headless
-    timeout_ms = args.timeout_ms or settings.browser_timeout_ms
 
-    config = LiveBrowserConfig(
-        artifacts_root=settings.data_dir / "live-runs",
+    context_factory = PlaywrightContextFactory(
+        settings=settings,
         profile_dir=profile_dir,
         headless=headless,
         channel=args.channel or settings.browser_channel,
-        timeout_ms=timeout_ms,
-        max_steps=settings.browser_max_steps,
-        capture_trace=True,
     )
 
-    # Run the live dry-run first (fills the form, detects the submit control).
-    runner = LiveBrowserRunner(config)
-    candidate = resolve_candidate_profile(job.metadata)
-
-    from universal_auto_applier.llm.qa_service import create_qa_service
-
-    qa_service = create_qa_service()
-    if not qa_service.is_configured:
-        qa_service = None
-
-    report = runner.run(job, candidate, qa_service=qa_service)
-
-    if report.status != "review_ready":
-        print(
-            f"ERROR: live dry-run did not reach review_ready (status={report.status}, "
-            f"reason={report.stopped_reason}). Cannot submit."
-        )
-        return 3
-
-    # Build the current snapshot from the report.
-    from universal_auto_applier.interventions.store import list_pending_interventions
-
-    engine2, session_factory2 = _open_store(settings)
-    try:
-        with session_scope(session_factory2) as session:
-            pending_count = len(list_pending_interventions(session, application_id))
-
-        # Find the submit control from the report.
-        submit_text = ""
-        submit_selector = ""
-        submit_frame_url = ""
-        # The report doesn't directly expose the submit control, but
-        # the runner detected it (stopped_reason="final_submit_detected").
-        # We need to re-observe the page to find the exact selector.
-        # For now, use the last screenshot as evidence and re-observe
-        # in the coordinator.
-    finally:
-        engine2.dispose()
-
-    # Build the current snapshot.
-    current_snapshot = build_snapshot(
-        application_id=application_id,
-        application_url=job.url,
-        fields=report.fields,
-        uploads=report.uploads,
-        pending_intervention_count=pending_count,
-        submit_control_text=submit_text,
-        submit_control_selector=submit_selector,
-        submit_control_frame_url=submit_frame_url,
-    )
-
-    # Check if the snapshot matches the approved one.
-    if current_snapshot.snapshot_hash != approved_snapshot_hash:
-        print(
-            f"ERROR: snapshot hash mismatch. The form state has changed since approval.\n"
-            f"  Approved: {approved_snapshot_hash[:12]}\n"
-            f"  Current:  {current_snapshot.snapshot_hash[:12]}\n"
-            f"  Re-approve the new snapshot before submitting."
-        )
-        return 3
-
-    # Re-open the browser and execute the submission.
-    # The runner has already closed its context, so we need a new one
-    # for the actual click. In a production system, the runner would
-    # keep the context open and pass it to the coordinator. For now,
-    # we re-open and re-navigate.
-    print(
-        f" Gates passed. Snapshot hash matches approval.\n"
-        f" Ready to click the final submit control for application {application_id[:12]}.\n"
-        f" Approving application at: {job.url}\n"
-    )
-
-    # In a full implementation, the coordinator would re-use the runner's
-    # context. For this workpackage, the CLI delegates to the
-    # coordinator's execute_submission with a fresh context.
     artifact_dir = args.artifacts_dir or (
         settings.data_dir / "live-runs" / f"{application_id[:12]}-submit"
     )
 
-    engine3, session_factory3 = _open_store(settings)
+    engine, session_factory = _open_store(settings)
     try:
-        coordinator = SubmissionCoordinator(settings, session_factory3)
-
-        with sync_playwright() as playwright:
-            browser = None
-            if profile_dir is not None:
-                context = playwright.chromium.launch_persistent_context(
-                    user_data_dir=str(profile_dir),
-                    headless=headless,
-                    channel=args.channel or settings.browser_channel,
-                    accept_downloads=False,
-                )
-            else:
-                browser = playwright.chromium.launch(
-                    headless=headless,
-                    channel=args.channel or settings.browser_channel,
-                )
-                context = browser.new_context(accept_downloads=False)
-
-            try:
-                page = context.pages[0] if context.pages else context.new_page()
-                page.goto(
-                    job.url,
-                    wait_until="domcontentloaded",
-                    timeout=timeout_ms,
-                )
-
-                # Find the submit control.
-                from universal_auto_applier.navigator.apply_path_finder import analyze_page
-
-                analysis = analyze_page(page)
-                submit_clickables = [
-                    c for c in analysis.clickables if c.classification.value == "dangerous_submit"
-                ]
-                if len(submit_clickables) != 1:
-                    print(
-                        f"ERROR: expected exactly 1 submit control, found {len(submit_clickables)}."
-                    )
-                    return 3
-
-                submit_control = submit_clickables[0]
-                result = coordinator.execute_submission(
-                    context=context,
-                    application_id=application_id,
-                    approval_id=args.approval_id,
-                    current_snapshot=current_snapshot,
-                    submit_control_selector=submit_control.selector_hint,
-                    submit_control_frame_url=submit_control.frame_url,
-                    artifact_dir=artifact_dir,
-                )
-            finally:
-                context.close()
-                if browser is not None:
-                    try:
-                        browser.close()
-                    except Exception:
-                        pass
+        service = SubmissionExecutionService(settings, session_factory, context_factory)
+        result = service.execute_controlled_submission(
+            application_id=application_id,
+            approval_id=args.approval_id,
+            artifact_dir=artifact_dir,
+        )
     finally:
-        engine3.dispose()
+        engine.dispose()
 
     # Report the result.
     print(f"\nSubmission result: {result.state}")
@@ -594,19 +441,19 @@ def _live_submit(settings: Settings, args: argparse.Namespace) -> int:
     if result.post_submit_screenshot:
         print(f"  Post-submit screenshot: {result.post_submit_screenshot}")
 
-    # Update application status based on result.
+    # Update application status on confirmed success.
     if result.state.value == "submitted_confirmed":
-        engine4, session_factory4 = _open_store(settings)
+        engine2, session_factory2 = _open_store(settings)
         try:
             from universal_auto_applier.core.statuses import ApplicationStatus
             from universal_auto_applier.persistence.job_repository import (
                 update_application_status,
             )
 
-            with session_scope(session_factory4) as session:
+            with session_scope(session_factory2) as session:
                 update_application_status(session, application_id, ApplicationStatus.SUBMITTED)
         finally:
-            engine4.dispose()
+            engine2.dispose()
         return 0
     if result.state.value in ("outcome_unknown", "already_submitted"):
         return 2

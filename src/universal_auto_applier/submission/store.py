@@ -180,6 +180,35 @@ def get_active_approval(
     return session.execute(stmt).scalar_one_or_none()
 
 
+def confirm_high_risk_fields(
+    session: Session,
+    approval_id: str,
+    field_tokens: list[str],
+) -> SubmissionApprovalRow | None:
+    """Mark high-risk fields as explicitly confirmed on an approval.
+
+    The confirmations are tied to the approval's snapshot hash. If the
+    snapshot changes (a new approval is created), the confirmations do
+    NOT carry over — the user must re-confirm on the new snapshot.
+    """
+    row = session.get(SubmissionApprovalRow, approval_id)
+    if row is None:
+        return None
+    existing = list(row.confirmed_high_risk_fields_json or [])
+    for token in field_tokens:
+        if token not in existing:
+            existing.append(token)
+    row.confirmed_high_risk_fields_json = existing
+    session.flush()
+    logger.info(
+        "[%s] high-risk fields confirmed: %s (total: %d)",
+        row.application_id[:12],
+        field_tokens,
+        len(existing),
+    )
+    return row
+
+
 def get_approval(
     session: Session,
     approval_id: str,
@@ -497,6 +526,7 @@ __all__ = [
     "approval_to_model",
     "build_snapshot",
     "claim_to_model",
+    "confirm_high_risk_fields",
     "consume_approval",
     "consume_claim",
     "count_pending_interventions",

@@ -205,6 +205,59 @@ def revoke_approval_endpoint(
     )
 
 
+@router.post("/submit/{application_id}/observe")
+def observe_snapshot_endpoint(
+    request: Request,
+    application_id: str,
+) -> dict[str, Any]:
+    """Observe the live form and persist the current snapshot.
+
+    Launches the browser (via the registered context factory), navigates
+    to the application URL, fills the form, and builds a complete
+    snapshot from the live page. The snapshot is persisted as an
+    unapproved approval row. The dashboard displays this snapshot and
+    the user explicitly approves its hash.
+
+    Returns the persisted snapshot data including the snapshot_hash and
+    form_fingerprint that the user should verify before approving.
+    """
+    app = request.app
+    settings = app.state.settings
+    session_factory = app.state.session_factory
+
+    context_factory = getattr(app.state, "submission_context_factory", None)
+    if context_factory is None:
+        raise HTTPException(
+            status_code=503,
+            detail="no browser context factory registered; cannot observe live form",
+        )
+
+    from universal_auto_applier.submission.execution_service import (
+        SubmissionExecutionService,
+    )
+
+    service = SubmissionExecutionService(settings, session_factory, context_factory)
+    snapshot = service.observe_and_persist_snapshot(application_id=application_id)
+
+    if snapshot is None:
+        raise HTTPException(
+            status_code=500,
+            detail="failed to observe live form (check logs for details)",
+        )
+
+    return {
+        "application_id": application_id,
+        "snapshot_hash": snapshot.snapshot_hash,
+        "form_fingerprint": snapshot.form_fingerprint,
+        "application_url": snapshot.application_url,
+        "field_count": len(snapshot.fields),
+        "document_count": len(snapshot.documents),
+        "pending_intervention_count": snapshot.pending_intervention_count,
+        "unresolved_required_field_count": snapshot.unresolved_required_field_count,
+        "high_risk_unconfirmed_count": snapshot.high_risk_unconfirmed_count,
+    }
+
+
 @router.post("/submit/{application_id}/submit", response_model=SubmitResponse)
 def submit_endpoint(
     request: Request,
@@ -218,17 +271,15 @@ def submit_endpoint(
     - ``confirm: true`` (deliberate confirmation)
     - ``approval_id`` matching an active approval
 
-    The actual browser interaction is NOT performed by this endpoint
-    directly (the API runs in the dashboard server process, which does
-    not own a browser context). Instead, this endpoint:
-    1. Verifies the gates.
-    2. Records the submit request.
-    3. Returns ``state=submission_not_allowed`` if any gate fails.
+    With valid approval and enabled configuration, this endpoint launches
+    the browser via the :class:`SubmissionExecutionService`, navigates to
+    the application, recomputes the snapshot, acquires the claim, and
+    clicks Submit exactly once on the same live Page.
 
-    The actual click is performed by the CLI ``live-submit`` command or
-    a future background worker, which owns the browser context. This
-    endpoint is the API gate that the dashboard calls to verify the
-    request is allowed before launching the browser.
+    Call path:
+    Dashboard → ``POST /api/submit/{id}/submit`` →
+    ``SubmissionExecutionService.execute_controlled_submission`` →
+    ``coordinator.execute_submission_from_page`` (same Page)
 
     If ``confirm`` is not True, returns 400.
     """
@@ -242,28 +293,47 @@ def submit_endpoint(
     settings = app.state.settings
     session_factory = app.state.session_factory
 
-    coordinator = SubmissionCoordinator(settings, session_factory)
+    # Use the execution service if a context factory is registered on
+    # app.state. Tests register a FixtureContextFactory; production
+    # uses PlaywrightContextFactory.
+    context_factory = getattr(app.state, "submission_context_factory", None)
 
-    # Check gates. The browser-level gates (submit control visibility,
-    # URL match) cannot be checked here — they are checked by the CLI
-    # worker that owns the browser. This endpoint checks the
-    # non-browser gates and records the request.
-    gate = coordinator.check_gates(application_id=application_id)
-    if not gate.allowed:
-        return SubmitResponse(
-            application_id=application_id,
-            state=str(gate.state),
-            clicked=False,
-            error_message=gate.reason,
+    if context_factory is not None:
+        # Real execution: launch browser, navigate, fill, click.
+        from universal_auto_applier.submission.execution_service import (
+            SubmissionExecutionService,
         )
 
-    # The actual click is performed by the CLI worker. This endpoint
-    # confirms the request is allowed and returns a "ready to submit"
-    # state. The dashboard then triggers the CLI worker (or the user
-    # runs the CLI manually).
-    return SubmitResponse(
-        application_id=application_id,
-        state="ready_to_submit",
-        clicked=False,
-        confirmation_evidence="gates passed; awaiting browser worker",
-    )
+        service = SubmissionExecutionService(settings, session_factory, context_factory)
+        artifact_dir = settings.data_dir / "live-runs" / f"{application_id[:12]}-submit"
+        result = service.execute_controlled_submission(
+            application_id=application_id,
+            approval_id=body.approval_id,
+            artifact_dir=artifact_dir,
+        )
+        return SubmitResponse(
+            application_id=application_id,
+            state=str(result.state),
+            clicked=result.clicked,
+            confirmation_evidence=result.confirmation_evidence,
+            error_message=result.error_message,
+        )
+    else:
+        # No context factory: check gates only (for API-only tests that
+        # don't have a browser). This path returns the gate state
+        # without clicking.
+        coordinator = SubmissionCoordinator(settings, session_factory)
+        gate = coordinator.check_gates(application_id=application_id)
+        if not gate.allowed:
+            return SubmitResponse(
+                application_id=application_id,
+                state=str(gate.state),
+                clicked=False,
+                error_message=gate.reason,
+            )
+        return SubmitResponse(
+            application_id=application_id,
+            state="ready_to_submit",
+            clicked=False,
+            confirmation_evidence="gates passed; no browser context factory registered",
+        )

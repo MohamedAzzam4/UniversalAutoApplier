@@ -1,5 +1,11 @@
 """Controlled final submission package."""
 
+from universal_auto_applier.submission.execution_service import (
+    BrowserContextFactory,
+    FixtureContextFactory,
+    PlaywrightContextFactory,
+    SubmissionExecutionService,
+)
 from universal_auto_applier.submission.models import (
     SubmissionApproval,
     SubmissionClaim,
@@ -13,8 +19,12 @@ from universal_auto_applier.submission.models import (
 )
 
 __all__ = [
+    "BrowserContextFactory",
+    "FixtureContextFactory",
+    "PlaywrightContextFactory",
     "SubmissionApproval",
     "SubmissionClaim",
+    "SubmissionExecutionService",
     "SubmissionResult",
     "SubmissionResultState",
     "SubmissionSnapshot",

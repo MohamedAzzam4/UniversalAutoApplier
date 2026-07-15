@@ -234,6 +234,7 @@ class SubmissionApprovalRow(Base):
     )
     snapshot_hash: Mapped[str] = mapped_column(String(64), index=True)
     snapshot_json: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    confirmed_high_risk_fields_json: Mapped[list[str]] = mapped_column(JSON, default=list)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
     consumed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
