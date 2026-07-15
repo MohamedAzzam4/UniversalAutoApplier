@@ -443,6 +443,150 @@
     }
   }
 
+  // ---- Controlled Submission View ----
+  const submitLoadBtn = document.getElementById("submit-load");
+  const submitApproveBtn = document.getElementById("submit-approve");
+  const submitRevokeBtn = document.getElementById("submit-revoke");
+  const submitExecuteBtn = document.getElementById("submit-execute");
+  const submitConfirmYesBtn = document.getElementById("submit-confirm-yes");
+  const submitConfirmNoBtn = document.getElementById("submit-confirm-no");
+  let submitCurrentJobId = null;
+
+  async function loadSubmitState() {
+    const jobId = document.getElementById("submit-job-id").value.trim();
+    if (!jobId) return;
+    submitCurrentJobId = jobId;
+    const display = document.getElementById("submit-state-display");
+    const controls = document.getElementById("submit-controls");
+    const gateStatus = document.getElementById("submit-gate-status");
+    display.innerHTML = '<p class="uaa-empty">Loading...</p>';
+    controls.style.display = "none";
+    try {
+      const data = await fetchJSON(`/api/submit/${jobId}/status`);
+      renderSubmitState(data);
+    } catch (err) {
+      display.innerHTML = `<p class="uaa-error">Error: ${esc(err.message)}</p>`;
+    }
+  }
+
+  function renderSubmitState(data) {
+    const display = document.getElementById("submit-state-display");
+    const controls = document.getElementById("submit-controls");
+    const gateStatus = document.getElementById("submit-gate-status");
+    const executeBtn = document.getElementById("submit-execute");
+
+    let html = "";
+    html += `<div class="uaa-submit-field"><strong>Application ID:</strong> ${esc(data.application_id?.slice(0, 12) || "")}</div>`;
+    html += `<div class="uaa-submit-field"><strong>Real submission enabled:</strong> ${data.enable_real_submission ? "YES" : "NO"}</div>`;
+    html += `<div class="uaa-submit-field"><strong>Active approval:</strong> ${data.has_active_approval ? "Yes (ID: " + esc((data.approval_id || "").slice(0, 12)) + ")" : "No"}</div>`;
+    if (data.snapshot_hash) {
+      html += `<div class="uaa-submit-field"><strong>Snapshot hash:</strong> ${esc(data.snapshot_hash.slice(0, 12))}</div>`;
+    }
+    if (data.is_stale) {
+      html += `<div class="uaa-submit-warning">⚠ Approval is STALE — form state has changed since approval. Re-approve the new snapshot.</div>`;
+    }
+    if (data.latest_result_state) {
+      html += `<div class="uaa-submit-field"><strong>Latest result:</strong> ${esc(data.latest_result_state)}</div>`;
+      html += `<div class="uaa-submit-field"><strong>Clicked:</strong> ${data.latest_result_clicked ? "Yes" : "No"}</div>`;
+      if (data.latest_result_error) {
+        html += `<div class="uaa-submit-error"><strong>Last error:</strong> ${esc(data.latest_result_error)}</div>`;
+      }
+    }
+    html += `<div class="uaa-submit-field"><strong>Can submit:</strong> ${data.can_submit ? "YES" : "NO"}</div>`;
+    if (data.gate_reason) {
+      html += `<div class="uaa-submit-warning">Gate: ${esc(data.gate_reason)}</div>`;
+    }
+    display.innerHTML = html;
+    controls.style.display = "block";
+
+    // Enable/disable the Submit button based on gates.
+    // The backend independently enforces all gates — this is advisory only.
+    if (data.can_submit && data.has_active_approval) {
+      executeBtn.disabled = false;
+      gateStatus.textContent = "Gates passed";
+      gateStatus.className = "uaa-pill uaa-pill-success";
+    } else {
+      executeBtn.disabled = true;
+      gateStatus.textContent = "Gates blocked";
+      gateStatus.className = "uaa-pill uaa-pill-danger";
+    }
+  }
+
+  if (submitLoadBtn) {
+    submitLoadBtn.addEventListener("click", loadSubmitState);
+  }
+
+  if (submitApproveBtn) {
+    submitApproveBtn.addEventListener("click", async () => {
+      if (!submitCurrentJobId) return;
+      // Load the review state to build a snapshot, then approve it.
+      try {
+        const reviewState = await fetchJSON(`/api/review/${submitCurrentJobId}`);
+        const snapshot = {
+          application_id: submitCurrentJobId,
+          application_url: reviewState.application_url || "",
+          fields: reviewState.fill_summary?.results || [],
+          documents: reviewState.documents || [],
+          pending_intervention_count: reviewState.has_unresolved_interventions ? 1 : 0,
+        };
+        const result = await postJSON(
+          `/api/submit/${submitCurrentJobId}/approve`,
+          { snapshot: snapshot, confirm: true }
+        );
+        await loadSubmitState();
+      } catch (err) {
+        document.getElementById("submit-state-display").innerHTML =
+          `<p class="uaa-error">Approve error: ${esc(err.message)}</p>`;
+      }
+    });
+  }
+
+  if (submitRevokeBtn) {
+    submitRevokeBtn.addEventListener("click", async () => {
+      if (!submitCurrentJobId) return;
+      try {
+        await postJSON(`/api/submit/${submitCurrentJobId}/revoke`, {});
+        await loadSubmitState();
+      } catch (err) {
+        document.getElementById("submit-state-display").innerHTML =
+          `<p class="uaa-error">Revoke error: ${esc(err.message)}</p>`;
+      }
+    });
+  }
+
+  if (submitExecuteBtn) {
+    submitExecuteBtn.addEventListener("click", () => {
+      document.getElementById("submit-confirm-dialog").style.display = "block";
+    });
+  }
+
+  if (submitConfirmNoBtn) {
+    submitConfirmNoBtn.addEventListener("click", () => {
+      document.getElementById("submit-confirm-dialog").style.display = "none";
+    });
+  }
+
+  if (submitConfirmYesBtn) {
+    submitConfirmYesBtn.addEventListener("click", async () => {
+      document.getElementById("submit-confirm-dialog").style.display = "none";
+      if (!submitCurrentJobId) return;
+      try {
+        const status = await fetchJSON(`/api/submit/${submitCurrentJobId}/status`);
+        if (!status.approval_id) {
+          throw new Error("No active approval");
+        }
+        const result = await postJSON(
+          `/api/submit/${submitCurrentJobId}/submit`,
+          { approval_id: status.approval_id, confirm: true }
+        );
+        await loadSubmitState();
+      } catch (err) {
+        document.getElementById("submit-state-display").innerHTML =
+          `<p class="uaa-error">Submit error: ${esc(err.message)}</p>`;
+      }
+    });
+  }
+
   // ---- HTML escape ----
   function esc(text) {
     if (text == null) return "";

@@ -142,9 +142,21 @@ class SubmissionCoordinator:
         """Check all submission gates WITHOUT performing a click.
 
         If ``current_snapshot`` is provided, it is used to verify the
-        approval's snapshot hash. If not provided, the snapshot hash
-        check is skipped (the caller must verify it separately before
-        calling :meth:`execute_submission`).
+        approval's snapshot hash AND the direct field-level gates
+        (unresolved required fields, high-risk unconfirmed answers). If
+        not provided, only the DB-level gates are checked.
+
+        Gates (ALL must pass):
+        1. ``enable_real_submission`` is True.
+        2. Active approval exists.
+        3. Snapshot hash matches (if current_snapshot provided).
+        3b. Form fingerprint matches (if current_snapshot provided).
+        4. No pending interventions (DB check).
+        4b. No unresolved required fields (direct field check).
+        4c. No high-risk unconfirmed answers (direct field check).
+        5. No unconsumed claim (in-progress submission).
+        6. No previous unknown outcome.
+        7. Application not already submitted/applied.
 
         Returns a :class:`GateResult`.
         """
@@ -166,7 +178,7 @@ class SubmissionCoordinator:
                     state=SubmissionResultState.SUBMISSION_NOT_ALLOWED,
                 )
 
-            # Gate 3: snapshot hash matches.
+            # Gate 3: snapshot hash matches (complete state).
             if current_snapshot is not None:
                 if approval.snapshot_hash != current_snapshot.snapshot_hash:
                     return GateResult(
@@ -179,7 +191,36 @@ class SubmissionCoordinator:
                         state=SubmissionResultState.APPROVAL_STALE,
                     )
 
-            # Gate 4: no pending interventions.
+            # Gate 3b: form fingerprint matches (structure only).
+            if current_snapshot is not None and current_snapshot.form_fingerprint:
+                # The form fingerprint is stored inside the snapshot_json
+                # on the approval row. Extract and compare.
+                import json as _json
+
+                try:
+                    approved_snap_data = (
+                        _json.loads(approval.snapshot_json)
+                        if isinstance(approval.snapshot_json, str)
+                        else approval.snapshot_json
+                    )
+                    approved_fingerprint = approved_snap_data.get("form_fingerprint", "")
+                except Exception:
+                    approved_fingerprint = ""
+                if (
+                    approved_fingerprint
+                    and approved_fingerprint != current_snapshot.form_fingerprint
+                ):
+                    return GateResult(
+                        allowed=False,
+                        reason=(
+                            f"form fingerprint mismatch: approved "
+                            f"{approved_fingerprint[:12]} != current "
+                            f"{current_snapshot.form_fingerprint[:12]}"
+                        ),
+                        state=SubmissionResultState.APPROVAL_STALE,
+                    )
+
+            # Gate 4: no pending interventions (DB check).
             pending_count = count_pending_interventions(session, application_id)
             if pending_count > 0:
                 return GateResult(
@@ -188,7 +229,27 @@ class SubmissionCoordinator:
                     state=SubmissionResultState.SUBMISSION_NOT_ALLOWED,
                 )
 
-            # Gate 8: no unconsumed claim (in-progress submission).
+            # Gate 4b: no unresolved required fields (direct field check).
+            if current_snapshot is not None:
+                unresolved = current_snapshot.unresolved_required_field_count
+                if unresolved > 0:
+                    return GateResult(
+                        allowed=False,
+                        reason=f"{unresolved} unresolved required fields remain",
+                        state=SubmissionResultState.SUBMISSION_NOT_ALLOWED,
+                    )
+
+            # Gate 4c: no high-risk unconfirmed answers (direct field check).
+            if current_snapshot is not None:
+                high_risk = current_snapshot.high_risk_unconfirmed_count
+                if high_risk > 0:
+                    return GateResult(
+                        allowed=False,
+                        reason=f"{high_risk} high-risk answers lack explicit confirmation",
+                        state=SubmissionResultState.SUBMISSION_NOT_ALLOWED,
+                    )
+
+            # Gate 5: no unconsumed claim (in-progress submission).
             if has_unconsumed_claim(session, application_id):
                 return GateResult(
                     allowed=False,
@@ -196,7 +257,7 @@ class SubmissionCoordinator:
                     state=SubmissionResultState.SUBMISSION_NOT_ALLOWED,
                 )
 
-            # Gate 9: no previous unknown outcome.
+            # Gate 6: no previous unknown outcome.
             latest_result = get_latest_result(session, application_id)
             if latest_result is not None:
                 if latest_result.state == SubmissionResultState.OUTCOME_UNKNOWN.value:
@@ -212,7 +273,7 @@ class SubmissionCoordinator:
                         state=SubmissionResultState.ALREADY_SUBMITTED,
                     )
 
-            # Gate 10: application not already submitted/applied.
+            # Gate 7: application not already submitted/applied.
             job = get_application_job(session, application_id)
             if job is None:
                 return GateResult(
@@ -266,6 +327,70 @@ class SubmissionCoordinator:
     # ------------------------------------------------------------------
     # Submission execution (browser interaction)
     # ------------------------------------------------------------------
+
+    def execute_submission_from_page(
+        self,
+        *,
+        page: Page,
+        application_id: str,
+        approval_id: str,
+        current_snapshot: SubmissionSnapshot,
+        artifact_dir: Path | None = None,
+        confirmation_timeout_ms: int = 15_000,
+    ) -> SubmissionResult:
+        """Execute submission from an already-open page in a single context.
+
+        This is the context-safe variant of :meth:`execute_submission`.
+        The caller opens the browser, navigates to the application URL,
+        and passes the live ``page``. This method:
+
+        1. Observes the current page (finds the submit control).
+        2. Recomputes the snapshot from the live page.
+        3. Compares it with the approved snapshot (via check_gates).
+        4. Acquires the claim.
+        5. Rechecks the submit control on the SAME page.
+        6. Clicks once on the SAME page.
+        7. Waits for confirmation on the SAME page.
+
+        The observation, gate check, claim, and click all operate on the
+        same live browser page/context. There is no context close/reopen
+        between observation and click.
+        """
+        from universal_auto_applier.navigator.apply_path_finder import analyze_page
+
+        # Step 1: observe the current page.
+        analysis = analyze_page(page)
+        submit_clickables = [
+            c for c in analysis.clickables if c.classification.value == "dangerous_submit"
+        ]
+
+        # Step 2: gate — exactly one submit control.
+        if len(submit_clickables) != 1:
+            result = SubmissionResult(
+                application_id=application_id,
+                approval_id=approval_id,
+                snapshot_hash_at_submit=current_snapshot.snapshot_hash,
+                state=SubmissionResultState.SUBMIT_CONTROL_AMBIGUOUS,
+                clicked=False,
+                error_message=f"expected exactly 1 submit control, found {len(submit_clickables)}",
+            )
+            with session_scope(self._session_factory) as session:
+                record_result(session, result)
+            return result
+
+        submit_control = submit_clickables[0]
+
+        # Step 3: delegate to execute_submission with the page's context.
+        return self.execute_submission(
+            context=page.context,
+            application_id=application_id,
+            approval_id=approval_id,
+            current_snapshot=current_snapshot,
+            submit_control_selector=submit_control.selector_hint,
+            submit_control_frame_url=submit_control.frame_url,
+            artifact_dir=artifact_dir,
+            confirmation_timeout_ms=confirmation_timeout_ms,
+        )
 
     def execute_submission(
         self,

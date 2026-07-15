@@ -16,7 +16,7 @@ from universal_auto_applier.persistence.db import build_engine_url
 from universal_auto_applier.persistence.migrations import apply_migrations
 
 # The current head revision. Update this when adding a new migration.
-CURRENT_HEAD = "0005_submission_tables"
+CURRENT_HEAD = "0006_submission_unique_constraints"
 
 
 def test_apply_migrations_creates_required_tables(tmp_path: Path) -> None:

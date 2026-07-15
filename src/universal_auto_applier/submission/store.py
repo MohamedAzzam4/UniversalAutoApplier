@@ -228,16 +228,22 @@ def acquire_claim(
     """Acquire a one-time submission claim.
 
     Returns the claim row if acquired, or None if a claim already exists
-    for this application (preventing duplicate clicks).
+    for this approval (preventing duplicate clicks).
 
-    The claim is acquired transactionally: if two concurrent requests try
-    to acquire a claim for the same application, only one succeeds. The
-    other gets None and must abort.
+    Database-enforced uniqueness: the ``submission_claims`` table has a
+    UNIQUE constraint on ``approval_id``. If two concurrent requests try
+    to acquire a claim for the same approval, only one INSERT succeeds;
+    the other gets an :class:`IntegrityError` which is caught and
+    translated to ``None``. This is stronger than SELECT-then-INSERT
+    because it survives race conditions even under non-serializable
+    isolation levels.
     """
-    # Check for an existing unconsumed claim.
+    from sqlalchemy.exc import IntegrityError as SAIntegrityError
+
+    # Check for an existing unconsumed claim (fast path — avoids the
+    # IntegrityError round-trip in the common case).
     stmt = select(SubmissionClaimRow).where(
-        SubmissionClaimRow.application_id == application_id,
-        SubmissionClaimRow.consumed_at.is_(None),
+        SubmissionClaimRow.approval_id == approval.approval_id,
     )
     existing = session.execute(stmt).scalar_one_or_none()
     if existing is not None:
@@ -260,7 +266,21 @@ def acquire_claim(
         consumed_state=None,
     )
     session.add(row)
-    session.flush()
+    try:
+        session.flush()
+    except SAIntegrityError:
+        # A concurrent request inserted a claim for the same approval
+        # between our SELECT and INSERT. The unique constraint on
+        # approval_id caught the race. Roll back the flush and return
+        # None — the caller must abort.
+        session.rollback()
+        logger.warning(
+            "[%s] submission claim race: concurrent insert detected for approval %s",
+            application_id[:12],
+            approval.approval_id[:12],
+        )
+        return None
+
     logger.info(
         "[%s] submission claim acquired: id=%s",
         application_id[:12],
@@ -325,9 +345,14 @@ def record_result(
 ) -> SubmissionResultRow:
     """Persist a submission result for audit.
 
-    Idempotent: if a result already exists for the same approval_id, it
-    is returned as-is (no duplicate).
+    Database-enforced idempotency: the ``submission_results`` table has
+    a UNIQUE constraint on ``approval_id``. If two concurrent requests
+    try to record a result for the same approval, only one INSERT
+    succeeds; the other gets an :class:`IntegrityError` which is caught
+    and the existing row is returned.
     """
+    from sqlalchemy.exc import IntegrityError as SAIntegrityError
+
     stmt = select(SubmissionResultRow).where(
         SubmissionResultRow.approval_id == result.approval_id,
     )
@@ -358,7 +383,23 @@ def record_result(
         attempted_at=result.attempted_at,
     )
     session.add(row)
-    session.flush()
+    try:
+        session.flush()
+    except SAIntegrityError:
+        # A concurrent request inserted a result for the same approval.
+        # Roll back and return the existing row.
+        session.rollback()
+        existing = session.execute(stmt).scalar_one_or_none()
+        if existing is not None:
+            logger.info(
+                "[%s] result race resolved: returning existing for approval %s",
+                result.application_id[:12],
+                result.approval_id[:12],
+            )
+            return existing
+        # If still None after rollback, re-raise (shouldn't happen).
+        raise
+
     logger.info(
         "[%s] submission result recorded: state=%s clicked=%s",
         result.application_id[:12],

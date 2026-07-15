@@ -56,6 +56,7 @@ class SubmissionSnapshotField(BaseModel):
     filled_value: str = ""
     selected_value: str = ""
     status: str
+    required: bool = False
     requires_confirmation: bool = False
     risk_level: str = ""
 
@@ -80,10 +81,21 @@ class SubmissionSnapshotSubmitControl(BaseModel):
 class SubmissionSnapshot(BaseModel):
     """A deterministic fingerprint of the form state at approval time.
 
-    The :attr:`snapshot_hash` is computed from all fields below. Any
-    change to a field value, document, URL, form structure, intervention
-    count, or submit control produces a different hash, invalidating any
-    prior approval.
+    Two hashes are computed:
+
+    - :attr:`form_fingerprint` — represents the canonical form STRUCTURE
+      (field tokens, types, labels, document kinds, submit control). Does
+      NOT include field values. A change here means the form itself changed
+      (a field was added/removed/renamed, the submit control moved, etc.).
+    - :attr:`snapshot_hash` — represents the complete form STATE (structure
+      + values + documents + URL + pending interventions). A change here
+      means ANY part of the form state changed (a value was edited, a
+      document was replaced, the URL changed, etc.).
+
+    Approval is tied to ``snapshot_hash``. The coordinator checks both:
+    a form-fingerprint mismatch returns ``approval_stale`` (form structure
+    changed); a snapshot-hash mismatch also returns ``approval_stale``
+    (values/documents/URL changed).
     """
 
     application_id: str
@@ -94,16 +106,58 @@ class SubmissionSnapshot(BaseModel):
     )
     pending_intervention_count: int = 0
     submit_control: SubmissionSnapshotSubmitControl | None = None
+    # Explicit gate flags computed from the field list. These are NOT
+    # inferred from pending_intervention_count — they are direct checks
+    # on the field records.
+    unresolved_required_field_count: int = 0
+    high_risk_unconfirmed_count: int = 0
     created_at: datetime = Field(default_factory=_utcnow)
+    form_fingerprint: str = ""
     snapshot_hash: str = ""
 
-    def compute_hash(self) -> str:
-        """Compute the deterministic snapshot hash.
+    def compute_form_fingerprint(self) -> str:
+        """Compute the form STRUCTURE fingerprint.
 
-        The hash is SHA-256 of a canonical JSON representation of the
-        snapshot (excluding ``created_at`` and the hash itself). The
-        canonical representation sorts list items by stable keys so the
-        same logical form state always produces the same hash.
+        Includes: field tokens, types, labels, document kinds, submit
+        control identity. Does NOT include field values, document content
+        hashes, URL, or pending interventions. A change here means the
+        form's structure changed.
+        """
+        structure_fields = sorted(
+            [
+                {
+                    "token": f.field_token,
+                    "type": f.field_type,
+                    "label": f.label,
+                }
+                for f in self.fields
+            ],
+            key=lambda f: f.get("token", ""),
+        )
+        doc_kinds = sorted([d.document_kind for d in self.documents])
+        canonical: dict[str, Any] = {
+            "fields": structure_fields,
+            "doc_kinds": doc_kinds,
+            "submit_control": (
+                {
+                    "text": self.submit_control.text,
+                    "selector": self.submit_control.selector,
+                    "frame_url": self.submit_control.frame_url,
+                }
+                if self.submit_control
+                else None
+            ),
+        }
+        payload = json.dumps(canonical, sort_keys=True, default=str)
+        return hashlib.sha256(payload.encode("utf-8")).hexdigest()[:32]
+
+    def compute_hash(self) -> str:
+        """Compute the complete form STATE snapshot hash.
+
+        Includes everything in the form fingerprint PLUS field values,
+        document content hashes, URL, pending interventions, and the
+        explicit gate flags. A change here means ANY part of the form
+        state changed.
         """
         canonical: dict[str, Any] = {
             "application_id": self.application_id,
@@ -117,14 +171,25 @@ class SubmissionSnapshot(BaseModel):
                 key=lambda d: (d.get("document_kind", ""), d.get("path", "")),
             ),
             "pending_intervention_count": self.pending_intervention_count,
+            "unresolved_required_field_count": self.unresolved_required_field_count,
+            "high_risk_unconfirmed_count": self.high_risk_unconfirmed_count,
             "submit_control": self.submit_control.model_dump() if self.submit_control else None,
         }
         payload = json.dumps(canonical, sort_keys=True, default=str)
         return hashlib.sha256(payload.encode("utf-8")).hexdigest()[:32]
 
+    def with_hashes(self) -> SubmissionSnapshot:
+        """Return a copy with both ``form_fingerprint`` and ``snapshot_hash`` populated."""
+        return self.model_copy(
+            update={
+                "form_fingerprint": self.compute_form_fingerprint(),
+                "snapshot_hash": self.compute_hash(),
+            }
+        )
+
     def with_hash(self) -> SubmissionSnapshot:
-        """Return a copy with ``snapshot_hash`` populated."""
-        return self.model_copy(update={"snapshot_hash": self.compute_hash()})
+        """Backward-compatible alias for :meth:`with_hashes`."""
+        return self.with_hashes()
 
 
 def build_snapshot_from_report(
@@ -144,6 +209,14 @@ def build_snapshot_from_report(
     from disk. If a file cannot be read, the content hash is empty
     (which still contributes to the snapshot hash, so a missing file
     invalidates the approval).
+
+    Also computes the explicit gate flags:
+    - ``unresolved_required_field_count``: direct count of fields with
+      status in (intervention_needed, failed, blocked) that are required.
+      This is NOT inferred from pending_intervention_count — it is a
+      direct check on the field records.
+    - ``high_risk_unconfirmed_count``: direct count of fields with
+      ``requires_confirmation=True`` or ``risk_level="high"``.
     """
     snap_fields = [
         SubmissionSnapshotField(
@@ -153,6 +226,7 @@ def build_snapshot_from_report(
             filled_value=f.filled_value,
             selected_value=f.selected_value,
             status=f.status,
+            required=False,  # LiveFieldRecord does not track required-ness
             requires_confirmation=f.requires_confirmation,
             risk_level=f.risk_level,
         )
@@ -184,6 +258,19 @@ def build_snapshot_from_report(
             frame_url=submit_control_frame_url,
         )
 
+    # Compute explicit gate flags directly from field records.
+    unresolved_statuses = {"intervention_needed", "failed", "blocked"}
+    unresolved_required = sum(
+        1 for f in snap_fields if f.status in unresolved_statuses and f.required
+    )
+    # Also count unresolved fields even if required-ness is unknown
+    # (LiveFieldRecord does not track required). This is a conservative
+    # direct check — any unresolved field blocks submission.
+    unresolved_any = sum(1 for f in snap_fields if f.status in unresolved_statuses)
+    high_risk_unconfirmed = sum(
+        1 for f in snap_fields if f.requires_confirmation or f.risk_level.lower() == "high"
+    )
+
     snap = SubmissionSnapshot(
         application_id=application_id,
         application_url=application_url,
@@ -191,8 +278,10 @@ def build_snapshot_from_report(
         documents=snap_docs,
         pending_intervention_count=pending_intervention_count,
         submit_control=submit_control,
+        unresolved_required_field_count=max(unresolved_required, unresolved_any),
+        high_risk_unconfirmed_count=high_risk_unconfirmed,
     )
-    return snap.with_hash()
+    return snap.with_hashes()
 
 
 # ---------------------------------------------------------------------------

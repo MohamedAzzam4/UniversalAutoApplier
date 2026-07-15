@@ -20,6 +20,7 @@
         <a href="#" data-view="queue">Queue</a>
         <a href="#" data-view="interventions">Interventions</a>
         <a href="#" data-view="review">Review</a>
+        <a href="#" data-view="submit">Submit</a>
         <a href="#" data-view="logs">Logs &amp; Errors</a>
       </nav>
     </header>
@@ -142,6 +143,31 @@
             <button id="review-approve" class="uaa-btn uaa-btn-success">Approve</button>
             <button id="review-deny" class="uaa-btn uaa-btn-danger">Deny / Revoke</button>
             <span id="submit-check-result" class="uaa-pill uaa-pill-idle"></span>
+          </div>
+        </div>
+      </section>
+
+      <!-- Submit View (Controlled Final Submission) -->
+      <section id="view-submit" class="uaa-view">
+        <div class="uaa-card">
+          <h2>Controlled Final Submission</h2>
+          <div class="uaa-review-bar">
+            <input id="submit-job-id" placeholder="Application ID" class="uaa-input" />
+            <button id="submit-load" class="uaa-btn">Load Submission State</button>
+          </div>
+          <div id="submit-state-display" class="uaa-review-display">
+            <p class="uaa-empty">Enter an application ID to view its submission state.</p>
+          </div>
+          <div id="submit-controls" class="uaa-review-controls" style="display:none;">
+            <button id="submit-approve" class="uaa-btn uaa-btn-success">Approve Current Snapshot</button>
+            <button id="submit-revoke" class="uaa-btn uaa-btn-danger">Revoke Approval</button>
+            <button id="submit-execute" class="uaa-btn uaa-btn-danger" disabled>Submit Approved Application</button>
+            <span id="submit-gate-status" class="uaa-pill uaa-pill-idle"></span>
+          </div>
+          <div id="submit-confirm-dialog" style="display:none;">
+            <p><strong>WARNING:</strong> This will click the final submit button on the real ATS form. Are you absolutely sure?</p>
+            <button id="submit-confirm-yes" class="uaa-btn uaa-btn-danger">Yes, Submit Now</button>
+            <button id="submit-confirm-no" class="uaa-btn">Cancel</button>
           </div>
         </div>
       </section>

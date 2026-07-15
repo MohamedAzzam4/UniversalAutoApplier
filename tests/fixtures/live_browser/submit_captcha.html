@@ -1,0 +1,31 @@
+<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8"><title>Submit with CAPTCHA</title></head>
+<body data-submitted="false">
+  <main>
+    <h1>Application Form (CAPTCHA)</h1>
+    <form id="apply-form" onsubmit="document.body.dataset.submitted='true'; return false;">
+      <label for="first_name">First name</label>
+      <input id="first_name" name="first_name" required>
+
+      <label for="email">Email address</label>
+      <input id="email" name="email" type="email" required>
+
+      <button type="submit" id="submit-btn">Submit application</button>
+    </form>
+    <div id="captcha-container" style="display:none;">
+      <h3>Please verify you are human</h3>
+      <div class="g-recaptcha" data-sitekey="fake">CAPTCHA widget</div>
+    </div>
+  </main>
+  <script>
+    document.getElementById('apply-form').addEventListener('submit', function(e) {
+      e.preventDefault();
+      document.body.dataset.submitted = 'false';
+      // Show a CAPTCHA after submit click — simulates an ATS that
+      // requires CAPTCHA verification before processing.
+      document.getElementById('captcha-container').style.display = 'block';
+    });
+  </script>
+</body>
+</html>

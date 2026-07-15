@@ -1,0 +1,27 @@
+<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8"><title>Submit with no outcome</title></head>
+<body data-submitted="false">
+  <main>
+    <h1>Application Form (no outcome)</h1>
+    <form id="apply-form" onsubmit="document.body.dataset.submitted='true'; return false;">
+      <label for="first_name">First name</label>
+      <input id="first_name" name="first_name" required>
+
+      <label for="email">Email address</label>
+      <input id="email" name="email" type="email" required>
+
+      <button type="submit" id="submit-btn">Submit application</button>
+    </form>
+    <!-- No confirmation message, no URL change. The click happens but
+         no detectable outcome appears. -->
+  </main>
+  <script>
+    document.getElementById('apply-form').addEventListener('submit', function(e) {
+      e.preventDefault();
+      document.body.dataset.submitted = 'true';
+      // Do nothing else — no confirmation message, no redirect.
+    });
+  </script>
+</body>
+</html>
