@@ -258,6 +258,43 @@ def count_pending_interventions(
     return len(list(session.execute(stmt).scalars().all()))
 
 
+def find_pending_intervention_for_field(
+    session: Session,
+    application_id: str,
+    kind: InterventionKind,
+    field_selector: str,
+    question: str,
+) -> InterventionRow | None:
+    """Find a PENDING intervention for a specific field, if one exists.
+
+    Used by the CLI persistence layer to supersede stale pending
+    interventions when a field that was previously unresolved is now
+    successfully filled. The lookup uses the deterministic intervention
+    ID (derived from application_id + kind + field_selector + question),
+    so it finds the exact intervention created for this field on a
+    previous run — regardless of how many other interventions exist.
+
+    Args:
+        session: An open SQLAlchemy session.
+        application_id: The job/application ID.
+        kind: The intervention kind (typically FIELD_ANSWER).
+        field_selector: The stable field token (e.g. ``lf-a1b2c3d4``).
+        question: The question text used when the intervention was created.
+
+    Returns:
+        The :class:`InterventionRow` if a PENDING intervention exists for
+        this field, or None if no such intervention exists (or if it
+        exists but is already resolved).
+    """
+    intervention_id = _make_intervention_id(application_id, str(kind), field_selector, question)
+    row = session.get(InterventionRow, intervention_id)
+    if row is None:
+        return None
+    if row.status != str(InterventionStatus.PENDING):
+        return None
+    return row
+
+
 __all__ = [
     "create_intervention",
     "resolve_intervention",
@@ -265,4 +302,5 @@ __all__ = [
     "list_all_interventions",
     "get_intervention",
     "count_pending_interventions",
+    "find_pending_intervention_for_field",
 ]

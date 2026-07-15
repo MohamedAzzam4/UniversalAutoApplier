@@ -11,8 +11,10 @@ Configuration comes from environment variables (never hardcoded):
 - ``UAA_LLM_PROVIDER`` — ``gemma`` (default) or ``mock``.
 - ``UAA_LLM_API_KEY`` — the Google AI API key. If unset, the service is
   ``not_configured`` and the caller creates an intervention.
-- ``UAA_LLM_MODEL`` — the model identifier (default: ``gemma-4-26b-a4b-it``,
-  matching JobHunter's primary Google model).
+- ``UAA_LLM_MODEL`` — the model identifier. **There is no default.** The
+  user must explicitly set this to a model they have verified is available
+  with their API key. If unset, the service reports ``model_not_configured``
+  and the caller creates an intervention.
 - ``UAA_LLM_TIMEOUT_MS`` — request timeout (default: 30000).
 - ``UAA_LLM_RETRY_COUNT`` — retry count on transient failures (default: 2).
 - ``UAA_LLM_MIN_AUTO_FILL_CONFIDENCE`` — minimum confidence for

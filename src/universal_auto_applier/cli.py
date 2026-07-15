@@ -179,20 +179,83 @@ def _live_dry_run(settings: Settings, args: argparse.Namespace) -> int:
 def _persist_interventions(settings: Settings, application_id: str, report: LiveRunReport) -> None:
     """Persist interventions for fields that need user input.
 
-    For every LiveFieldRecord with status=intervention_needed or
-    requires_confirmation=True, create a persisted intervention using
+    For every final-terminal LiveFieldRecord with status=intervention_needed
+    or requires_confirmation=True, create a persisted intervention using
     the existing intervention store. Uses the deterministic intervention
-    ID to prevent duplicates on reprocessing.
+    ID (derived from application_id + kind + field_selector + question) to
+    prevent duplicates on reprocessing.
+
+    Stale-pending supersession: for every final-terminal record whose
+    status is ``filled`` (the field was successfully answered), any
+    existing PENDING intervention for the same (application_id, kind,
+    field_selector, question) is resolved as ``RESOLVED``. This prevents
+    a stale pending intervention from lingering after the field was filled
+    — which was the real-ATS defect: a field first seen as
+    ``intervention_needed`` and later filled by the LLM left a stale
+    pending intervention because the token shifted between observations.
+
+    The report's fields are assumed to already be consolidated by
+    :func:`universal_auto_applier.form_engine.live_executor.consolidate_fields`
+    (one terminal record per logical field). This function does NOT
+    re-consolidate; it trusts the report's terminal state.
+
+    Legacy-token limitation (honest reporting): existing pending
+    interventions created with the OLD positional token format
+    (``live-field-0-N``) CANNOT be auto-matched to the NEW stable token
+    format (``lf-...``). The deterministic intervention ID is derived
+    from ``field_selector``, and since the selector format changed
+    completely, the IDs do not match. Such legacy pending interventions
+    are NOT automatically resolved by this function. They require
+    local-data cleanup: the user must manually resolve them via the
+    dashboard UI or run a one-time cleanup script. This is a known
+    migration cost of switching to stable field identity and is not
+    silently papered over.
     """
-    from universal_auto_applier.core.statuses import InterventionKind
-    from universal_auto_applier.interventions.store import create_intervention
+    from universal_auto_applier.core.statuses import (
+        InterventionKind,
+        InterventionStatus,
+    )
+    from universal_auto_applier.interventions.store import (
+        create_intervention,
+        find_pending_intervention_for_field,
+        resolve_intervention,
+    )
 
     engine, session_factory = _open_store(settings)
     try:
         with session_scope(session_factory) as session:
             for field in report.fields:
+                field_selector = field.field_token or field.selector
+                question = field.label or field.field_token or "Unknown question"
+
+                if field.status == "filled":
+                    # The field was successfully filled. If a previous run
+                    # left a PENDING intervention for this same field
+                    # (same application_id + kind + field_selector +
+                    # question), resolve it now — the intervention is no
+                    # longer needed. This is idempotent: if no pending
+                    # intervention exists, nothing happens.
+                    if not field_selector:
+                        continue
+                    stale = find_pending_intervention_for_field(
+                        session,
+                        application_id=application_id,
+                        kind=InterventionKind.FIELD_ANSWER,
+                        field_selector=field_selector,
+                        question=question,
+                    )
+                    if stale is not None:
+                        resolve_intervention(
+                            session,
+                            stale.intervention_id,
+                            resolution=InterventionStatus.RESOLVED,
+                            answer=field.filled_value or None,
+                        )
+                    continue
+
                 if field.status != "intervention_needed" and not field.requires_confirmation:
                     continue
+
                 llm_metadata: dict[str, Any] | None = None
                 if field.category or field.risk_level or field.evidence_summary:
                     llm_metadata = {
@@ -209,11 +272,11 @@ def _persist_interventions(settings: Settings, application_id: str, report: Live
                     session,
                     application_id=application_id,
                     kind=InterventionKind.FIELD_ANSWER,
-                    question=field.label or field.field_token or "Unknown question",
+                    question=question,
                     options=[],
                     suggested_answer=field.proposed_answer,
                     confidence=field.confidence,
-                    field_selector=field.field_token or field.selector,
+                    field_selector=field_selector,
                     page_url=field.page_url,
                     llm_metadata=llm_metadata,
                 )

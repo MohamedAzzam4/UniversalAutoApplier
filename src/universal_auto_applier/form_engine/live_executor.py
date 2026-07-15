@@ -13,6 +13,7 @@ facts and never clicks final submit.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import re
@@ -223,11 +224,171 @@ def _field_options(locator: Locator, field_type: str) -> list[FieldOption]:
     return []
 
 
+# ---------------------------------------------------------------------------
+# Stable field identity
+# ---------------------------------------------------------------------------
+#
+# Field tokens must NOT depend on extraction order or list index. A field
+# that appears at index 5 in one observation and index 4 in the next (because
+# a new field was inserted above it, or a conditional field was revealed)
+# must keep the same token so that:
+#   - later fills can supersede earlier interventions;
+#   - CLI persistence does not create a stale pending intervention for a
+#     field that was actually filled;
+#   - re-runs are idempotent.
+#
+# Canonical identity is built from stable DOM properties:
+#   - frame identity:
+#       * the top (main) frame is always the literal string "main", so
+#         dynamic page URLs (query strings, fragments, SPA route changes)
+#         do not change top-frame field identity;
+#       * iframe URLs are stripped of their query string and fragment
+#         (volatile session tokens, timestamps) — scheme+host+path only;
+#   - field type;
+#   - element id (most stable when present);
+#   - input name attribute;
+#   - for radio groups: (frame_id, "radio", group name, normalized
+#     question label) — one token per group, shared across all options;
+#   - normalized question/group label (disambiguates fields that share id
+#     and name, e.g. multiple unnamed text inputs in different fieldsets).
+#
+# The token is a short SHA-256 hex prefix of the canonical string, prefixed
+# with `lf-` (live field) so it is visually distinct from the legacy
+# `live-field-0-N` positional tokens.
+#
+# Legacy compatibility: existing pending interventions created with the
+# old positional tokens (``live-field-0-N``) CANNOT be auto-matched to
+# the new stable tokens (``lf-...``). They require local-data cleanup
+# (manual resolution via the dashboard or a one-time cleanup script).
+# This is documented honestly in _persist_interventions and is NOT
+# silently papered over.
+
+_FRAME_MAIN_SENTINEL = "main"
+
+
+def _frame_identity(frame_url: str, is_main_frame: bool = False) -> str:
+    """Normalize a frame URL into a stable frame identifier.
+
+    The top frame is always returned as the literal string ``main`` so
+    that dynamic page URLs (query strings, fragments, SPA route changes)
+    do not unnecessarily change field identity for top-frame fields.
+
+    Iframe URLs are stripped of their query string and fragment so that
+    volatile parameters (session tokens, timestamps, cache-busters) do
+    not change the iframe's identity across observations. The scheme,
+    host, and path are preserved — they identify the embedded document
+    (e.g. ``https://boards.greenhouse.io/embed/job_applications/123``).
+
+    Args:
+        frame_url: The frame's current URL.
+        is_main_frame: True if this is the page's main (top) frame.
+
+    Returns:
+        A stable frame identifier string.
+    """
+    if is_main_frame:
+        return _FRAME_MAIN_SENTINEL
+    if not frame_url or frame_url == "about:blank":
+        return _FRAME_MAIN_SENTINEL
+    # Strip volatile query strings and fragments from iframe URLs.
+    # Keep scheme + host + path (stable), drop ?query and #fragment.
+    from urllib.parse import urlsplit, urlunsplit
+
+    parts = urlsplit(frame_url)
+    return urlunsplit((parts.scheme, parts.netloc, parts.path, "", ""))
+
+
+def _normalize_label_for_token(label: str) -> str:
+    """Normalize a label/question text for inclusion in the token.
+
+    Lowercases, collapses whitespace, strips non-alphanumeric characters.
+    Truncated to 80 chars so a very long legend does not bloat the hash
+    input. Empty labels normalize to empty string (and are excluded from
+    the canonical string by the caller).
+    """
+    if not label:
+        return ""
+    normalized = re.sub(r"[^a-z0-9]+", " ", label.lower()).strip()
+    return normalized[:80]
+
+
+def compute_field_token(
+    *,
+    frame_id: str,
+    field_type: str,
+    element_id: str,
+    name: str,
+    label: str,
+    is_radio_group: bool = False,
+) -> str:
+    """Compute a stable field token from canonical DOM properties.
+
+    Args:
+        frame_id: The already-normalized frame identity (from
+            :func:`_frame_identity`). This is NOT the raw frame URL —
+            the caller must normalize first so that query strings,
+            fragments, and main-frame URL changes do not affect the
+            token.
+        field_type: The resolved field type (text, email, radio, etc.).
+        element_id: The element's ``id`` attribute (empty if absent).
+        name: The element's ``name`` attribute (empty if absent).
+        label: The resolved question/label text (legend, aria-label, etc.).
+        is_radio_group: True if this is a radio group (all options share
+            one token keyed on the group ``name`` attribute + question
+            label).
+
+    Returns:
+        A short stable token like ``lf-a1b2c3d4``.
+
+    Identity rules:
+    - Radio groups: token is derived from (frame_id, "radio", group
+      name, normalized question label). All options in the same group
+      produce the SAME token. The question label is included so two
+      radio groups that happen to share a ``name`` attribute but ask
+      different questions remain distinct (rare but possible in SPA
+      frameworks that reuse names across visually distinct groups).
+    - Non-radio fields: token is derived from (frame_id, type, id, name,
+      normalized label). When ``id`` is present it dominates; otherwise
+      ``name`` dominates; otherwise the normalized label is used.
+    - Two fields with the same id+name+label in the same frame collide
+      intentionally (they are the same field on re-extraction).
+    - Two fields with similar labels but different ids/names stay distinct.
+    - The token contains NO extraction index, NO list position, and NO
+      volatile URL component.
+    """
+    norm_label = _normalize_label_for_token(label)
+
+    if is_radio_group:
+        # Radio group identity: frame + "radio" + group name + question
+        # label. The question label disambiguates groups that share a
+        # name attribute but ask different questions.
+        canonical = f"radio|{frame_id}|{name}|{norm_label}"
+    else:
+        # Build the canonical string from the most-stable identifiers first.
+        parts: list[str] = [frame_id, field_type]
+        if element_id:
+            parts.append(f"id={element_id}")
+        if name:
+            parts.append(f"name={name}")
+        if norm_label:
+            parts.append(f"label={norm_label}")
+        canonical = "|".join(parts)
+
+    digest = hashlib.sha256(canonical.encode("utf-8")).hexdigest()[:12]
+    return f"lf-{digest}"
+
+
 def _extract_live_fields(page: Page) -> list[_LiveFieldTarget]:
     targets: list[_LiveFieldTarget] = []
-    processed_radio_groups: set[tuple[int, str]] = set()
+    # Radio groups are deduplicated by (frame_id, name) — a stable identity
+    # that does not depend on extraction order. The first radio we encounter
+    # for a given (frame, name) pair becomes the group's representative.
+    processed_radio_groups: set[tuple[str, str]] = set()
 
-    for frame_index, frame in enumerate(page.frames):
+    main_frame = page.main_frame
+    for frame in page.frames:
+        is_main = frame == main_frame
+        frame_id = _frame_identity(frame.url, is_main_frame=is_main)
         controls = frame.locator(_CONTROL_SELECTOR)
         try:
             control_count = min(controls.count(), 250)
@@ -263,12 +424,18 @@ def _extract_live_fields(page: Page) -> list[_LiveFieldTarget]:
                 continue
 
             name = str(meta.get("name", ""))
-            token = f"live-field-{frame_index}-{control_index}"
+            element_id = str(meta.get("id", ""))
+            label_text = str(meta.get("label", ""))
             target_locator = locator
             options: list[FieldOption] = _field_options(locator, field_type)
+            is_radio_group = False
 
             if field_type == "radio" and name:
-                group_key = (frame_index, name)
+                # Stable radio-group identity: (frame_id, name). This is
+                # independent of which radio option the iterator reached
+                # first, so inserting/removing/revealing fields above the
+                # group does not change the group's token.
+                group_key = (frame_id, name)
                 if group_key in processed_radio_groups:
                     continue
                 processed_radio_groups.add(group_key)
@@ -325,6 +492,20 @@ def _extract_live_fields(page: Page) -> list[_LiveFieldTarget]:
                 meta["nearby"] = question_label
                 meta["value"] = selected_value
                 meta["required"] = required
+                label_text = question_label
+                is_radio_group = True
+
+            # Stable token: derived from canonical DOM properties, NOT from
+            # the iteration index. Same field keeps the same token across
+            # re-extractions even if the DOM changes above/below it.
+            token = compute_field_token(
+                frame_id=frame_id,
+                field_type=field_type,
+                element_id=element_id,
+                name=name,
+                label=label_text,
+                is_radio_group=is_radio_group,
+            )
 
             tag = str(meta.get("tag", "input"))
             field_model = FormField(
@@ -524,6 +705,85 @@ def _validation_errors(page: Page) -> list[str]:
     return errors
 
 
+# ---------------------------------------------------------------------------
+# Field-record consolidation
+# ---------------------------------------------------------------------------
+#
+# A field may be observed more than once during a single execution:
+#   - the initial pass records it as ``intervention_needed`` (no mapping);
+#   - the LLM pass later resolves it and updates the record to ``filled``;
+#   - the re-observation pass may re-extract the same field.
+#
+# Before the final report is returned to the runner (and before
+# interventions are persisted), ``consolidate_fields`` collapses the
+# list to ONE terminal record per logical field, keyed by ``field_token``.
+#
+# Supersession rules (later wins, in priority order):
+#   1. ``filled`` supersedes ``intervention_needed`` / ``failed`` / ``skipped``
+#      (the field was successfully answered after the first attempt).
+#   2. ``intervention_needed`` supersedes ``skipped`` / ``blocked`` for
+#      required fields (an unresolved required field is the terminal state).
+#   3. ``failed`` is preserved only if no later record exists for the same
+#      token (a later record means the failure was retried and superseded).
+#   4. ``skipped`` / ``blocked`` are kept only if no later record exists.
+#
+# Records with no ``field_token`` (legacy/edge case) are passed through
+# untouched — they cannot be consolidated by identity.
+#
+# The order of records in the final list is the order of first appearance
+# (stable: the first time we saw the field), so the report's field order
+# matches the DOM order on the initial observation.
+
+# Status priority for terminal records (higher number = more terminal).
+# A later record with a higher-priority status supersedes an earlier one.
+_STATUS_PRIORITY: dict[str, int] = {
+    "skipped": 1,
+    "blocked": 2,
+    "failed": 3,
+    "intervention_needed": 4,
+    "filled": 5,
+}
+
+
+def consolidate_fields(records: list[LiveFieldRecord]) -> list[LiveFieldRecord]:
+    """Collapse a list of field records to one terminal record per token.
+
+    See the module-level comment for the supersession rules. Records
+    without a ``field_token`` are passed through unchanged.
+    """
+    if not records:
+        return []
+
+    consolidated: list[LiveFieldRecord] = []
+    seen_tokens: dict[str, int] = {}  # token -> index in `consolidated`
+
+    for record in records:
+        token = record.field_token
+        if not token:
+            # No stable identity — cannot consolidate, pass through.
+            consolidated.append(record)
+            continue
+
+        if token not in seen_tokens:
+            seen_tokens[token] = len(consolidated)
+            consolidated.append(record)
+            continue
+
+        # A previous record exists for this token. Apply supersession rules.
+        prev_index = seen_tokens[token]
+        prev = consolidated[prev_index]
+        prev_prio = _STATUS_PRIORITY.get(prev.status, 0)
+        new_prio = _STATUS_PRIORITY.get(record.status, 0)
+
+        # Later record wins if its status is strictly more terminal OR
+        # if it is at the same priority (a re-fill updates the record
+        # with the latest evidence/explanation).
+        if new_prio >= prev_prio:
+            consolidated[prev_index] = record
+
+    return consolidated
+
+
 def execute_live_form(
     page: Page,
     candidate: CandidateProfile,
@@ -690,6 +950,12 @@ def execute_live_form(
         # Only newly filled tokens from this pass could trigger another
         # reveal, but we stop here (bounded to 1 pass).
 
+    # Consolidate duplicate records by stable field_token. A field may
+    # appear in both the initial pass and the re-observation pass (e.g. a
+    # radio group that was already extracted, then re-extracted after a
+    # conditional reveal). The final report must contain ONE terminal
+    # record per logical field.
+    execution.fields = consolidate_fields(execution.fields)
     execution.validation_errors = _validation_errors(page)
     return execution
 
@@ -902,6 +1168,12 @@ def execute_live_form_with_llm(
                 )
             break
 
+    # Consolidate duplicate records by stable field_token. The LLM pass
+    # above updates records in place (via execution.fields[i] = ...), but
+    # a field that was extracted in the initial pass AND re-extracted in
+    # the re-observation pass may have two records. Collapse to ONE
+    # terminal record per logical field before returning to the runner.
+    execution.fields = consolidate_fields(execution.fields)
     # Re-check validation errors after LLM fills.
     execution.validation_errors = _validation_errors(page)
     return execution
@@ -912,4 +1184,6 @@ __all__ = [
     "execute_live_form",
     "execute_live_form_with_llm",
     "validate_typed_answer",
+    "compute_field_token",
+    "consolidate_fields",
 ]

@@ -1,0 +1,44 @@
+<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8"><title>Dynamic DOM insert test form</title></head>
+<body data-submitted="false">
+  <main>
+    <h1>Dynamic DOM Insert Form</h1>
+    <form id="dynamic-form" onsubmit="document.body.dataset.submitted='true'; return false;">
+      <label for="first_name">First name</label>
+      <input id="first_name" name="first_name" required>
+
+      <label for="email">Email address</label>
+      <input id="email" name="email" type="email" required>
+
+      <!-- This field is the "existing field" whose token must stay stable
+           when a new field is inserted before it. -->
+      <label for="phone">Phone number</label>
+      <input id="phone" name="phone" type="tel" required>
+
+      <button type="submit">Submit application</button>
+    </form>
+  </main>
+  <script>
+    // Helper for tests: insert a new field above #phone.
+    // Exposed as window.__insertFieldAbovePhone so Playwright can call it.
+    window.__insertFieldAbovePhone = function () {
+      var form = document.getElementById('dynamic-form');
+      var phoneLabel = form.querySelector('label[for="phone"]');
+      var phoneInput = document.getElementById('phone');
+
+      var newLabel = document.createElement('label');
+      newLabel.setAttribute('for', 'middle_name');
+      newLabel.textContent = 'Middle name';
+
+      var newInput = document.createElement('input');
+      newInput.setAttribute('id', 'middle_name');
+      newInput.setAttribute('name', 'middle_name');
+      newInput.setAttribute('type', 'text');
+
+      form.insertBefore(newLabel, phoneLabel);
+      form.insertBefore(newInput, phoneLabel);
+    };
+  </script>
+</body>
+</html>
