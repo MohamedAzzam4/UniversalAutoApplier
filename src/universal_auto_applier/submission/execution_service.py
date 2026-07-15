@@ -102,11 +102,16 @@ class PlaywrightContextFactory:
                 self._browser.close()
             except Exception:
                 pass
+            self._browser = None
         if self._playwright is not None:
             try:
                 self._playwright.stop()
             except Exception:
                 pass
+            self._playwright = None
+        import gc
+
+        gc.collect()
 
 
 class FixtureContextFactory:
@@ -134,11 +139,19 @@ class FixtureContextFactory:
                 self._browser.close()
             except Exception:
                 pass
+            self._browser = None
         if self._playwright is not None:
             try:
                 self._playwright.stop()
             except Exception:
                 pass
+            self._playwright = None
+        # Force garbage collection to clean up Playwright subprocess
+        # pipes and greenlet objects. Important on Python 3.13+ where
+        # ResourceWarning handling is stricter.
+        import gc
+
+        gc.collect()
 
 
 # ---------------------------------------------------------------------------
