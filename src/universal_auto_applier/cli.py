@@ -256,10 +256,18 @@ def _persist_interventions(settings: Settings, application_id: str, report: Live
                 if field.status != "intervention_needed" and not field.requires_confirmation:
                     continue
 
+                # Pass the field's available options through to BOTH the
+                # intervention's `options` column and the LLM metadata's
+                # `available_options` field. Previously this was hardcoded
+                # to [], which lost the option list on persisted
+                # interventions (real-ATS defect: the user saw an
+                # intervention with no choices to pick from).
+                field_options = list(field.options)
+
                 llm_metadata: dict[str, Any] | None = None
                 if field.category or field.risk_level or field.evidence_summary:
                     llm_metadata = {
-                        "available_options": [],
+                        "available_options": field_options,
                         "evidence_summary": field.evidence_summary or "",
                         "category": field.category or "",
                         "risk_level": field.risk_level or "",
@@ -273,7 +281,7 @@ def _persist_interventions(settings: Settings, application_id: str, report: Live
                     application_id=application_id,
                     kind=InterventionKind.FIELD_ANSWER,
                     question=question,
-                    options=[],
+                    options=field_options,
                     suggested_answer=field.proposed_answer,
                     confidence=field.confidence,
                     field_selector=field_selector,

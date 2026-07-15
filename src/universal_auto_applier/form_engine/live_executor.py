@@ -544,7 +544,14 @@ def _normalize_option(value: str) -> str:
     return aliases.get(normalized, normalized)
 
 
-def _select_option(locator: Locator, value: str) -> None:
+def _select_option(locator: Locator, value: str) -> str:
+    """Select a <select> option matching ``value``.
+
+    Returns the LABEL of the option that was actually selected (e.g.
+    ``"Germany"`` when the proposed value was ``"de"`` or ``"Germany"``).
+    This lets the caller record the actual DOM selection rather than the
+    proposed value, which may have been a normalized alias.
+    """
     desired = _normalize_option(value)
     options = locator.locator("option")
     for index in range(options.count()):
@@ -553,33 +560,50 @@ def _select_option(locator: Locator, value: str) -> None:
         option_label = option.inner_text().strip()
         if desired in {_normalize_option(option_value), _normalize_option(option_label)}:
             locator.select_option(value=option_value, force=True)
-            return
+            return option_label or option_value
     raise ValueError(f"no select option matches {value!r}")
 
 
-def _choose_radio(locator: Locator, value: str) -> None:
+def _choose_radio(locator: Locator, value: str) -> str:
+    """Check the radio option matching ``value``.
+
+    Returns the VALUE (or label, whichever is non-empty) of the radio
+    that was actually checked. For a German form with options
+    ``[value="ja", value="nein"]``, proposing ``"Yes"`` checks the
+    ``"ja"`` radio and returns ``"ja"`` — NOT ``"Yes"``.
+    """
     desired = _normalize_option(value)
     for index in range(locator.count()):
         option = locator.nth(index)
         meta = _metadata(option)
+        option_value = str(meta.get("value", ""))
+        option_label = str(meta.get("label", ""))
         candidates = {
-            _normalize_option(str(meta.get("value", ""))),
-            _normalize_option(str(meta.get("label", ""))),
+            _normalize_option(option_value),
+            _normalize_option(option_label),
         }
         if desired in candidates:
             option.check()
-            return
+            # Prefer the value (what the form actually submits); fall back
+            # to the label if the value is empty (some forms use empty
+            # values and rely on the label).
+            return option_value or option_label
     raise ValueError(f"no radio option matches {value!r}")
 
 
-def _set_checkbox(locator: Locator, value: str) -> None:
+def _set_checkbox(locator: Locator, value: str) -> str:
+    """Check or uncheck the checkbox based on ``value``.
+
+    Returns the normalized state that was actually applied: ``"yes"`` if
+    checked, ``"no"`` if unchecked.
+    """
     desired = _normalize_option(value)
     if desired == "yes":
         locator.check()
-        return
+        return "yes"
     if desired == "no":
         locator.uncheck()
-        return
+        return "no"
     raise ValueError(f"checkbox answer must be yes/no, got {value!r}")
 
 
@@ -657,18 +681,32 @@ def validate_typed_answer(
     return True, ""
 
 
-def _execute_field(target: _LiveFieldTarget, value: str) -> None:
+def _execute_field(target: _LiveFieldTarget, value: str) -> str:
+    """Fill the field with ``value`` and return the actual DOM-recorded value.
+
+    For text/email/phone/textarea/date/number fields, the returned value is
+    the input value (what was typed).
+
+    For select/radio/checkbox fields, the returned value is the LABEL or
+    VALUE of the option that was actually selected/checked — NOT the
+    proposed value. This is critical for cross-language forms: if the
+    proposed answer was ``"Yes"`` but the form's options are
+    ``["ja", "nein"]``, the actual DOM selection is ``"ja"`` and that is
+    what gets recorded in ``filled_value`` and ``selected_value``.
+    """
     field_type = target.field.type
     if field_type in {"text", "email", "phone", "textarea", "date", "number"}:
         target.locator.fill(value)
+        return value
     elif field_type == "select":
-        _select_option(target.locator, value)
+        return _select_option(target.locator, value)
     elif field_type == "radio":
-        _choose_radio(target.locator, value)
+        return _choose_radio(target.locator, value)
     elif field_type == "checkbox":
-        _set_checkbox(target.locator, value)
+        return _set_checkbox(target.locator, value)
     elif field_type == "file":
         target.locator.set_input_files(value)
+        return value
     else:
         raise ValueError(f"unsupported live field type: {field_type}")
 
@@ -807,6 +845,7 @@ def execute_live_form(
         status = result.status
         explanation = result.explanation
         filled_value = ""
+        actual_selected = target.field.current_value  # DOM selection before fill
         if status == "filled" and result.value is not None:
             # Validate the typed answer BEFORE Playwright touches the field.
             # Invalid answers become intervention_needed (never ``failed``)
@@ -826,8 +865,14 @@ def execute_live_form(
                 )
             else:
                 try:
-                    _execute_field(target, result.value)
-                    filled_value = str(result.value)
+                    # _execute_field returns the ACTUAL option that was
+                    # selected/checked in the DOM (e.g. "ja" when the
+                    # proposed value was "Yes"). Record that as both
+                    # filled_value and selected_value so the report and
+                    # persisted interventions reflect what the form
+                    # actually received, not the normalized alias.
+                    actual_selected = _execute_field(target, result.value)
+                    filled_value = actual_selected
                     if target.field.type == "file":
                         page.wait_for_timeout(1_000)
                     elif target.field.type in ("radio", "select", "checkbox"):
@@ -874,7 +919,7 @@ def execute_live_form(
                 explanation=explanation,
                 field_token=target.token,
                 options=[opt.label or opt.value for opt in target.field.options],
-                selected_value=target.field.current_value,
+                selected_value=actual_selected,
                 filled_value=filled_value,
             )
         )
@@ -912,9 +957,10 @@ def execute_live_form(
             status = result.status
             explanation = result.explanation
             filled_value = ""
+            actual_selected = target.field.current_value
             if status == "filled" and result.value is not None:
                 # Validate typed answer BEFORE Playwright filling. Same rule
-                # as the initial pass: invalid → intervention_needed (not failed).
+                # as the initial pass: invalid -> intervention_needed (not failed).
                 is_valid, reason = validate_typed_answer(
                     target.field.type, result.value, target.field.options
                 )
@@ -923,8 +969,8 @@ def execute_live_form(
                     explanation = f"typed-answer validation failed: {reason}"
                 else:
                     try:
-                        _execute_field(target, result.value)
-                        filled_value = str(result.value)
+                        actual_selected = _execute_field(target, result.value)
+                        filled_value = actual_selected
                         execution.filled += 1
                     except Exception as exc:
                         status = "failed"
@@ -943,7 +989,7 @@ def execute_live_form(
                     explanation=explanation,
                     field_token=target.token,
                     options=[opt.label or opt.value for opt in target.field.options],
-                    selected_value=target.field.current_value,
+                    selected_value=actual_selected,
                     filled_value=filled_value,
                 )
             )
@@ -1091,8 +1137,10 @@ def execute_live_form_with_llm(
                     )
                 else:
                     # Try to fill the field with the validated LLM answer.
+                    # _execute_field returns the ACTUAL option selected in
+                    # the DOM (e.g. "ja" when the LLM proposed "Yes").
                     try:
-                        _execute_field(target, fill_value)
+                        actual_selected = _execute_field(target, fill_value)
                         execution.fields[i] = LiveFieldRecord(
                             page_url=record.page_url,
                             selector=record.selector,
@@ -1109,8 +1157,8 @@ def execute_live_form_with_llm(
                             risk_level=str(resolution.risk_level),
                             requires_confirmation=False,
                             options=[opt.label or opt.value for opt in target.field.options],
-                            selected_value=target.field.current_value,
-                            filled_value=fill_value,
+                            selected_value=actual_selected,
+                            filled_value=actual_selected,
                         )
                         execution.filled += 1
                         if target.field.required:
