@@ -1,0 +1,29 @@
+<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8"><title>Submit with validation error</title></head>
+<body data-submitted="false">
+  <main>
+    <h1>Application Form (validation error)</h1>
+    <form id="apply-form" onsubmit="document.body.dataset.submitted='true'; return false;">
+      <label for="first_name">First name</label>
+      <input id="first_name" name="first_name" required>
+
+      <label for="email">Email address</label>
+      <input id="email" name="email" type="email" required>
+
+      <button type="submit" id="submit-btn">Submit application</button>
+    </form>
+    <div id="validation-error" class="error-message" style="display:none;">
+      Please fix the errors below before submitting.
+    </div>
+  </main>
+  <script>
+    document.getElementById('apply-form').addEventListener('submit', function(e) {
+      e.preventDefault();
+      // Simulate a server-side validation error.
+      document.body.dataset.submitted = 'false';
+      document.getElementById('validation-error').style.display = 'block';
+    });
+  </script>
+</body>
+</html>

@@ -16,7 +16,7 @@ from universal_auto_applier.persistence.db import build_engine_url
 from universal_auto_applier.persistence.migrations import apply_migrations
 
 # The current head revision. Update this when adding a new migration.
-CURRENT_HEAD = "0004_intervention_llm_metadata"
+CURRENT_HEAD = "0005_submission_tables"
 
 
 def test_apply_migrations_creates_required_tables(tmp_path: Path) -> None:
@@ -41,6 +41,9 @@ def test_apply_migrations_creates_required_tables(tmp_path: Path) -> None:
         "answer_memories",
         "artifacts",
         "system_runs",
+        "submission_approvals",
+        "submission_claims",
+        "submission_results",
     }
     assert expected.issubset(actual), f"missing tables: {expected - actual}"
 

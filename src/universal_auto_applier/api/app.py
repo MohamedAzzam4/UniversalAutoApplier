@@ -29,6 +29,7 @@ from universal_auto_applier.api.routes.queue import router as queue_router
 from universal_auto_applier.api.routes.retry import router as retry_router
 from universal_auto_applier.api.routes.review import router as review_router
 from universal_auto_applier.api.routes.status import router as status_router
+from universal_auto_applier.api.routes.submit import router as submit_router
 from universal_auto_applier.config import Settings
 from universal_auto_applier.persistence.db import (
     build_engine_url,
@@ -100,6 +101,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(logs_router, prefix="/api")
     app.include_router(retry_router, prefix="/api")
     app.include_router(pipeline_router, prefix="/api")
+    app.include_router(submit_router, prefix="/api")
 
     # Serve the dashboard static assets.
     if STATIC_DIR.exists():

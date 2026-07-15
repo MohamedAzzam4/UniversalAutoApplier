@@ -194,9 +194,40 @@ def count_application_jobs(session: Session) -> int:
     return len(list(session.execute(stmt).scalars().all()))
 
 
+def update_application_status(
+    session: Session,
+    application_id: str,
+    new_status: ApplicationStatus,
+) -> ApplicationJobRow | None:
+    """Update the status of an application job.
+
+    Validates the transition against :data:`ALLOWED_TRANSITIONS`. If the
+    transition is not allowed, raises :class:`ValueError`.
+
+    Returns the updated row, or None if the job was not found.
+    """
+    row = session.get(ApplicationJobRow, application_id)
+    if row is None:
+        return None
+
+    current = ApplicationStatus(str(row.status))
+    target = ApplicationStatus(str(new_status))
+    allowed = ALLOWED_TRANSITIONS.get(current, frozenset())
+    if target not in allowed:
+        raise ValueError(
+            f"status transition {current} -> {target} is not allowed "
+            f"(allowed: {sorted(s.value for s in allowed)})"
+        )
+
+    row.status = str(target)
+    session.flush()
+    return row
+
+
 __all__ = [
     "upsert_application_job",
     "get_application_job",
     "list_application_jobs",
     "count_application_jobs",
+    "update_application_status",
 ]
