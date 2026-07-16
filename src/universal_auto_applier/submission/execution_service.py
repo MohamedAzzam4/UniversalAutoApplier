@@ -20,12 +20,13 @@ from __future__ import annotations
 
 import logging
 from pathlib import Path
-from typing import Any, Protocol
+from typing import Any, Protocol, cast
 
 from playwright.sync_api import BrowserContext, sync_playwright
 
 from universal_auto_applier.candidate_profile_loader import resolve_candidate_profile
 from universal_auto_applier.config import Settings
+from universal_auto_applier.core.models import ApplicationJob
 from universal_auto_applier.form_engine.live_executor import execute_live_form
 from universal_auto_applier.interventions.store import list_pending_interventions
 from universal_auto_applier.persistence.db import session_scope
@@ -117,13 +118,13 @@ class PlaywrightContextFactory:
 class FixtureContextFactory:
     """Test factory that creates contexts for local fixture pages.
 
-    Creates its own Playwright instance and browser so it works in any
-    thread (including the TestClient's thread). The ``fixture_url`` is
-    the base URL of the local fixture server — the factory navigates
-    to the job's URL which should be a fixture page on that server.
+    Creates its own Playwright instance per call to ``create_context()``
+    and tears it down on ``close()``. This avoids greenlet conflicts
+    because each browser execution gets a fresh Playwright instance
+    scoped to the calling thread.
     """
 
-    def __init__(self, headless: bool = True) -> None:
+    def __init__(self, headless: bool = True, **kwargs: Any) -> None:
         self._headless = headless
         self._playwright = None
         self._browser = None
@@ -146,9 +147,6 @@ class FixtureContextFactory:
             except Exception:
                 pass
             self._playwright = None
-        # Force garbage collection to clean up Playwright subprocess
-        # pipes and greenlet objects. Important on Python 3.13+ where
-        # ResourceWarning handling is stricter.
         import gc
 
         gc.collect()
@@ -296,23 +294,13 @@ class SubmissionExecutionService:
     ) -> SubmissionResult:
         """Execute the controlled final submission.
 
-        This is the ONLY method (besides the coordinator's internal
-        methods) that can trigger a submit click. It:
-
-        1. Opens a browser context.
-        2. Navigates to the application URL.
-        3. Fills the form (deterministic + LLM).
-        4. On the SAME page: observes fields and submit control.
-        5. Recomputes the form fingerprint and snapshot.
-        6. Compares against the approved snapshot.
-        7. Checks every gate.
-        8. Acquires the persisted claim.
-        9. Re-observes the submit control (same page).
-        10. Clicks submit ONCE (same page).
-        11. Detects and persists the result.
-
-        Returns a :class:`SubmissionResult`.
+        The browser execution runs in a dedicated thread to avoid
+        greenlet conflicts when called from within a TestClient portal.
+        The claim is acquired BEFORE starting the browser so the losing
+        request in a concurrent scenario never creates a browser.
         """
+        import threading
+
         # Gate 1: feature disabled.
         if not self._settings.enable_real_submission:
             result = SubmissionResult(
@@ -347,7 +335,7 @@ class SubmissionExecutionService:
                 record_result(session, result)
             return result
 
-        # Get the approved snapshot hash.
+        # Get the approved snapshot hash and acquire claim BEFORE starting browser.
         with session_scope(self._session_factory) as session:
             approval = get_active_approval(session, application_id)
             if approval is None:
@@ -380,7 +368,91 @@ class SubmissionExecutionService:
 
             approved_snapshot_hash = approval.snapshot_hash
 
-        # Open browser and execute on ONE page.
+            # Acquire the claim BEFORE starting the browser.
+            from universal_auto_applier.submission.store import acquire_claim
+
+            claim = acquire_claim(
+                session,
+                application_id=application_id,
+                approval=approval,
+            )
+            if claim is None:
+                result = SubmissionResult(
+                    application_id=application_id,
+                    approval_id=approval_id,
+                    snapshot_hash_at_submit=approved_snapshot_hash,
+                    state=SubmissionResultState.SUBMISSION_NOT_ALLOWED,
+                    clicked=False,
+                    error_message="could not acquire submission claim (concurrent attempt?)",
+                )
+                from universal_auto_applier.submission.store import record_result
+
+                record_result(session, result)
+                return result
+            claim_id = claim.claim_id
+
+        # Run the browser execution in a dedicated thread to avoid
+        # greenlet conflicts with TestClient's portal.
+        result_holder: dict[str, SubmissionResult | Exception] = {}
+
+        def _run_browser() -> None:
+            try:
+                result_holder["result"] = self._execute_in_browser(
+                    application_id=application_id,
+                    approval_id=approval_id,
+                    approved_snapshot_hash=approved_snapshot_hash,
+                    claim_id=claim_id,
+                    job=job,
+                    artifact_dir=artifact_dir,
+                )
+            except Exception as exc:
+                result_holder["error"] = exc
+
+        thread = threading.Thread(target=_run_browser, daemon=True)
+        thread.start()
+        thread.join(timeout=120)
+
+        if "error" in result_holder:
+            exc = result_holder["error"]
+            logger.exception("[%s] execution service error: %s", application_id[:12], exc)
+            result = SubmissionResult(
+                application_id=application_id,
+                approval_id=approval_id,
+                snapshot_hash_at_submit=approved_snapshot_hash,
+                state=SubmissionResultState.OUTCOME_UNKNOWN,
+                clicked=False,
+                error_message=f"execution service error: {exc}",
+            )
+            with session_scope(self._session_factory) as session:
+                from universal_auto_applier.submission.models import (
+                    SubmissionResultState as S,
+                )
+                from universal_auto_applier.submission.store import (
+                    consume_claim,
+                    record_result,
+                )
+
+                record_result(session, result)
+                consume_claim(session, claim_id, state=S.OUTCOME_UNKNOWN)
+            return result
+
+        return cast(SubmissionResult, result_holder["result"])
+
+    def _execute_in_browser(
+        self,
+        *,
+        application_id: str,
+        approval_id: str,
+        approved_snapshot_hash: str,
+        claim_id: str,
+        job: ApplicationJob,
+        artifact_dir: Path | None = None,
+    ) -> SubmissionResult:
+        """Run the browser execution in the current thread.
+
+        The claim has already been acquired — this method only does the
+        browser work and records the result.
+        """
         context = self._context_factory.create_context() if self._context_factory else None
         if context is None:
             result = SubmissionResult(
@@ -392,9 +464,16 @@ class SubmissionExecutionService:
                 error_message="no browser context factory configured",
             )
             with session_scope(self._session_factory) as session:
-                from universal_auto_applier.submission.store import record_result
+                from universal_auto_applier.submission.models import (
+                    SubmissionResultState as S,
+                )
+                from universal_auto_applier.submission.store import (
+                    consume_claim,
+                    record_result,
+                )
 
                 record_result(session, result)
+                consume_claim(session, claim_id, state=S.SUBMISSION_NOT_ALLOWED)
             return result
 
         try:
@@ -404,13 +483,11 @@ class SubmissionExecutionService:
                 wait_until="domcontentloaded",
                 timeout=self._settings.browser_timeout_ms,
             )
-            page.wait_for_timeout(1_000)  # Let JS settle.
+            page.wait_for_timeout(1_000)
 
-            # Fill the form on this page.
             candidate = resolve_candidate_profile(job.metadata)
             execution = execute_live_form(page, candidate, job)
 
-            # Build the current snapshot from the live page.
             with session_scope(self._session_factory) as session:
                 pending_count = len(list_pending_interventions(session, application_id))
 
@@ -437,7 +514,6 @@ class SubmissionExecutionService:
                 submit_control_frame_url=submit_frame_url,
             )
 
-            # Execute on the SAME page — this is the critical same-page call.
             result = self._coordinator.execute_submission_from_page(
                 page=page,
                 application_id=application_id,
@@ -447,27 +523,30 @@ class SubmissionExecutionService:
             )
             return result
         except Exception as exc:
-            logger.exception("[%s] execution service error: %s", application_id[:12], exc)
+            logger.exception("[%s] browser execution error: %s", application_id[:12], exc)
             result = SubmissionResult(
                 application_id=application_id,
                 approval_id=approval_id,
                 snapshot_hash_at_submit=approved_snapshot_hash,
                 state=SubmissionResultState.OUTCOME_UNKNOWN,
                 clicked=False,
-                error_message=f"execution service error: {exc}",
+                error_message=f"browser execution error: {exc}",
             )
             with session_scope(self._session_factory) as session:
-                from universal_auto_applier.submission.store import record_result
+                from universal_auto_applier.submission.models import (
+                    SubmissionResultState as S,
+                )
+                from universal_auto_applier.submission.store import (
+                    consume_claim,
+                    record_result,
+                )
 
                 record_result(session, result)
+                consume_claim(session, claim_id, state=S.OUTCOME_UNKNOWN)
             return result
         finally:
             if self._context_factory:
                 self._context_factory.close()
-
-    # ------------------------------------------------------------------
-    # Approval management (delegates to coordinator)
-    # ------------------------------------------------------------------
 
     def approve_snapshot(
         self,

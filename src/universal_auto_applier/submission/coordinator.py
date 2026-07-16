@@ -138,6 +138,7 @@ class SubmissionCoordinator:
         *,
         application_id: str,
         current_snapshot: SubmissionSnapshot | None = None,
+        skip_claim_check: bool = False,
     ) -> GateResult:
         """Check all submission gates WITHOUT performing a click.
 
@@ -259,7 +260,7 @@ class SubmissionCoordinator:
                     )
 
             # Gate 5: no unconsumed claim (in-progress submission).
-            if has_unconsumed_claim(session, application_id):
+            if not skip_claim_check and has_unconsumed_claim(session, application_id):
                 return GateResult(
                     allowed=False,
                     reason="an unconsumed submission claim exists (concurrent attempt?)",
@@ -390,6 +391,8 @@ class SubmissionCoordinator:
         submit_control = submit_clickables[0]
 
         # Step 3: delegate to execute_submission with the page's context.
+        # skip_claim_gate=True because the execution service already
+        # acquired the claim before starting the browser.
         return self.execute_submission(
             context=page.context,
             application_id=application_id,
@@ -399,6 +402,7 @@ class SubmissionCoordinator:
             submit_control_frame_url=submit_control.frame_url,
             artifact_dir=artifact_dir,
             confirmation_timeout_ms=confirmation_timeout_ms,
+            skip_claim_gate=True,
         )
 
     def execute_submission(
@@ -412,6 +416,7 @@ class SubmissionCoordinator:
         submit_control_frame_url: str = "",
         artifact_dir: Path | None = None,
         confirmation_timeout_ms: int = 15_000,
+        skip_claim_gate: bool = False,
     ) -> SubmissionResult:
         """Execute the controlled submission.
 
@@ -436,10 +441,21 @@ class SubmissionCoordinator:
             A :class:`SubmissionResult` with the outcome.
         """
         # --- Pre-flight gate check (no browser) ---
-        gate = self.check_gates(
-            application_id=application_id,
-            current_snapshot=current_snapshot,
-        )
+        # When skip_claim_gate=True, the claim was already acquired by
+        # the execution service. Skip ONLY the unconsumed-claim check
+        # (gate 5) — all other gates (snapshot hash, form fingerprint,
+        # pending interventions, etc.) must still be checked.
+        if skip_claim_gate:
+            gate = self.check_gates(
+                application_id=application_id,
+                current_snapshot=current_snapshot,
+                skip_claim_check=True,
+            )
+        else:
+            gate = self.check_gates(
+                application_id=application_id,
+                current_snapshot=current_snapshot,
+            )
         if not gate.allowed:
             logger.warning(
                 "[%s] submission gate failed: %s (state=%s)",
@@ -460,37 +476,42 @@ class SubmissionCoordinator:
             return result
 
         # --- Acquire claim (transactional one-time lock) ---
-        with session_scope(self._session_factory) as session:
-            approval = get_active_approval(session, application_id)
-            if approval is None or approval.approval_id != approval_id:
-                result = SubmissionResult(
-                    application_id=application_id,
-                    approval_id=approval_id,
-                    snapshot_hash_at_submit=current_snapshot.snapshot_hash,
-                    state=SubmissionResultState.SUBMISSION_NOT_ALLOWED,
-                    clicked=False,
-                    error_message="approval not found or does not match",
-                )
-                record_result(session, result)
-                return result
+        # When skip_claim_gate=True, the claim was already acquired by
+        # the execution service. Skip the claim acquisition here.
+        if not skip_claim_gate:
+            with session_scope(self._session_factory) as session:
+                approval = get_active_approval(session, application_id)
+                if approval is None or approval.approval_id != approval_id:
+                    result = SubmissionResult(
+                        application_id=application_id,
+                        approval_id=approval_id,
+                        snapshot_hash_at_submit=current_snapshot.snapshot_hash,
+                        state=SubmissionResultState.SUBMISSION_NOT_ALLOWED,
+                        clicked=False,
+                        error_message="approval not found or does not match",
+                    )
+                    record_result(session, result)
+                    return result
 
-            claim = acquire_claim(
-                session,
-                application_id=application_id,
-                approval=approval,
-            )
-            if claim is None:
-                result = SubmissionResult(
+                claim = acquire_claim(
+                    session,
                     application_id=application_id,
-                    approval_id=approval_id,
-                    snapshot_hash_at_submit=current_snapshot.snapshot_hash,
-                    state=SubmissionResultState.SUBMISSION_NOT_ALLOWED,
-                    clicked=False,
-                    error_message="could not acquire submission claim (concurrent attempt?)",
+                    approval=approval,
                 )
-                record_result(session, result)
-                return result
-            claim_id = claim.claim_id
+                if claim is None:
+                    result = SubmissionResult(
+                        application_id=application_id,
+                        approval_id=approval_id,
+                        snapshot_hash_at_submit=current_snapshot.snapshot_hash,
+                        state=SubmissionResultState.SUBMISSION_NOT_ALLOWED,
+                        clicked=False,
+                        error_message="could not acquire submission claim (concurrent attempt?)",
+                    )
+                    record_result(session, result)
+                    return result
+                claim_id = claim.claim_id
+        else:
+            claim_id = ""  # Claim already acquired by execution service
 
         # --- Browser interaction ---
         page: Page | None = None
@@ -643,7 +664,8 @@ class SubmissionCoordinator:
 
         with session_scope(self._session_factory) as session:
             record_result(session, result)
-            consume_claim(session, claim_id, state=result_state)
+            if claim_id:
+                consume_claim(session, claim_id, state=result_state)
             if clicked:
                 consume_approval(session, approval_id)
 

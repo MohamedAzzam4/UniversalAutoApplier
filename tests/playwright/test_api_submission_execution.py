@@ -4,22 +4,14 @@ Proves that ``POST /api/submit/{application_id}/submit`` actually
 executes the coordinator (not just checks gates) when a context factory
 is registered. Uses local Playwright fixtures only.
 
-These tests do NOT use the pytest-playwright ``context`` fixture — they
-create their own browser via ``FixtureContextFactory`` which works in
-any thread (including TestClient's thread). They are marked as
-``playwright`` so they are excluded from the default non-Playwright run.
+Architecture: The SubmissionExecutionService runs the browser execution
+in a dedicated thread (to avoid greenlet conflicts with TestClient's
+portal). The FixtureContextFactory creates its own Playwright instance
+in that thread. This works on ALL Python versions (3.11–3.14).
 """
 
 from __future__ import annotations
 
-# These tests launch their own browser via FixtureContextFactory.
-# They do NOT use the pytest-playwright context fixture.
-# Skipped on Python 3.13+ because sync_playwright().start() creates a
-# second Playwright instance that conflicts with the pytest-playwright
-# plugin's instance on newer Python versions (greenlet compatibility).
-# The DB-level one-click guarantee is proven by
-# tests/unit/test_submission_concurrency.py on all Python versions.
-import sys
 import threading
 from collections.abc import Iterator
 from functools import partial
@@ -46,14 +38,7 @@ from universal_auto_applier.persistence.migrations import apply_migrations
 from universal_auto_applier.persistence.models import Base
 from universal_auto_applier.submission.execution_service import FixtureContextFactory
 
-pytestmark = [
-    pytest.mark.playwright,
-    pytest.mark.skipif(
-        sys.version_info >= (3, 13),
-        reason="FixtureContextFactory creates a second Playwright instance "
-        "that conflicts with pytest-playwright on Python 3.13+",
-    ),
-]
+pytestmark = pytest.mark.playwright
 
 FIXTURE_DIR = Path(__file__).parent.parent / "fixtures" / "live_browser"
 
@@ -112,7 +97,6 @@ def _make_job(tmp_path: Path, url: str, external_id: str) -> ApplicationJob:
 
 def _make_app(
     tmp_path: Path,
-    use_factory: bool = True,
     enable: bool = True,
     port: int = 8200,
 ) -> tuple[Any, Settings]:
@@ -127,8 +111,7 @@ def _make_app(
     settings.data_dir.mkdir(parents=True, exist_ok=True)
     apply_migrations(build_engine_url(settings.data_dir / "uaa.sqlite"))
     app = create_app(settings=settings)
-    if use_factory:
-        app.state.submission_context_factory = FixtureContextFactory(headless=True)
+    app.state.submission_context_factory = FixtureContextFactory(headless=True)
     return app, settings
 
 
@@ -176,6 +159,11 @@ class TestApiValidSubmitClicksOnce:
             )
             assert response.status_code == 200
             body = response.json()
+            # Debug: print the body if clicked is not True
+            if body.get("clicked") is not True:
+                import json as _json
+
+                print(f"DEBUG: response body = {_json.dumps(body)}", flush=True)
             assert body["clicked"] is True
             assert body["state"] == "submitted_confirmed"
 
@@ -240,14 +228,16 @@ class TestApiStaleSnapshotNoClick:
         sf = _seed_job(settings, job)
 
         with TestClient(app) as client:
-            # Observe to get a snapshot.
             _observe_and_approve(client, sf, job.application_id)
 
-            # Manually revoke and create a new approval with wrong URL.
             from universal_auto_applier.submission.models import (
                 SubmissionSnapshot,
                 SubmissionSnapshotField,
                 SubmissionSnapshotSubmitControl,
+            )
+            from universal_auto_applier.submission.store import (
+                create_approval,
+                get_active_approval,
             )
 
             wrong_snap = SubmissionSnapshot(
@@ -269,26 +259,18 @@ class TestApiStaleSnapshotNoClick:
                 ),
             ).with_hashes()
 
-            from universal_auto_applier.submission.store import create_approval
-
             with session_scope(sf) as session:
                 create_approval(
                     session,
                     application_id=job.application_id,
                     snapshot=wrong_snap,
                 )
-
-            # The new approval (wrong URL) is now active.
-            from universal_auto_applier.submission.store import get_active_approval
-
-            with session_scope(sf) as session:
                 approval = get_active_approval(session, job.application_id)
             assert approval is not None
-            wrong_approval_id = approval.approval_id
 
             response = client.post(
                 f"/api/submit/{job.application_id}/submit",
-                json={"approval_id": wrong_approval_id, "confirm": True},
+                json={"approval_id": approval.approval_id, "confirm": True},
             )
             assert response.status_code == 200
             body = response.json()
@@ -327,13 +309,6 @@ class TestApiAmbiguousControlNoClick:
 
 class TestApiDuplicateSubmitBlocked:
     def test_duplicate_submit_blocked(self, fixture_server: str, tmp_path: Path) -> None:
-        """After one successful submission, a second request for the same
-        approval is blocked (approval consumed). This proves the one-click
-        guarantee at the API level.
-
-        For true thread-level concurrency proof, see
-        tests/unit/test_submission_concurrency.py.
-        """
         url = f"{fixture_server}/submit_confirmation.html"
         job = _make_job(tmp_path, url, "api-exec-6")
         app, settings = _make_app(tmp_path, enable=True, port=8206)
@@ -342,7 +317,6 @@ class TestApiDuplicateSubmitBlocked:
         with TestClient(app) as client:
             approval_id = _observe_and_approve(client, sf, job.application_id)
 
-            # First submit: should succeed.
             resp1 = client.post(
                 f"/api/submit/{job.application_id}/submit",
                 json={"approval_id": approval_id, "confirm": True},
@@ -351,7 +325,6 @@ class TestApiDuplicateSubmitBlocked:
             body1 = resp1.json()
             assert body1["clicked"] is True
 
-            # Second submit: should be blocked (approval consumed).
             resp2 = client.post(
                 f"/api/submit/{job.application_id}/submit",
                 json={"approval_id": approval_id, "confirm": True},
@@ -360,6 +333,97 @@ class TestApiDuplicateSubmitBlocked:
             body2 = resp2.json()
             assert body2["clicked"] is False
 
-            # Exactly one click total.
             total_clicks = int(body1["clicked"]) + int(body2["clicked"])
             assert total_clicks == 1
+
+
+# ---------------------------------------------------------------------------
+# 7. Truly concurrent API requests produce exactly one click
+# ---------------------------------------------------------------------------
+
+
+class TestApiConcurrentOneClick:
+    def test_concurrent_requests_one_click(self, fixture_server: str, tmp_path: Path) -> None:
+        """Two truly concurrent API requests for the same approved
+        application must produce exactly one click.
+
+        The requests overlap: both are submitted to the same TestClient
+        concurrently via threads. The DB unique constraint on
+        submission_claims.approval_id ensures only one claim is created.
+        The losing request gets SUBMISSION_NOT_ALLOWED without creating
+        a browser.
+
+        Both threads start simultaneously and overlap. The winning
+        request acquires the claim, starts the browser, and clicks.
+        The losing request finds the claim already exists and returns
+        a controlled response.
+        """
+        url = f"{fixture_server}/submit_confirmation.html"
+        job = _make_job(tmp_path, url, "api-exec-7")
+        app, settings = _make_app(tmp_path, enable=True, port=8207)
+        sf = _seed_job(settings, job)
+
+        with TestClient(app) as client:
+            approval_id = _observe_and_approve(client, sf, job.application_id)
+
+            results: list[dict[str, Any]] = []
+            lock = threading.Lock()
+
+            def make_request() -> None:
+                try:
+                    resp = client.post(
+                        f"/api/submit/{job.application_id}/submit",
+                        json={"approval_id": approval_id, "confirm": True},
+                    )
+                    with lock:
+                        results.append(resp.json())
+                except Exception as exc:
+                    with lock:
+                        results.append({"error": str(exc)})
+
+            # Start both threads simultaneously — they overlap.
+            t1 = threading.Thread(target=make_request)
+            t2 = threading.Thread(target=make_request)
+            t1.start()
+            t2.start()
+            t1.join(timeout=120)
+            t2.join(timeout=120)
+
+            assert len(results) == 2
+            clicked_count = sum(1 for r in results if r.get("clicked") is True)
+            assert clicked_count == 1, (
+                f"Expected exactly 1 click, got {clicked_count}. Results: {results}"
+            )
+
+            # The losing request must return a controlled response.
+            for r in results:
+                assert "error" not in r, f"Unhandled exception: {r}"
+
+            # Verify exactly one claim and one result in the DB.
+            from sqlalchemy import select
+
+            from universal_auto_applier.persistence.models import (
+                SubmissionClaimRow,
+                SubmissionResultRow,
+            )
+
+            engine = make_engine(build_engine_url(settings.data_dir / "uaa.sqlite"))
+            with session_scope(make_session_factory(engine)) as session:
+                claims = list(
+                    session.execute(
+                        select(SubmissionClaimRow).where(
+                            SubmissionClaimRow.application_id == job.application_id
+                        )
+                    ).scalars()
+                )
+                results_rows = list(
+                    session.execute(
+                        select(SubmissionResultRow).where(
+                            SubmissionResultRow.application_id == job.application_id
+                        )
+                    ).scalars()
+                )
+            engine.dispose()
+
+            assert len(claims) == 1, f"Expected 1 claim, got {len(claims)}"
+            assert len(results_rows) == 1, f"Expected 1 result, got {len(results_rows)}"
