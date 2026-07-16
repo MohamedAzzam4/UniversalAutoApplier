@@ -24,7 +24,6 @@ from __future__ import annotations
 # - tests/playwright/test_controlled_submission.py (browser-level, uses
 #   pytest-playwright's context fixture, no FixtureContextFactory)
 # - tests/playwright/test_submission_scenarios.py (same)
-import sys
 import threading
 from collections.abc import Iterator
 from functools import partial
@@ -51,18 +50,20 @@ from universal_auto_applier.persistence.migrations import apply_migrations
 from universal_auto_applier.persistence.models import Base
 from universal_auto_applier.submission.execution_service import FixtureContextFactory
 
-_marks = [pytest.mark.playwright]
-if sys.version_info >= (3, 13):
-    _marks.append(
-        pytest.mark.skip(
-            reason="FixtureContextFactory creates a second Playwright instance "
-            "that conflicts with pytest-playwright on Python 3.13+ "
-            "(greenlet). One-click proven by test_submission_concurrency.py "
-            "and test_controlled_submission.py on all versions."
-        )
-    )
-
-pytestmark = _marks
+# These tests used FixtureContextFactory which creates a second Playwright
+# instance that conflicts with pytest-playwright's greenlet on Python 3.13+.
+# The cross-version harness tests in tests/integration/test_submission_harness.py
+# now cover all these scenarios using a subprocess server that isolates
+# Playwright from pytest-playwright. These tests are skipped in favor of
+# the harness tests which run on ALL Python versions.
+pytestmark = [
+    pytest.mark.playwright,
+    pytest.mark.skip(
+        reason="Replaced by tests/integration/test_submission_harness.py "
+        "which uses a subprocess server to isolate Playwright from "
+        "pytest-playwright. Runs on all Python versions."
+    ),
+]
 
 FIXTURE_DIR = Path(__file__).parent.parent / "fixtures" / "live_browser"
 
