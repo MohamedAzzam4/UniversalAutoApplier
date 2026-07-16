@@ -130,6 +130,17 @@ class FixtureContextFactory:
         self._browser = None
 
     def create_context(self) -> BrowserContext:
+        # Run sync_playwright().start() in a subprocess to completely
+        # isolate the Playwright greenlet from the calling thread's
+        # greenlet state. This avoids the "Cannot switch to a different
+        # thread" error on Python 3.13+ when called from within a
+        # TestClient portal.
+        #
+        # Actually, we just create the Playwright instance in the
+        # current thread. The execution service already runs us in a
+        # dedicated thread (see execute_controlled_submission), so the
+        # greenlet is scoped to that thread and should not conflict
+        # with the TestClient's portal.
         self._playwright = sync_playwright().start()
         self._browser = self._playwright.chromium.launch(headless=self._headless)
         return self._browser.new_context(accept_downloads=False)
