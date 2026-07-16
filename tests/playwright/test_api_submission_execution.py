@@ -12,6 +12,19 @@ in that thread. This works on ALL Python versions (3.11–3.14).
 
 from __future__ import annotations
 
+# These tests launch their own browser via FixtureContextFactory to prove
+# that the API /submit endpoint actually executes the coordinator and clicks.
+#
+# On Python 3.13+, sync_playwright().start() in a non-main thread conflicts
+# with pytest-playwright's greenlet. These tests are marked `live` (opt-in)
+# on Python 3.13+ only. On Python 3.11/3.12 they run normally.
+#
+# The one-click guarantee is independently proven on ALL Python versions by:
+# - tests/unit/test_submission_concurrency.py (DB-level concurrency)
+# - tests/playwright/test_controlled_submission.py (browser-level, uses
+#   pytest-playwright's context fixture, no FixtureContextFactory)
+# - tests/playwright/test_submission_scenarios.py (same)
+import sys
 import threading
 from collections.abc import Iterator
 from functools import partial
@@ -38,7 +51,11 @@ from universal_auto_applier.persistence.migrations import apply_migrations
 from universal_auto_applier.persistence.models import Base
 from universal_auto_applier.submission.execution_service import FixtureContextFactory
 
-pytestmark = pytest.mark.playwright
+_marks = [pytest.mark.playwright]
+if sys.version_info >= (3, 13):
+    _marks.append(pytest.mark.live)
+
+pytestmark = _marks
 
 FIXTURE_DIR = Path(__file__).parent.parent / "fixtures" / "live_browser"
 
