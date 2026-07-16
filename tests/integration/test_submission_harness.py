@@ -147,17 +147,17 @@ class SubprocessServer:
 
 
 def _observe_and_approve(client: httpx.Client, app_id: str) -> str:
-    """Call /observe to persist a snapshot, then get the approval_id from status.
-
-    The observe endpoint creates an unapproved approval row via
-    create_approval(). The approval_id is returned by the status endpoint.
-    """
+    """Call /observe to persist a snapshot, then get the approval_id from status."""
     resp = client.post(f"/api/submit/{app_id}/observe")
     assert resp.status_code == 200, f"observe failed: {resp.text}"
     resp3 = client.get(f"/api/submit/{app_id}/status")
     assert resp3.status_code == 200
     status = resp3.json()
-    approval_id = status.get("approval_id")
+    # New response format: {"snapshot": {"active_approval_id": "..."}}
+    approval_id = status.get("snapshot", {}).get("active_approval_id")
+    if not approval_id:
+        # Fallback: old format
+        approval_id = status.get("approval_id")
     if not approval_id:
         raise RuntimeError(f"No approval_id found after observe. Status: {status}")
     return approval_id
@@ -314,15 +314,22 @@ class TestStaleSnapshot:
 
             # Get the approval_id from status.
             status = client.get(f"/api/submit/{server.application_id}/status").json()
-            approval_id = status["approval_id"]
+            approval_id = status.get("snapshot", {}).get("active_approval_id")
             assert approval_id is not None
 
             # Create a new approval with a wrong URL (simulates stale).
+            from universal_auto_applier.persistence.db import (
+                build_engine_url,
+                make_engine,
+                make_session_factory,
+                session_scope,
+            )
             from universal_auto_applier.submission.models import (
                 SubmissionSnapshot,
                 SubmissionSnapshotField,
                 SubmissionSnapshotSubmitControl,
             )
+            from universal_auto_applier.submission.store import create_approval
 
             wrong_snap = SubmissionSnapshot(
                 application_id=server.application_id,
@@ -343,13 +350,20 @@ class TestStaleSnapshot:
                 ),
             ).with_hashes()
 
-            # Approve the wrong snapshot via the API.
-            resp = client.post(
-                f"/api/submit/{server.application_id}/approve",
-                json={"snapshot": wrong_snap.model_dump(mode="json"), "confirm": True},
-            )
-            assert resp.status_code == 200
-            new_approval_id = resp.json()["approval_id"]
+            # Insert the wrong snapshot directly into the DB.
+            engine = make_engine(build_engine_url(server.get_db_path()))
+            sf = make_session_factory(engine)
+            with session_scope(sf) as session:
+                create_approval(
+                    session,
+                    application_id=server.application_id,
+                    snapshot=wrong_snap,
+                )
+                from universal_auto_applier.submission.store import get_active_approval
+
+                approval = get_active_approval(session, server.application_id)
+            engine.dispose()
+            new_approval_id = approval.approval_id
 
             # Submit — should detect stale snapshot.
             resp = client.post(
