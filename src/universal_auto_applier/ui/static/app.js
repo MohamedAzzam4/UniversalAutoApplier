@@ -462,7 +462,13 @@
     display.innerHTML = '<p class="uaa-empty">Loading...</p>';
     controls.style.display = "none";
     try {
-      const data = await fetchJSON(`/api/submit/${jobId}/status`);
+      const resp = await fetch(`/api/submit/${jobId}/status`, {
+        headers: { Accept: "application/json" },
+      });
+      if (!resp.ok) throw new Error(`${resp.status}`);
+      const rawData = await resp.json();
+      // New API format: {snapshot: {...}}. Old format: flat.
+      const data = rawData.snapshot || rawData;
       renderSubmitState(data);
     } catch (err) {
       display.innerHTML = `<p class="uaa-error">Error: ${esc(err.message)}</p>`;
