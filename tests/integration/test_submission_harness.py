@@ -120,6 +120,9 @@ class SubprocessServer:
             self._proc.kill()
             self._proc.wait(timeout=5)
         finally:
+            # Close stdout pipe to prevent ResourceWarning.
+            if self._proc.stdout:
+                self._proc.stdout.close()
             self._proc = None
 
     @property
