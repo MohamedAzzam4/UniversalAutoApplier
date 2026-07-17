@@ -125,15 +125,16 @@ def _setup(tmp_path: Path, settings: Settings, job: ApplicationJob):
     return engine, sf
 
 
-def _create_app(settings: Settings, sf: Any) -> Any:
+def _create_app(settings: Settings, engine: Any, sf: Any) -> Any:
+    """Create app reusing the existing engine to avoid unclosed connections."""
     app = create_app(settings=settings)
-    app.state.engine = make_engine(build_engine_url(settings.data_dir / "uaa.sqlite"))
+    app.state.engine = engine
     app.state.session_factory = sf
     app.state.review_states = {}
     from universal_auto_applier.api.routes.logs import init_log_buffer
 
     init_log_buffer(app)
-    Base.metadata.create_all(app.state.engine)
+    Base.metadata.create_all(engine)
     return app
 
 
@@ -154,7 +155,7 @@ class TestCompleteStatusResponse:
         )
         with session_scope(sf) as session:
             create_approval(session, application_id=job.application_id, snapshot=snap)
-        app = _create_app(settings, sf)
+        app = _create_app(settings, engine, sf)
         with TestClient(app) as client:
             resp = client.get(f"/api/submit/{job.application_id}/status")
             assert resp.status_code == 200
@@ -192,7 +193,7 @@ class TestPersistenceAcrossSession:
         # New engine/session
         engine2 = make_engine(build_engine_url(settings.data_dir / "uaa.sqlite"))
         sf2 = make_session_factory(engine2)
-        app = _create_app(settings, sf2)
+        app = _create_app(settings, engine2, sf2)
         with TestClient(app) as client:
             resp = client.get(f"/api/submit/{job.application_id}/status")
             assert resp.status_code == 200
@@ -210,7 +211,7 @@ class TestStatusWithoutObservation:
         settings = _make_settings(tmp_path)
         job = _make_job(tmp_path)
         engine, sf = _setup(tmp_path, settings, job)
-        app = _create_app(settings, sf)
+        app = _create_app(settings, engine, sf)
         with TestClient(app) as client:
             resp = client.get(f"/api/submit/{job.application_id}/status")
             assert resp.status_code == 200
@@ -239,7 +240,7 @@ class TestNewObservationInvalidatesOld:
         snap2 = _make_snapshot(job.application_id, fields=[{"filled_value": "b"}])
         with session_scope(sf) as session:
             create_approval(session, application_id=job.application_id, snapshot=snap2)
-        app = _create_app(settings, sf)
+        app = _create_app(settings, engine, sf)
         with TestClient(app) as client:
             resp = client.get(f"/api/submit/{job.application_id}/status")
             data = resp.json()["snapshot"]
@@ -271,7 +272,7 @@ class TestConfirmHighRisk:
         )
         with session_scope(sf) as session:
             create_approval(session, application_id=job.application_id, snapshot=snap)
-        app = _create_app(settings, sf)
+        app = _create_app(settings, engine, sf)
         with TestClient(app) as client:
             resp = client.post(
                 f"/api/submit/{job.application_id}/confirm-high-risk",
@@ -302,7 +303,7 @@ class TestRejectUnknownField:
         snap = _make_snapshot(job.application_id)
         with session_scope(sf) as session:
             create_approval(session, application_id=job.application_id, snapshot=snap)
-        app = _create_app(settings, sf)
+        app = _create_app(settings, engine, sf)
         with TestClient(app) as client:
             resp = client.post(
                 f"/api/submit/{job.application_id}/confirm-high-risk",
@@ -333,7 +334,7 @@ class TestRejectNonHighRisk:
         )
         with session_scope(sf) as session:
             create_approval(session, application_id=job.application_id, snapshot=snap)
-        app = _create_app(settings, sf)
+        app = _create_app(settings, engine, sf)
         with TestClient(app) as client:
             resp = client.post(
                 f"/api/submit/{job.application_id}/confirm-high-risk",
@@ -361,7 +362,7 @@ class TestRejectStaleConfirmation:
         snap = _make_snapshot(job.application_id)
         with session_scope(sf) as session:
             create_approval(session, application_id=job.application_id, snapshot=snap)
-        app = _create_app(settings, sf)
+        app = _create_app(settings, engine, sf)
         with TestClient(app) as client:
             resp = client.post(
                 f"/api/submit/{job.application_id}/confirm-high-risk",
@@ -416,7 +417,7 @@ class TestChangedAnswerInvalidates:
         )
         with session_scope(sf) as session:
             create_approval(session, application_id=job.application_id, snapshot=snap2)
-        app = _create_app(settings, sf)
+        app = _create_app(settings, engine, sf)
         with TestClient(app) as client:
             resp = client.get(f"/api/submit/{job.application_id}/status")
             data = resp.json()["snapshot"]
@@ -439,7 +440,7 @@ class TestApproveCompleteSnapshot:
         snap = _make_snapshot(job.application_id)
         with session_scope(sf) as session:
             create_approval(session, application_id=job.application_id, snapshot=snap)
-        app = _create_app(settings, sf)
+        app = _create_app(settings, engine, sf)
         with TestClient(app) as client:
             resp = client.post(
                 f"/api/submit/{job.application_id}/approve",
@@ -463,7 +464,7 @@ class TestRejectIncompleteSnapshot:
         snap = _make_snapshot(job.application_id, unresolved=1)
         with session_scope(sf) as session:
             create_approval(session, application_id=job.application_id, snapshot=snap)
-        app = _create_app(settings, sf)
+        app = _create_app(settings, engine, sf)
         with TestClient(app) as client:
             resp = client.post(
                 f"/api/submit/{job.application_id}/approve",
@@ -503,7 +504,7 @@ class TestRejectUnresolvedRequiredField:
         )
         with session_scope(sf) as session:
             create_approval(session, application_id=job.application_id, snapshot=snap)
-        app = _create_app(settings, sf)
+        app = _create_app(settings, engine, sf)
         with TestClient(app) as client:
             resp = client.post(
                 f"/api/submit/{job.application_id}/approve",
@@ -534,7 +535,7 @@ class TestRejectPendingIntervention:
                 question="Q?",
                 field_selector="lf-x",
             )
-        app = _create_app(settings, sf)
+        app = _create_app(settings, engine, sf)
         with TestClient(app) as client:
             resp = client.post(
                 f"/api/submit/{job.application_id}/approve",
@@ -568,7 +569,7 @@ class TestRejectUnconfirmedHighRisk:
         )
         with session_scope(sf) as session:
             create_approval(session, application_id=job.application_id, snapshot=snap)
-        app = _create_app(settings, sf)
+        app = _create_app(settings, engine, sf)
         with TestClient(app) as client:
             resp = client.post(
                 f"/api/submit/{job.application_id}/approve",
@@ -592,7 +593,7 @@ class TestRevokeApproval:
         snap = _make_snapshot(job.application_id)
         with session_scope(sf) as session:
             create_approval(session, application_id=job.application_id, snapshot=snap)
-        app = _create_app(settings, sf)
+        app = _create_app(settings, engine, sf)
         with TestClient(app) as client:
             resp = client.post(f"/api/submit/{job.application_id}/revoke")
             assert resp.status_code == 200
@@ -613,7 +614,7 @@ class TestIdempotentRevoke:
         snap = _make_snapshot(job.application_id)
         with session_scope(sf) as session:
             create_approval(session, application_id=job.application_id, snapshot=snap)
-        app = _create_app(settings, sf)
+        app = _create_app(settings, engine, sf)
         with TestClient(app) as client:
             resp1 = client.post(f"/api/submit/{job.application_id}/revoke")
             assert resp1.status_code == 200
@@ -636,7 +637,7 @@ class TestStatusAfterApproval:
         snap = _make_snapshot(job.application_id)
         with session_scope(sf) as session:
             create_approval(session, application_id=job.application_id, snapshot=snap)
-        app = _create_app(settings, sf)
+        app = _create_app(settings, engine, sf)
         with TestClient(app) as client:
             client.post(
                 f"/api/submit/{job.application_id}/approve",
@@ -678,7 +679,7 @@ class TestStatusAfterSubmissionResult:
                 confirmation_evidence="test evidence",
             )
             record_result(session, result)
-        app = _create_app(settings, sf)
+        app = _create_app(settings, engine, sf)
         with TestClient(app) as client:
             resp = client.get(f"/api/submit/{job.application_id}/status")
             data = resp.json()["snapshot"]
@@ -700,7 +701,7 @@ class TestNoSensitiveData:
         snap = _make_snapshot(job.application_id)
         with session_scope(sf) as session:
             create_approval(session, application_id=job.application_id, snapshot=snap)
-        app = _create_app(settings, sf)
+        app = _create_app(settings, engine, sf)
         with TestClient(app) as client:
             resp = client.get(f"/api/submit/{job.application_id}/status")
             text = resp.text.lower()
@@ -730,7 +731,7 @@ class TestObservationFailure:
         settings = _make_settings(tmp_path)
         job = _make_job(tmp_path)
         engine, sf = _setup(tmp_path, settings, job)
-        app = _create_app(settings, sf)
+        app = _create_app(settings, engine, sf)
         # No submission_context_factory registered.
         with TestClient(app) as client:
             resp = client.post(f"/api/submit/{job.application_id}/observe")
