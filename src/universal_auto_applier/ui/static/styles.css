@@ -417,3 +417,144 @@ code {
   margin-top: 12px;
   flex-wrap: wrap;
 }
+
+.uaa-sr-only {
+  position: absolute;
+  width: 1px; height: 1px;
+  overflow: hidden;
+  clip: rect(0,0,0,0);
+  white-space: nowrap;
+  border: 0;
+}
+.uaa-submit-controls {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  margin-top: 12px;
+  flex-wrap: wrap;
+}
+.uaa-submit-section {
+  margin-top: 16px;
+  padding-top: 12px;
+  border-top: 1px solid var(--uab-border);
+}
+.uaa-submit-section:first-of-type {
+  margin-top: 0;
+  border-top: none;
+}
+.uaa-submit-section h3 {
+  margin: 0 0 8px;
+  font-size: 0.9rem;
+  font-weight: 600;
+  color: var(--uaa-text);
+}
+.uaa-submit-field {
+  padding: 6px 8px;
+  margin: 2px 0;
+  background: rgba(255,255,255,0.02);
+  border-radius: 6px;
+  font-size: 0.85rem;
+  word-break: break-word;
+  overflow-wrap: break-word;
+}
+.uaa-submit-field strong {
+  color: var(--uaa-text-muted);
+  font-weight: 500;
+  margin-right: 4px;
+}
+.uaa-submit-field-detail {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 4px 12px;
+  padding: 6px 8px;
+  margin: 2px 0;
+  font-size: 0.82rem;
+  border-left: 3px solid var(--uab-border);
+  word-break: break-word;
+  overflow-wrap: break-word;
+}
+.uaa-field-type-tag,
+.uaa-field-risk-tag {
+  display: inline-block;
+  padding: 1px 6px;
+  border-radius: 4px;
+  font-size: 0.72rem;
+  font-weight: 600;
+  text-transform: uppercase;
+}
+.uaa-field-type-tag { background: rgba(88,166,255,0.12); color: var(--uaa-accent); }
+.uaa-field-risk-low { color: var(--uaa-text-muted); }
+.uaa-field-risk-medium { color: var(--uaa-warn); }
+.uaa-field-risk-high { color: var(--uaa-danger); }
+.uaa-submit-doc {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 4px 12px;
+  padding: 6px 8px;
+  margin: 2px 0;
+  font-size: 0.82rem;
+  border-left: 3px solid var(--uab-border);
+  word-break: break-word;
+  overflow-wrap: break-word;
+}
+.uaa-submit-doc .uaa-doc-path {
+  word-break: break-all;
+  font-family: "JetBrains Mono", "Fira Code", Consolas, monospace;
+  font-size: 0.78rem;
+}
+.uaa-submit-warning {
+  padding: 8px 10px;
+  margin: 6px 0;
+  border-radius: 6px;
+  background: rgba(210,153,34,0.1);
+  border: 1px solid rgba(210,153,34,0.3);
+  color: var(--uaa-warn);
+  font-size: 0.85rem;
+}
+.uaa-submit-error {
+  padding: 8px 10px;
+  margin: 6px 0;
+  border-radius: 6px;
+  background: rgba(248,81,73,0.1);
+  border: 1px solid rgba(248,81,73,0.3);
+  color: var(--uaa-danger);
+  font-size: 0.85rem;
+}
+.uaa-submit-blocking-reason {
+  padding: 6px 8px;
+  margin: 4px 0;
+  border-radius: 4px;
+  background: rgba(248,81,73,0.08);
+  color: var(--uaa-danger);
+  font-size: 0.82rem;
+}
+.uaa-submit-loading {
+  opacity: 0.6;
+  pointer-events: none;
+}
+.uaa-submit-state-pill {
+  display: inline-block;
+  padding: 2px 8px;
+  border-radius: 4px;
+  font-size: 0.78rem;
+  font-weight: 600;
+}
+.uaa-submit-state-pill.ready { background: rgba(63,185,80,0.15); color: var(--uaa-success); }
+.uaa-submit-state-pill.blocked { background: rgba(248,81,73,0.15); color: var(--uaa-danger); }
+.uaa-submit-state-pill.pending { background: rgba(210,153,34,0.12); color: var(--uaa-warn); }
+.uaa-submit-state-pill.completed { background: rgba(88,166,255,0.15); color: var(--uaa-accent); }
+.uaa-submit-checkbox-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 0.82rem;
+  cursor: pointer;
+}
+.uaa-submit-confidence {
+  color: var(--uaa-text-muted);
+  font-size: 0.78rem;
+}
+.uaa-submit-options {
+  color: var(--uaa-text-muted);
+  font-size: 0.78rem;
+}

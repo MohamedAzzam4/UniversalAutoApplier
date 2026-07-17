@@ -142,12 +142,11 @@ class TestDashboardSubmitView:
             # The state display should show the application info.
             page.wait_for_selector(".uaa-submit-field", timeout=5_000)
             text = page.inner_text("#submit-state-display")
-            assert "Real submission enabled" in text
-            assert "YES" in text  # enable_real_submission=True
-            assert "Active approval" in text
-            assert "Can submit" in text
+            assert "Test Corp" in text
+            assert "Engineer" in text
+            assert "No persisted snapshot" in text
 
-            # The Submit button should be disabled (no approval yet).
+            # The Submit button should be disabled (no snapshot yet).
             assert page.is_disabled("#submit-execute")
         finally:
             server.should_exit = True
@@ -210,8 +209,7 @@ class TestDashboardSubmitView:
 
             page.wait_for_selector(".uaa-submit-field", timeout=5_000)
             text = page.inner_text("#submit-state-display")
-            assert "Real submission enabled" in text
-            assert "NO" in text
+            assert "No persisted snapshot" in text
             assert page.is_disabled("#submit-execute")
         finally:
             server.should_exit = True

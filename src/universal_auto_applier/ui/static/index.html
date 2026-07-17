@@ -153,12 +153,17 @@
           <h2>Controlled Final Submission</h2>
           <div class="uaa-review-bar">
             <input id="submit-job-id" placeholder="Application ID" class="uaa-input" />
-            <button id="submit-load" class="uaa-btn">Load Submission State</button>
+            <button id="submit-load" class="uaa-btn">Load Status</button>
+            <button id="submit-refresh" class="uaa-btn">Refresh Live Review</button>
           </div>
+          <div id="submit-announce" class="uaa-sr-only" aria-live="polite" aria-atomic="true"></div>
           <div id="submit-state-display" class="uaa-review-display">
             <p class="uaa-empty">Enter an application ID to view its submission state.</p>
           </div>
-          <div id="submit-controls" class="uaa-review-controls" style="display:none;">
+          <div id="submit-high-risk-controls" class="uaa-submit-controls" style="display:none;">
+            <button id="submit-confirm-high-risk" class="uaa-btn uaa-btn-success" disabled>Confirm Selected High-Risk Answers</button>
+          </div>
+          <div id="submit-controls" class="uaa-submit-controls" style="display:none;">
             <button id="submit-approve" class="uaa-btn uaa-btn-success">Approve Current Snapshot</button>
             <button id="submit-revoke" class="uaa-btn uaa-btn-danger">Revoke Approval</button>
             <button id="submit-execute" class="uaa-btn uaa-btn-danger" disabled>Submit Approved Application</button>
