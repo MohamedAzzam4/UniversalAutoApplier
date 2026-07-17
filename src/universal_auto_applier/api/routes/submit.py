@@ -267,7 +267,7 @@ def _load_snapshot_from_approval(approval: SubmissionApprovalRow) -> SubmissionS
 def observe_snapshot_endpoint(
     request: Request,
     application_id: str,
-) -> ObserveResponse:
+):
     """Run live observation and persist the complete snapshot.
 
     Launches the browser, navigates to the application URL, fills the form,
@@ -312,7 +312,7 @@ def observe_snapshot_endpoint(
 
 
 @router.get("/submit/{application_id}/status")
-def get_submission_status(request: Request, application_id: str) -> StatusResponse:
+def get_submission_status(request: Request, application_id: str):
     """Return the complete persisted snapshot and all safety/approval/result state.
 
     Works after process restart. Does not depend on in-memory ReviewState.
@@ -340,7 +340,7 @@ def confirm_high_risk_endpoint(
     request: Request,
     application_id: str,
     body: ConfirmHighRiskRequest,
-) -> ConfirmHighRiskResponse:
+):
     """Confirm high-risk fields for the current snapshot.
 
     Rules:
@@ -423,7 +423,7 @@ def approve_snapshot_endpoint(
     request: Request,
     application_id: str,
     body: ApproveRequest,
-) -> ApproveResponse:
+):
     """Approve the persisted snapshot.
 
     Accepts the snapshot_hash (not an arbitrary client-built snapshot).
@@ -506,7 +506,7 @@ def approve_snapshot_endpoint(
 def revoke_approval_endpoint(
     request: Request,
     application_id: str,
-) -> RevokeResponse:
+):
     """Revoke the active approval idempotently."""
     app = request.app
     settings = app.state.settings
@@ -529,7 +529,7 @@ def submit_endpoint(
     request: Request,
     application_id: str,
     body: SubmitRequest,
-) -> SubmitResponse:
+):
     """Execute the controlled final submission."""
     if not body.confirm:
         raise HTTPException(
