@@ -42,24 +42,38 @@ STATIC_DIR = Path(__file__).resolve().parent.parent / "ui" / "static"
 
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
-    """Create shared resources on startup; close them on shutdown."""
+    """Create shared resources on startup; close them on shutdown.
+
+    If ``app.state`` already has an ``engine`` (e.g. set by a test helper),
+    it is reused — no unnecessary extra engine is created.  The lifespan
+    only disposes engines it creates itself; pre-provided engines remain
+    the caller's responsibility.
+    """
     settings: Settings = app.state.settings
-
     settings.data_dir.mkdir(parents=True, exist_ok=True)
-    db_url = build_engine_url(settings.data_dir / "uaa.sqlite")
-    engine = make_engine(db_url)
-    session_factory = make_session_factory(engine)
 
-    app.state.db_url = db_url
-    app.state.engine = engine
-    app.state.session_factory = session_factory
-    app.state.review_states = {}
+    _owns_engine = False
+    engine: Any = getattr(app.state, "engine", None)
+    if engine is None:
+        db_url = build_engine_url(settings.data_dir / "uaa.sqlite")
+        engine = make_engine(db_url)
+        _owns_engine = True
+        app.state.db_url = db_url
+        app.state.engine = engine
+        app.state.session_factory = make_session_factory(engine)
+    else:
+        if not getattr(app.state, "session_factory", None):
+            app.state.session_factory = make_session_factory(engine)
+
+    if not getattr(app.state, "review_states", None):
+        app.state.review_states = {}
     init_log_buffer(app)
 
     try:
         yield
     finally:
-        engine.dispose()
+        if _owns_engine and engine is not None:
+            engine.dispose()
 
 
 def create_app(settings: Settings | None = None) -> FastAPI:
