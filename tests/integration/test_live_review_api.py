@@ -475,7 +475,47 @@ class TestRejectIncompleteSnapshot:
 
 
 # ---------------------------------------------------------------------------
-# 13. Reject pending intervention
+# 13. Reject unresolved required field (distinct from case 12: tests a
+# specific field with status=intervention_needed that is required)
+# ---------------------------------------------------------------------------
+
+
+class TestRejectUnresolvedRequiredField:
+    def test_reject_required_field_with_intervention_status(self, tmp_path: Path) -> None:
+        """A snapshot with a required field in intervention_needed status
+        must be rejected for approval."""
+        settings = _make_settings(tmp_path)
+        job = _make_job(tmp_path)
+        engine, sf = _setup(tmp_path, settings, job)
+        snap = _make_snapshot(
+            job.application_id,
+            fields=[
+                {
+                    "field_token": "lf-required-q",
+                    "label": "Required Question",
+                    "field_type": "text",
+                    "filled_value": "",
+                    "status": "intervention_needed",
+                    "required": True,
+                }
+            ],
+            unresolved=1,
+        )
+        with session_scope(sf) as session:
+            create_approval(session, application_id=job.application_id, snapshot=snap)
+        app = _create_app(settings, sf)
+        with TestClient(app) as client:
+            resp = client.post(
+                f"/api/submit/{job.application_id}/approve",
+                json={"snapshot_hash": snap.snapshot_hash, "confirm": True},
+            )
+            assert resp.status_code == 409
+            assert "unresolved" in resp.json()["detail"].lower()
+        engine.dispose()
+
+
+# ---------------------------------------------------------------------------
+# 14. Reject pending intervention
 # ---------------------------------------------------------------------------
 
 
