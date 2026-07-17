@@ -22,19 +22,19 @@ from typing import Any
 from fastapi import APIRouter, HTTPException, Request
 
 from universal_auto_applier.api.models.submission import (
-    ApproveRequest,
-    ApproveResponse,
-    ConfirmHighRiskRequest,
-    ConfirmHighRiskResponse,
+    LiveReviewApproveRequest,
+    LiveReviewApproveResponse,
+    LiveReviewConfirmHighRiskRequest,
+    LiveReviewConfirmHighRiskResponse,
     LiveReviewDocument,
     LiveReviewField,
+    LiveReviewObserveResponse,
+    LiveReviewRevokeResponse,
     LiveReviewSnapshotResponse,
+    LiveReviewStatusResponse,
     LiveReviewSubmitControl,
-    ObserveResponse,
-    RevokeResponse,
-    StatusResponse,
-    SubmitRequest,
-    SubmitResponse,
+    LiveReviewSubmitRequest,
+    LiveReviewSubmitResponse,
 )
 from universal_auto_applier.config import Settings
 from universal_auto_applier.interventions.store import count_pending_interventions
@@ -263,11 +263,11 @@ def _load_snapshot_from_approval(approval: SubmissionApprovalRow) -> SubmissionS
 # ---------------------------------------------------------------------------
 
 
-@router.post("/submit/{application_id}/observe", response_model=ObserveResponse)
+@router.post("/submit/{application_id}/observe", response_model=LiveReviewObserveResponse)
 def observe_snapshot_endpoint(
     request: Request,
     application_id: str,
-) -> ObserveResponse:
+) -> LiveReviewObserveResponse:
     """Run live observation and persist the complete snapshot.
 
     Launches the browser, navigates to the application URL, fills the form,
@@ -308,11 +308,11 @@ def observe_snapshot_endpoint(
         job = get_application_job(session, application_id)
 
     resp = _build_snapshot_response(settings, application_id, snapshot, approval, latest, job)
-    return ObserveResponse(snapshot=resp)
+    return LiveReviewObserveResponse(snapshot=resp)
 
 
-@router.get("/submit/{application_id}/status", response_model=StatusResponse)
-def get_submission_status(request: Request, application_id: str) -> StatusResponse:
+@router.get("/submit/{application_id}/status", response_model=LiveReviewStatusResponse)
+def get_submission_status(request: Request, application_id: str) -> LiveReviewStatusResponse:
     """Return the complete persisted snapshot and all safety/approval/result state.
 
     Works after process restart. Does not depend on in-memory ReviewState.
@@ -332,15 +332,17 @@ def get_submission_status(request: Request, application_id: str) -> StatusRespon
         snapshot = _load_snapshot_from_approval(approval)
 
     resp = _build_snapshot_response(settings, application_id, snapshot, approval, latest, job)
-    return StatusResponse(snapshot=resp)
+    return LiveReviewStatusResponse(snapshot=resp)
 
 
-@router.post("/submit/{application_id}/confirm-high-risk", response_model=ConfirmHighRiskResponse)
+@router.post(
+    "/submit/{application_id}/confirm-high-risk", response_model=LiveReviewConfirmHighRiskResponse
+)
 def confirm_high_risk_endpoint(
     request: Request,
     application_id: str,
-    body: ConfirmHighRiskRequest,
-) -> ConfirmHighRiskResponse:
+    body: LiveReviewConfirmHighRiskRequest,
+) -> LiveReviewConfirmHighRiskResponse:
     """Confirm high-risk fields for the current snapshot.
 
     Rules:
@@ -412,18 +414,18 @@ def confirm_high_risk_endpoint(
 
     snapshot = _load_snapshot_from_approval(approval) if approval else None
     resp = _build_snapshot_response(settings, application_id, snapshot, approval, latest, job)
-    return ConfirmHighRiskResponse(
+    return LiveReviewConfirmHighRiskResponse(
         snapshot=resp,
         confirmed_tokens=body.field_tokens,
     )
 
 
-@router.post("/submit/{application_id}/approve", response_model=ApproveResponse)
+@router.post("/submit/{application_id}/approve", response_model=LiveReviewApproveResponse)
 def approve_snapshot_endpoint(
     request: Request,
     application_id: str,
-    body: ApproveRequest,
-) -> ApproveResponse:
+    body: LiveReviewApproveRequest,
+) -> LiveReviewApproveResponse:
     """Approve the persisted snapshot.
 
     Accepts the snapshot_hash (not an arbitrary client-built snapshot).
@@ -495,18 +497,18 @@ def approve_snapshot_endpoint(
         # is the one returned by observe.
         approval_id = approval.approval_id
 
-    return ApproveResponse(
+    return LiveReviewApproveResponse(
         application_id=application_id,
         approval_id=approval_id,
         snapshot_hash=body.snapshot_hash,
     )
 
 
-@router.post("/submit/{application_id}/revoke", response_model=RevokeResponse)
+@router.post("/submit/{application_id}/revoke", response_model=LiveReviewRevokeResponse)
 def revoke_approval_endpoint(
     request: Request,
     application_id: str,
-) -> RevokeResponse:
+) -> LiveReviewRevokeResponse:
     """Revoke the active approval idempotently."""
     app = request.app
     settings = app.state.settings
@@ -516,20 +518,20 @@ def revoke_approval_endpoint(
         approval = get_active_approval(session, application_id)
         if approval is None:
             # Idempotent: return success even if no approval exists.
-            return RevokeResponse(application_id=application_id, revoked=True)
+            return LiveReviewRevokeResponse(application_id=application_id, revoked=True)
         approval_id = approval.approval_id
 
     coordinator = SubmissionCoordinator(settings, session_factory)
     coordinator.revoke_approval(approval_id)
-    return RevokeResponse(application_id=application_id, revoked=True)
+    return LiveReviewRevokeResponse(application_id=application_id, revoked=True)
 
 
-@router.post("/submit/{application_id}/submit", response_model=SubmitResponse)
+@router.post("/submit/{application_id}/submit", response_model=LiveReviewSubmitResponse)
 def submit_endpoint(
     request: Request,
     application_id: str,
-    body: SubmitRequest,
-) -> SubmitResponse:
+    body: LiveReviewSubmitRequest,
+) -> LiveReviewSubmitResponse:
     """Execute the controlled final submission."""
     if not body.confirm:
         raise HTTPException(
@@ -555,7 +557,7 @@ def submit_endpoint(
             approval_id=body.approval_id,
             artifact_dir=artifact_dir,
         )
-        return SubmitResponse(
+        return LiveReviewSubmitResponse(
             application_id=application_id,
             state=str(result.state),
             clicked=result.clicked,
@@ -566,13 +568,13 @@ def submit_endpoint(
         coordinator = SubmissionCoordinator(settings, session_factory)
         gate = coordinator.check_gates(application_id=application_id)
         if not gate.allowed:
-            return SubmitResponse(
+            return LiveReviewSubmitResponse(
                 application_id=application_id,
                 state=str(gate.state),
                 clicked=False,
                 error_message=gate.reason,
             )
-        return SubmitResponse(
+        return LiveReviewSubmitResponse(
             application_id=application_id,
             state="ready_to_submit",
             clicked=False,

@@ -85,48 +85,48 @@ class LiveReviewSnapshotResponse(BaseModel):
     latest_submission_timestamp: datetime | None = None
 
 
-class ConfirmHighRiskRequest(BaseModel):
+class LiveReviewConfirmHighRiskRequest(BaseModel):
     snapshot_hash: str
     field_tokens: list[str]
     confirm: bool = False
 
 
-class ApproveRequest(BaseModel):
+class LiveReviewApproveRequest(BaseModel):
     snapshot_hash: str
     confirm: bool = False
 
 
-class SubmitRequest(BaseModel):
+class LiveReviewSubmitRequest(BaseModel):
     approval_id: str
     confirm: bool = False
 
 
-class ObserveResponse(BaseModel):
+class LiveReviewObserveResponse(BaseModel):
     snapshot: LiveReviewSnapshotResponse
 
 
-class StatusResponse(BaseModel):
+class LiveReviewStatusResponse(BaseModel):
     snapshot: LiveReviewSnapshotResponse
 
 
-class ConfirmHighRiskResponse(BaseModel):
+class LiveReviewConfirmHighRiskResponse(BaseModel):
     snapshot: LiveReviewSnapshotResponse
     confirmed_tokens: list[str] = Field(default_factory=list[str])
 
 
-class ApproveResponse(BaseModel):
+class LiveReviewApproveResponse(BaseModel):
     application_id: str
     approval_id: str
     snapshot_hash: str
     approved: bool = True
 
 
-class RevokeResponse(BaseModel):
+class LiveReviewRevokeResponse(BaseModel):
     application_id: str
     revoked: bool = True
 
 
-class SubmitResponse(BaseModel):
+class LiveReviewSubmitResponse(BaseModel):
     application_id: str
     state: str
     clicked: bool

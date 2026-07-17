@@ -28,29 +28,47 @@ def _settings(tmp_path: Path) -> Settings:
 
 ENDPOINT_CHECKS: list[tuple[str, str, int, str, str | None]] = [
     # (method, path, success_status, response_model_ref, request_model_ref)
-    ("post", "/api/submit/{application_id}/observe", 200, "ObserveResponse", None),
-    ("get", "/api/submit/{application_id}/status", 200, "StatusResponse", None),
+    (
+        "post",
+        "/api/submit/{application_id}/observe",
+        200,
+        "LiveReviewObserveResponse",
+        None,
+    ),
+    (
+        "get",
+        "/api/submit/{application_id}/status",
+        200,
+        "LiveReviewStatusResponse",
+        None,
+    ),
     (
         "post",
         "/api/submit/{application_id}/confirm-high-risk",
         200,
-        "ConfirmHighRiskResponse",
-        "ConfirmHighRiskRequest",
+        "LiveReviewConfirmHighRiskResponse",
+        "LiveReviewConfirmHighRiskRequest",
     ),
     (
         "post",
         "/api/submit/{application_id}/approve",
         200,
-        "ApproveResponse",
-        "ApproveRequest",
+        "LiveReviewApproveResponse",
+        "LiveReviewApproveRequest",
     ),
-    ("post", "/api/submit/{application_id}/revoke", 200, "RevokeResponse", None),
+    (
+        "post",
+        "/api/submit/{application_id}/revoke",
+        200,
+        "LiveReviewRevokeResponse",
+        None,
+    ),
     (
         "post",
         "/api/submit/{application_id}/submit",
         200,
-        "SubmitResponse",
-        "SubmitRequest",
+        "LiveReviewSubmitResponse",
+        "LiveReviewSubmitRequest",
     ),
 ]
 
@@ -135,15 +153,15 @@ class TestOpenApiSubmitEndpoints:
 
         schemas = spec.get("components", {}).get("schemas", {})
         required = {
-            "ObserveResponse",
-            "StatusResponse",
-            "ConfirmHighRiskRequest",
-            "ConfirmHighRiskResponse",
-            "ApproveRequest",
-            "ApproveResponse",
-            "RevokeResponse",
-            "SubmitRequest",
-            "SubmitResponse",
+            "LiveReviewObserveResponse",
+            "LiveReviewStatusResponse",
+            "LiveReviewConfirmHighRiskRequest",
+            "LiveReviewConfirmHighRiskResponse",
+            "LiveReviewApproveRequest",
+            "LiveReviewApproveResponse",
+            "LiveReviewRevokeResponse",
+            "LiveReviewSubmitRequest",
+            "LiveReviewSubmitResponse",
             "LiveReviewSnapshotResponse",
             "LiveReviewField",
             "LiveReviewDocument",
@@ -153,7 +171,7 @@ class TestOpenApiSubmitEndpoints:
         assert not missing, f"Expected schemas missing from OpenAPI: {missing}"
 
     def test_observe_response_contains_snapshot(self, tmp_path: Path) -> None:
-        """ObserveResponse must contain a snapshot field referencing LiveReviewSnapshotResponse."""
+        """LiveReviewObserveResponse must contain a snapshot field."""
         settings = _settings(tmp_path)
         settings.data_dir.mkdir(parents=True, exist_ok=True)
         app = create_app(settings=settings)
@@ -163,7 +181,7 @@ class TestOpenApiSubmitEndpoints:
             spec = resp.json()
 
         schemas = spec.get("components", {}).get("schemas", {})
-        observe_resp = schemas.get("ObserveResponse", {})
+        observe_resp = schemas.get("LiveReviewObserveResponse", {})
         props = observe_resp.get("properties", {})
         assert "snapshot" in props, "ObserveResponse missing 'snapshot' property"
         snap_ref = props["snapshot"].get("$ref", "")
