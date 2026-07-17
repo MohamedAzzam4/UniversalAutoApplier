@@ -378,7 +378,7 @@ code {
 .uaa-iv-actions { display: flex; gap: 6px; margin-top: 8px; }
 
 /* ---- Phase 6: Review ---- */
-.uaa-review-bar { display: flex; gap: 8px; margin-bottom: 12px; }
+.uaa-review-bar { display: flex; gap: 8px; margin-bottom: 12px; flex-wrap: wrap; }
 .uaa-review-display { margin-bottom: 12px; }
 .uaa-review-controls { display: flex; gap: 8px; align-items: center; }
 
@@ -557,4 +557,48 @@ code {
 .uaa-submit-options {
   color: var(--uaa-text-muted);
   font-size: 0.78rem;
+}
+
+/* Responsive: narrow viewports */
+@media (max-width: 600px) {
+  .uaa-submit-field-detail {
+    grid-template-columns: 1fr;
+  }
+  .uaa-submit-doc {
+    grid-template-columns: 1fr;
+  }
+  .uaa-review-bar {
+    flex-direction: column;
+    align-items: stretch;
+  }
+  .uaa-review-bar input {
+    width: 100%;
+    box-sizing: border-box;
+  }
+  .uaa-review-bar button {
+    width: 100%;
+  }
+  .uaa-submit-controls {
+    flex-direction: column;
+    align-items: stretch;
+  }
+  .uaa-submit-controls button {
+    width: 100%;
+  }
+  .uaa-submit-options {
+    word-break: break-all;
+  }
+  .uaa-submit-field code {
+    word-break: break-all;
+  }
+  .uaa-submit-field-detail code {
+    word-break: break-all;
+  }
+  .uaa-submit-checkbox-label {
+    word-break: break-all;
+  }
+  #submit-confirm-dialog {
+    max-width: calc(100vw - 32px);
+    box-sizing: border-box;
+  }
 }

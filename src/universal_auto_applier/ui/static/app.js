@@ -634,7 +634,7 @@
         // High-risk confirmation checkbox
         if (isHighRisk) {
           var checkedAttr = f.confirmed ? ' checked="checked" disabled="disabled"' : '';
-          html += '<div class="uaa-submit-checkbox-label"><input type="checkbox" class="uaa-hr-checkbox" data-field-token="' + esc(f.field_token) + '"' + checkedAttr + ' /> <span>High-risk field' + (f.confirmed ? ' (confirmed)' : ' — requires confirmation') + '</span></div>';
+          html += '<div class="uaa-submit-checkbox-label"><input type="checkbox" class="uaa-hr-checkbox" data-field-token="' + esc(f.field_token) + '" aria-label="Confirm high-risk: ' + esc(f.label) + '"' + checkedAttr + ' /> <span>High-risk field' + (f.confirmed ? ' (confirmed)' : ' — requires confirmation') + '</span></div>';
         }
         html += '<div class="uaa-submit-confidence"><strong>Confirmation state:</strong> ' + (f.confirmed ? 'Confirmed' : 'Pending') + '</div>';
         html += '</div>';
@@ -890,6 +890,16 @@
       document.getElementById("submit-confirm-dialog").style.display = "none";
     });
   }
+
+  // Close confirm dialog on Escape
+  document.addEventListener("keydown", function (e) {
+    if (e.key === "Escape") {
+      var dlg = document.getElementById("submit-confirm-dialog");
+      if (dlg && dlg.style.display !== "none") {
+        dlg.style.display = "none";
+      }
+    }
+  });
 
   if (submitConfirmYesBtn) {
     submitConfirmYesBtn.addEventListener("click", async function () {
