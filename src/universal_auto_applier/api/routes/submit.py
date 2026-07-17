@@ -263,7 +263,7 @@ def _load_snapshot_from_approval(approval: SubmissionApprovalRow) -> SubmissionS
 # ---------------------------------------------------------------------------
 
 
-@router.post("/submit/{application_id}/observe", response_model=ObserveResponse)
+@router.post("/submit/{application_id}/observe")
 def observe_snapshot_endpoint(
     request: Request,
     application_id: str,
@@ -311,7 +311,7 @@ def observe_snapshot_endpoint(
     return ObserveResponse(snapshot=resp)
 
 
-@router.get("/submit/{application_id}/status", response_model=StatusResponse)
+@router.get("/submit/{application_id}/status")
 def get_submission_status(request: Request, application_id: str) -> StatusResponse:
     """Return the complete persisted snapshot and all safety/approval/result state.
 
@@ -335,7 +335,7 @@ def get_submission_status(request: Request, application_id: str) -> StatusRespon
     return StatusResponse(snapshot=resp)
 
 
-@router.post("/submit/{application_id}/confirm-high-risk", response_model=ConfirmHighRiskResponse)
+@router.post("/submit/{application_id}/confirm-high-risk")
 def confirm_high_risk_endpoint(
     request: Request,
     application_id: str,
@@ -418,7 +418,7 @@ def confirm_high_risk_endpoint(
     )
 
 
-@router.post("/submit/{application_id}/approve", response_model=ApproveResponse)
+@router.post("/submit/{application_id}/approve")
 def approve_snapshot_endpoint(
     request: Request,
     application_id: str,
@@ -502,7 +502,7 @@ def approve_snapshot_endpoint(
     )
 
 
-@router.post("/submit/{application_id}/revoke", response_model=RevokeResponse)
+@router.post("/submit/{application_id}/revoke")
 def revoke_approval_endpoint(
     request: Request,
     application_id: str,
@@ -524,7 +524,7 @@ def revoke_approval_endpoint(
     return RevokeResponse(application_id=application_id, revoked=True)
 
 
-@router.post("/submit/{application_id}/submit", response_model=SubmitResponse)
+@router.post("/submit/{application_id}/submit")
 def submit_endpoint(
     request: Request,
     application_id: str,
