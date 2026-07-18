@@ -64,6 +64,9 @@ from universal_auto_applier.submission.models import (
     SubmissionResult,
     SubmissionResultState,
     SubmissionSnapshot,
+    check_snapshot_consistency,
+    derive_unconfirmed_high_risk_count,
+    derive_unresolved_required_count,
 )
 from universal_auto_applier.submission.store import (
     acquire_claim,
@@ -230,27 +233,25 @@ class SubmissionCoordinator:
                     state=SubmissionResultState.SUBMISSION_NOT_ALLOWED,
                 )
 
-            # Gate 4b: no unresolved required fields (direct field check).
+            # Gates 4b-4c: field-level checks derived from field data.
             if current_snapshot is not None:
-                unresolved = current_snapshot.unresolved_required_field_count
+                confirmed_tokens = set(approval.confirmed_high_risk_fields_json or [])
+                consistency_error = check_snapshot_consistency(current_snapshot, confirmed_tokens)
+                if consistency_error:
+                    return GateResult(
+                        allowed=False,
+                        reason=consistency_error,
+                        state=SubmissionResultState.SUBMISSION_NOT_ALLOWED,
+                    )
+                unresolved = derive_unresolved_required_count(current_snapshot.fields)
                 if unresolved > 0:
                     return GateResult(
                         allowed=False,
                         reason=f"{unresolved} unresolved required fields remain",
                         state=SubmissionResultState.SUBMISSION_NOT_ALLOWED,
                     )
-
-            # Gate 4c: no high-risk unconfirmed answers (direct field check).
-            # Check against the approval's confirmed_high_risk_fields list.
-            # A high-risk field is "confirmed" if its field_token is in the
-            # approval's confirmed_high_risk_fields_json list.
-            if current_snapshot is not None:
-                confirmed_tokens = set(approval.confirmed_high_risk_fields_json or [])
-                unconfirmed_high_risk = sum(
-                    1
-                    for f in current_snapshot.fields
-                    if (f.requires_confirmation or f.risk_level.lower() == "high")
-                    and f.field_token not in confirmed_tokens
+                unconfirmed_high_risk = derive_unconfirmed_high_risk_count(
+                    current_snapshot.fields, confirmed_tokens
                 )
                 if unconfirmed_high_risk > 0:
                     return GateResult(

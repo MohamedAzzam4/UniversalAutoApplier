@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+from collections.abc import Set
 from datetime import UTC, datetime
 from enum import StrEnum
 from pathlib import Path
@@ -192,6 +193,93 @@ class SubmissionSnapshot(BaseModel):
         return self.with_hashes()
 
 
+# ---------------------------------------------------------------------------
+# Canonical safety-state derivation
+# ---------------------------------------------------------------------------
+
+_UNRESOLVED_STATUSES = frozenset(
+    {
+        "intervention_needed",
+        "validation_error",
+        "failed",
+        "blocked",
+        "unfilled",
+        "unsupported",
+    }
+)
+
+
+def _count_unresolved_fields(
+    fields: list[SubmissionSnapshotField],
+) -> tuple[int, int]:
+    """Count unresolved required fields and any unresolved fields.
+
+    Returns ``(unresolved_required_count, any_unresolved_count)``.
+    """
+    unresolved_required = sum(1 for f in fields if f.status in _UNRESOLVED_STATUSES and f.required)
+    unresolved_any = sum(1 for f in fields if f.status in _UNRESOLVED_STATUSES)
+    return unresolved_required, unresolved_any
+
+
+def derive_unresolved_required_count(fields: list[SubmissionSnapshotField]) -> int:
+    """Derive the count of unresolved required fields from field data.
+
+    Uses the same conservative logic as :func:`build_snapshot_from_report`:
+    any unresolved field (even non-required) counts, for maximum safety.
+    """
+    unresolved_required, unresolved_any = _count_unresolved_fields(fields)
+    return max(unresolved_required, unresolved_any)
+
+
+def derive_unconfirmed_high_risk_count(
+    fields: list[SubmissionSnapshotField],
+    confirmed_tokens: Set[str] = frozenset(),
+) -> int:
+    """Derive the count of unconfirmed high-risk fields from field data."""
+    return sum(
+        1
+        for f in fields
+        if (f.requires_confirmation or f.risk_level.lower() == "high")
+        and f.field_token not in confirmed_tokens
+    )
+
+
+def derive_is_complete(fields: list[SubmissionSnapshotField]) -> bool:
+    """Derive completeness from field data."""
+    return derive_unresolved_required_count(fields) == 0
+
+
+def check_snapshot_consistency(
+    snapshot: SubmissionSnapshot,
+    confirmed_tokens: Set[str] = frozenset(),
+) -> str:
+    """Check if the snapshot's persisted aggregates match derived values.
+
+    Returns an empty string if consistent, or a blocking reason if not.
+    This is a safety net for stale/corrupted data.
+
+    The ``high_risk_unconfirmed_count`` aggregate is compared against a
+    derivation with **no** field confirmations, because the aggregate was
+    computed at snapshot-creation time when no confirmations existed.
+    """
+    derived_unresolved = derive_unresolved_required_count(snapshot.fields)
+    if derived_unresolved != snapshot.unresolved_required_field_count:
+        return (
+            f"Snapshot inconsistency: persisted unresolved_required_field_count="
+            f"{snapshot.unresolved_required_field_count} "
+            f"but field data shows {derived_unresolved}"
+        )
+    # Compare against the no-confirmation baseline (snapshot creation time).
+    derived_high_risk = derive_unconfirmed_high_risk_count(snapshot.fields, frozenset())
+    if derived_high_risk != snapshot.high_risk_unconfirmed_count:
+        return (
+            f"Snapshot inconsistency: persisted high_risk_unconfirmed_count="
+            f"{snapshot.high_risk_unconfirmed_count} "
+            f"but field data shows {derived_high_risk}"
+        )
+    return ""
+
+
 def build_snapshot_from_report(
     *,
     application_id: str,
@@ -259,14 +347,7 @@ def build_snapshot_from_report(
         )
 
     # Compute explicit gate flags directly from field records.
-    unresolved_statuses = {"intervention_needed", "failed", "blocked"}
-    unresolved_required = sum(
-        1 for f in snap_fields if f.status in unresolved_statuses and f.required
-    )
-    # Also count unresolved fields even if required-ness is unknown
-    # (LiveFieldRecord does not track required). This is a conservative
-    # direct check — any unresolved field blocks submission.
-    unresolved_any = sum(1 for f in snap_fields if f.status in unresolved_statuses)
+    unresolved_required, unresolved_any = _count_unresolved_fields(snap_fields)
     high_risk_unconfirmed = sum(
         1 for f in snap_fields if f.requires_confirmation or f.risk_level.lower() == "high"
     )
@@ -408,4 +489,8 @@ __all__ = [
     "SubmissionSnapshotField",
     "SubmissionSnapshotSubmitControl",
     "build_snapshot_from_report",
+    "check_snapshot_consistency",
+    "derive_is_complete",
+    "derive_unconfirmed_high_risk_count",
+    "derive_unresolved_required_count",
 ]

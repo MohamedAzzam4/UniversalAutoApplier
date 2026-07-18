@@ -31,6 +31,8 @@ from universal_auto_applier.submission.models import (
     SubmissionSnapshotDocument,
     SubmissionSnapshotField,
     SubmissionSnapshotSubmitControl,
+    derive_unconfirmed_high_risk_count,
+    derive_unresolved_required_count,
 )
 from universal_auto_applier.submission.store import create_approval
 
@@ -76,7 +78,6 @@ def _make_snapshot(
     fields: list[dict[str, Any]] | None = None,
     documents: list[dict[str, Any]] | None = None,
     pending: int = 0,
-    unresolved: int = 0,
 ) -> SubmissionSnapshot:
     snap_fields = [
         SubmissionSnapshotField(
@@ -106,7 +107,8 @@ def _make_snapshot(
         fields=snap_fields,
         documents=snap_docs,
         pending_intervention_count=pending,
-        unresolved_required_field_count=unresolved,
+        unresolved_required_field_count=derive_unresolved_required_count(snap_fields),
+        high_risk_unconfirmed_count=derive_unconfirmed_high_risk_count(snap_fields),
         submit_control=SubmissionSnapshotSubmitControl(
             text="Submit", selector="button[type='submit']"
         ),
@@ -461,7 +463,17 @@ class TestRejectIncompleteSnapshot:
         settings = _make_settings(tmp_path)
         job = _make_job(tmp_path)
         engine, sf = _setup(tmp_path, settings, job)
-        snap = _make_snapshot(job.application_id, unresolved=1)
+        snap = _make_snapshot(
+            job.application_id,
+            fields=[
+                {
+                    "field_token": "lf-unresolved",
+                    "filled_value": "",
+                    "status": "intervention_needed",
+                    "required": True,
+                }
+            ],
+        )
         with session_scope(sf) as session:
             create_approval(session, application_id=job.application_id, snapshot=snap)
         app = _create_app(settings, engine, sf)
@@ -500,7 +512,6 @@ class TestRejectUnresolvedRequiredField:
                     "required": True,
                 }
             ],
-            unresolved=1,
         )
         with session_scope(sf) as session:
             create_approval(session, application_id=job.application_id, snapshot=snap)

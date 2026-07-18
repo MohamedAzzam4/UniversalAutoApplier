@@ -42,7 +42,13 @@ from universal_auto_applier.persistence.db import session_scope
 from universal_auto_applier.persistence.job_repository import get_application_job
 from universal_auto_applier.persistence.models import SubmissionApprovalRow, SubmissionResultRow
 from universal_auto_applier.submission.coordinator import SubmissionCoordinator
-from universal_auto_applier.submission.models import SubmissionSnapshot
+from universal_auto_applier.submission.models import (
+    SubmissionSnapshot,
+    check_snapshot_consistency,
+    derive_is_complete,
+    derive_unconfirmed_high_risk_count,
+    derive_unresolved_required_count,
+)
 from universal_auto_applier.submission.store import (
     confirm_high_risk_fields,
     get_active_approval,
@@ -169,27 +175,29 @@ def _build_snapshot_response(
         if approval.snapshot_hash != snapshot.snapshot_hash:
             approval_is_stale = True
 
+    # Derive safety state from field data (source of truth).
+    derived_unresolved = derive_unresolved_required_count(snapshot.fields)
+    derived_unconfirmed = derive_unconfirmed_high_risk_count(snapshot.fields, confirmed_tokens)
+    is_complete = derive_is_complete(snapshot.fields)
+
+    # Consistency check: detect stale aggregates that contradict field data.
+    consistency_error = check_snapshot_consistency(snapshot, confirmed_tokens)
+
     # Determine can_approve.
     can_approve = True
     approve_blocking_reason = ""
-    if snapshot.unresolved_required_field_count > 0:
+    if consistency_error:
         can_approve = False
-        approve_blocking_reason = (
-            f"{snapshot.unresolved_required_field_count} unresolved required fields"
-        )
+        approve_blocking_reason = consistency_error
+    elif derived_unresolved > 0:
+        can_approve = False
+        approve_blocking_reason = f"{derived_unresolved} unresolved required fields"
     elif snapshot.pending_intervention_count > 0:
         can_approve = False
         approve_blocking_reason = f"{snapshot.pending_intervention_count} pending interventions"
-    else:
-        unconfirmed = sum(
-            1
-            for f in snapshot.fields
-            if (f.requires_confirmation or f.risk_level.lower() == "high")
-            and f.field_token not in confirmed_tokens
-        )
-        if unconfirmed > 0:
-            can_approve = False
-            approve_blocking_reason = f"{unconfirmed} unconfirmed high-risk answers"
+    elif derived_unconfirmed > 0:
+        can_approve = False
+        approve_blocking_reason = f"{derived_unconfirmed} unconfirmed high-risk answers"
 
     # Determine can_submit.
     can_submit = approval_state == "active" and not approval_is_stale and can_approve
@@ -212,19 +220,14 @@ def _build_snapshot_response(
         observation_timestamp=snapshot.created_at,
         form_fingerprint=snapshot.form_fingerprint,
         snapshot_hash=snapshot.snapshot_hash,
-        is_complete=snapshot.unresolved_required_field_count == 0,
+        is_complete=is_complete,
         is_stale=approval_is_stale,
         submit_control=submit_control,
         fields=fields,
         documents=documents,
         pending_intervention_count=snapshot.pending_intervention_count,
-        unresolved_required_field_count=snapshot.unresolved_required_field_count,
-        unconfirmed_high_risk_count=sum(
-            1
-            for f in snapshot.fields
-            if (f.requires_confirmation or f.risk_level.lower() == "high")
-            and f.field_token not in confirmed_tokens
-        ),
+        unresolved_required_field_count=derived_unresolved,
+        unconfirmed_high_risk_count=derived_unconfirmed,
         active_approval_id=approval.approval_id
         if approval and approval_state == "active"
         else None,
@@ -467,11 +470,19 @@ def approve_snapshot_endpoint(
                 detail="failed to load snapshot from approval",
             )
 
-        # Validate gates.
-        if snapshot.unresolved_required_field_count > 0:
+        # Validate gates — derive from field data, not trusted aggregates.
+        confirmed_tokens = set(approval.confirmed_high_risk_fields_json or [])
+        consistency_error = check_snapshot_consistency(snapshot, confirmed_tokens)
+        if consistency_error:
             raise HTTPException(
                 status_code=409,
-                detail=f"cannot approve: {snapshot.unresolved_required_field_count} unresolved required fields",
+                detail=f"cannot approve: {consistency_error}",
+            )
+        derived_unresolved = derive_unresolved_required_count(snapshot.fields)
+        if derived_unresolved > 0:
+            raise HTTPException(
+                status_code=409,
+                detail=f"cannot approve: {derived_unresolved} unresolved required fields",
             )
         pending = count_pending_interventions(session, application_id)
         if pending > 0:
@@ -479,17 +490,11 @@ def approve_snapshot_endpoint(
                 status_code=409,
                 detail=f"cannot approve: {pending} pending interventions",
             )
-        confirmed_tokens = set(approval.confirmed_high_risk_fields_json or [])
-        unconfirmed = sum(
-            1
-            for f in snapshot.fields
-            if (f.requires_confirmation or f.risk_level.lower() == "high")
-            and f.field_token not in confirmed_tokens
-        )
-        if unconfirmed > 0:
+        derived_unconfirmed = derive_unconfirmed_high_risk_count(snapshot.fields, confirmed_tokens)
+        if derived_unconfirmed > 0:
             raise HTTPException(
                 status_code=409,
-                detail=f"cannot approve: {unconfirmed} unconfirmed high-risk answers",
+                detail=f"cannot approve: {derived_unconfirmed} unconfirmed high-risk answers",
             )
 
         # The approval already exists (created by observe). It is now

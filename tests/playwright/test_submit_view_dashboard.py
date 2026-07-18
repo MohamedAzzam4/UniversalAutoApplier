@@ -217,7 +217,7 @@ def _create_observe_payload(tmp_path: Path, app_id: str) -> dict[str, Any]:
         submit_control=SubmissionSnapshotSubmitControl(
             text="Submit Application", selector="#submit-btn"
         ),
-        unresolved_required_field_count=0,
+        unresolved_required_field_count=1,
         pending_intervention_count=0,
     )
     return {
@@ -791,6 +791,7 @@ class TestSubmitViewDashboard:
 
         from universal_auto_applier.submission.models import (
             SubmissionSnapshot,
+            SubmissionSnapshotField,
         )
         from universal_auto_applier.submission.store import create_approval
 
@@ -799,9 +800,20 @@ class TestSubmitViewDashboard:
             application_url="https://example.com/job/block-test",
             form_fingerprint="fp-block",
             snapshot_hash="hash-block",
-            fields=[],
+            fields=[
+                SubmissionSnapshotField(
+                    field_token="f_unresolved",
+                    label="Unresolved Field",
+                    field_type="text",
+                    required=True,
+                    filled_value="",
+                    selected_value="",
+                    status="intervention_needed",
+                    risk_level="low",
+                ),
+            ],
             documents=[],
-            unresolved_required_field_count=2,
+            unresolved_required_field_count=1,
             pending_intervention_count=0,
         )
         with session_scope(app.state.session_factory) as session:

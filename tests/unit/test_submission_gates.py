@@ -33,6 +33,8 @@ from universal_auto_applier.submission.models import (
     SubmissionSnapshotDocument,
     SubmissionSnapshotField,
     SubmissionSnapshotSubmitControl,
+    derive_unconfirmed_high_risk_count,
+    derive_unresolved_required_count,
 )
 
 
@@ -86,8 +88,6 @@ def _make_snapshot(
     documents: list[dict[str, Any]] | None = None,
     url: str = "https://example.com/job/gates-1",
     pending: int = 0,
-    unresolved_required: int = 0,
-    high_risk_unconfirmed: int = 0,
     submit_text: str = "Submit",
 ) -> SubmissionSnapshot:
     snap_fields = [
@@ -118,8 +118,8 @@ def _make_snapshot(
         fields=snap_fields,
         documents=snap_docs,
         pending_intervention_count=pending,
-        unresolved_required_field_count=unresolved_required,
-        high_risk_unconfirmed_count=high_risk_unconfirmed,
+        unresolved_required_field_count=derive_unresolved_required_count(snap_fields),
+        high_risk_unconfirmed_count=derive_unconfirmed_high_risk_count(snap_fields),
         submit_control=SubmissionSnapshotSubmitControl(
             text=submit_text, selector="button[type='submit']"
         ),
@@ -231,20 +231,31 @@ class TestGatePendingInterventions:
 
 class TestGateUnresolvedRequiredFields:
     def test_unresolved_required_fields_block(self, tmp_path: Path) -> None:
-        """Direct gate: unresolved_required_field_count > 0 blocks
-        submission, even if no pending interventions exist."""
+        """Direct gate: an unresolved-status required field blocks
+        submission, even if no pending interventions exist.
+        The count is derived from field data, not the persisted aggregate."""
         settings = _make_settings(tmp_path)
         job = _make_job(tmp_path)
         engine, sf = _setup(tmp_path, settings, job)
         try:
             coord = SubmissionCoordinator(settings, sf)
-            snap1 = _make_snapshot(job.application_id, unresolved_required=0)
+            snap1 = _make_snapshot(
+                job.application_id,
+                fields=[{"field_token": "lf-1", "filled_value": "ok", "status": "filled"}],
+            )
             coord.approve_snapshot(application_id=job.application_id, snapshot=snap1)
-            # Current snapshot has unresolved required fields but the
-            # snapshot hash is the same (so the hash gate passes).
-            # Actually, if unresolved_required changes, the hash changes too.
-            # So we need to approve the snapshot WITH the unresolved count.
-            snap2 = _make_snapshot(job.application_id, unresolved_required=1)
+            # Create a snapshot with a field that has an unresolved status.
+            snap2 = _make_snapshot(
+                job.application_id,
+                fields=[
+                    {
+                        "field_token": "lf-1",
+                        "filled_value": "bad",
+                        "status": "intervention_needed",
+                        "required": True,
+                    }
+                ],
+            )
             coord.approve_snapshot(application_id=job.application_id, snapshot=snap2)
             gate = coord.check_gates(application_id=job.application_id, current_snapshot=snap2)
             assert not gate.allowed
@@ -523,8 +534,6 @@ class TestGateAllPass:
             coord = SubmissionCoordinator(settings, sf)
             snap = _make_snapshot(
                 job.application_id,
-                unresolved_required=0,
-                high_risk_unconfirmed=0,
                 pending=0,
             )
             coord.approve_snapshot(application_id=job.application_id, snapshot=snap)
