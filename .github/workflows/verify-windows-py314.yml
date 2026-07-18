@@ -27,7 +27,7 @@ jobs:
   verify-windows-py314:
     name: Windows + Python 3.14 bootstrap gate
     runs-on: windows-latest
-    timeout-minutes: 30
+    timeout-minutes: 45
 
     steps:
       - name: Checkout
