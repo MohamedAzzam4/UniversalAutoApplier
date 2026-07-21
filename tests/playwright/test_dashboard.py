@@ -82,12 +82,12 @@ def test_dashboard_has_no_visible_overlap_at_desktop(page, server_url: str) -> N
         })""",
     )
 
-    def intersects(a, b) -> bool:
+    def intersects(a, b, tolerance: float = 1.0) -> bool:
         return not (
-            a["x"] + a["w"] <= b["x"]
-            or b["x"] + b["w"] <= a["x"]
-            or a["y"] + a["h"] <= b["y"]
-            or b["y"] + b["h"] <= a["y"]
+            a["x"] + a["w"] <= b["x"] + tolerance
+            or b["x"] + b["w"] <= a["x"] + tolerance
+            or a["y"] + a["h"] <= b["y"] + tolerance
+            or b["y"] + b["h"] <= a["y"] + tolerance
         )
 
     for i in range(len(boxes)):

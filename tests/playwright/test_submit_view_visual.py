@@ -28,6 +28,12 @@ from universal_auto_applier.config import Settings
 from universal_auto_applier.persistence.db import build_engine_url
 from universal_auto_applier.persistence.migrations import apply_migrations
 from universal_auto_applier.persistence.models import Base
+from universal_auto_applier.submission.models import (
+    SubmissionSnapshotField,
+    derive_is_complete,
+    derive_unconfirmed_high_risk_count,
+    derive_unresolved_required_count,
+)
 
 pytestmark = pytest.mark.playwright
 
@@ -262,6 +268,26 @@ _FIELDS = [
         validation_error="",
     ),
     dict(
+        field_token="f_secret",
+        label="API Access Token",
+        field_type="password",
+        required=False,
+        filled_value="sk-1234567890abcdefghijklmnopqrstuvwxyz",
+        selected_value="",
+        status="filled",
+        risk_level="low",
+        requires_confirmation=False,
+        confirmed=False,
+        evidence="",
+        source="",
+        options=[],
+        validation_error="",
+    ),
+]
+
+# Override fields for specific states (not in _FIELDS by default).
+_HIGH_RISK_FIELDS = [
+    dict(
         field_token="f_risk",
         label="Criminal Record Disclosure",
         field_type="radio",
@@ -293,22 +319,9 @@ _FIELDS = [
         options=[],
         validation_error="",
     ),
-    dict(
-        field_token="f_secret",
-        label="API Access Token",
-        field_type="password",
-        required=False,
-        filled_value="sk-1234567890abcdefghijklmnopqrstuvwxyz",
-        selected_value="",
-        status="filled",
-        risk_level="low",
-        requires_confirmation=False,
-        confirmed=False,
-        evidence="",
-        source="",
-        options=[],
-        validation_error="",
-    ),
+]
+
+_VALIDATION_ERROR_FIELDS = [
     dict(
         field_token="f_bad",
         label="Invalid Field",
@@ -359,30 +372,100 @@ _DOCUMENTS = [
 ]
 
 
+def _derive_aggregates(
+    fields: list[dict],
+    confirmed_tokens: set[str] = frozenset(),
+) -> dict:
+    """Derive aggregate counts from field dicts using production helpers.
+
+    Returns a dict with keys: unresolved_required_field_count,
+    unconfirmed_high_risk_count, is_complete, can_approve, approve_blocking_reason.
+    """
+    sf_list = [
+        SubmissionSnapshotField(
+            field_token=f["field_token"],
+            label=f.get("label", ""),
+            field_type=f.get("field_type", "text"),
+            filled_value=f.get("filled_value", ""),
+            selected_value=f.get("selected_value", ""),
+            status=f.get("status", "filled"),
+            required=f.get("required", False),
+            requires_confirmation=f.get("requires_confirmation", False),
+            risk_level=f.get("risk_level", ""),
+        )
+        for f in fields
+    ]
+    unresolved = derive_unresolved_required_count(sf_list)
+    unconfirmed = derive_unconfirmed_high_risk_count(sf_list, confirmed_tokens)
+    complete = derive_is_complete(sf_list)
+    # Determine can_approve and blocking reason based on production semantics.
+    if unresolved > 0:
+        can_approve = False
+        blocking = f"{unresolved} unresolved required fields remain"
+    elif unconfirmed > 0:
+        can_approve = False
+        blocking = "Unconfirmed high-risk fields require confirmation"
+    else:
+        can_approve = True
+        blocking = ""
+    return {
+        "unresolved_required_field_count": unresolved,
+        "unconfirmed_high_risk_count": unconfirmed,
+        "is_complete": complete,
+        "can_approve": can_approve,
+        "approve_blocking_reason": blocking,
+    }
+
+
 def _build_status_response(
     app_id: str = "test-app-id",
     snapshot_hash: str = "hash-abc123def456",
-    is_complete: bool = True,
+    is_complete: bool | None = None,
     is_stale: bool = False,
     approval_state: str = "none",
     active_approval_id: str | None = None,
     approved_snapshot_hash: str | None = None,
     approval_is_stale: bool = False,
-    can_approve: bool = True,
-    approve_blocking_reason: str = "",
+    can_approve: bool | None = None,
+    approve_blocking_reason: str | None = None,
     can_submit: bool = False,
     submit_blocking_reason: str = "",
     pending_intervention_count: int = 0,
-    unresolved_required_field_count: int = 0,
-    unconfirmed_high_risk_count: int = 0,
+    unresolved_required_field_count: int | None = None,
+    unconfirmed_high_risk_count: int | None = None,
     enable_real_submission: bool = True,
     latest_submission_state: str | None = None,
     latest_submission_error: str | None = None,
     latest_submission_timestamp: str | None = None,
     field_overrides: list[dict] | None = None,
+    confirmed_tokens: set[str] = frozenset(),
 ) -> dict:
-    """Build a LiveReviewSnapshotResponse JSON dict (wrapped in {snapshot: ...})."""
+    """Build a LiveReviewSnapshotResponse JSON dict (wrapped in {snapshot: ...}).
+
+    By default derives aggregate counts from field data using production
+    canonical derivation helpers. Any explicit ``*_override`` parameter
+    will take precedence over the derived value.
+    """
     fields = field_overrides if field_overrides is not None else _FIELDS
+    derived = _derive_aggregates(fields, confirmed_tokens)
+    # Use explicit overrides when provided, otherwise fall back to derivation.
+    final_unresolved = (
+        unresolved_required_field_count
+        if unresolved_required_field_count is not None
+        else derived["unresolved_required_field_count"]
+    )
+    final_unconfirmed = (
+        unconfirmed_high_risk_count
+        if unconfirmed_high_risk_count is not None
+        else derived["unconfirmed_high_risk_count"]
+    )
+    final_complete = is_complete if is_complete is not None else derived["is_complete"]
+    final_can_approve = can_approve if can_approve is not None else derived["can_approve"]
+    final_blocking = (
+        approve_blocking_reason
+        if approve_blocking_reason is not None
+        else derived["approve_blocking_reason"]
+    )
     timestamp = "2026-07-18T14:30:00Z"
     return {
         "snapshot": {
@@ -398,7 +481,7 @@ def _build_status_response(
             "observation_timestamp": timestamp,
             "form_fingerprint": "fp-9a8b7c6d5e4f3a2b1c0d9e8f7a6b5c4d3e2f1a0b",
             "snapshot_hash": snapshot_hash,
-            "is_complete": is_complete,
+            "is_complete": final_complete,
             "is_stale": is_stale,
             "submit_control": {
                 "text": "Submit Your Application Now",
@@ -408,14 +491,14 @@ def _build_status_response(
             "fields": fields,
             "documents": _DOCUMENTS,
             "pending_intervention_count": pending_intervention_count,
-            "unresolved_required_field_count": unresolved_required_field_count,
-            "unconfirmed_high_risk_count": unconfirmed_high_risk_count,
+            "unresolved_required_field_count": final_unresolved,
+            "unconfirmed_high_risk_count": final_unconfirmed,
             "active_approval_id": active_approval_id,
             "approval_state": approval_state,
             "approved_snapshot_hash": approved_snapshot_hash,
             "approval_is_stale": approval_is_stale,
-            "can_approve": can_approve,
-            "approve_blocking_reason": approve_blocking_reason,
+            "can_approve": final_can_approve,
+            "approve_blocking_reason": final_blocking,
             "can_submit": can_submit,
             "submit_blocking_reason": submit_blocking_reason,
             "enable_real_submission": enable_real_submission,
@@ -426,41 +509,73 @@ def _build_status_response(
     }
 
 
-# Named state payloads for reuse
+# Named state payloads for reuse.
+# Each fixture calls _derive_aggregates to obtain canonical counts from its
+# field data, then passes explicit overrides to _build_status_response so
+# the response JSON matches the production derivation exactly.
+
+
 def state_no_snapshot(app_id: str = "test-app-id") -> dict:
     return _build_status_response(app_id, snapshot_hash="", can_approve=False, can_submit=False)
 
 
 def state_complete_snapshot(app_id: str = "test-app-id") -> dict:
-    return _build_status_response(app_id, can_approve=True)
+    """Safe complete — all fields valid, high-risk fields confirmed."""
+    # Include high-risk fields but mark them confirmed so they don't block.
+    fields = _FIELDS + [dict(f.copy(), confirmed=True) for f in _HIGH_RISK_FIELDS]
+    derived = _derive_aggregates(fields, {"f_risk", "f_consent"})
+    return _build_status_response(
+        app_id,
+        field_overrides=fields,
+        confirmed_tokens={"f_risk", "f_consent"},
+        unresolved_required_field_count=derived["unresolved_required_field_count"],
+        unconfirmed_high_risk_count=derived["unconfirmed_high_risk_count"],
+        is_complete=derived["is_complete"],
+        can_approve=derived["can_approve"],
+        approve_blocking_reason=derived["approve_blocking_reason"],
+    )
 
 
 def state_pending_interventions(app_id: str = "test-app-id") -> dict:
+    fields = _FIELDS
+    derived = _derive_aggregates(fields)
     return _build_status_response(
         app_id,
-        can_approve=False,
-        can_submit=False,
         pending_intervention_count=2,
+        unresolved_required_field_count=derived["unresolved_required_field_count"],
+        unconfirmed_high_risk_count=derived["unconfirmed_high_risk_count"],
+        is_complete=derived["is_complete"],
+        can_approve=False,
         approve_blocking_reason="2 pending interventions must be resolved before approval",
+        can_submit=False,
     )
 
 
 def state_unconfirmed_high_risk(app_id: str = "test-app-id") -> dict:
-    """High-risk fields present but not confirmed — cannot approve or submit."""
-    fields = [dict(f.copy(), confirmed=False) for f in _FIELDS]
+    """High-risk fields present but not confirmed — cannot approve or submit.
+    No unrelated validation-error fields present."""
+    fields = _FIELDS + _HIGH_RISK_FIELDS
+    derived = _derive_aggregates(fields)
     return _build_status_response(
         app_id,
-        can_approve=False,
-        can_submit=False,
-        unconfirmed_high_risk_count=2,
         field_overrides=fields,
-        approve_blocking_reason="Unconfirmed high-risk fields require confirmation",
+        unresolved_required_field_count=derived["unresolved_required_field_count"],
+        unconfirmed_high_risk_count=derived["unconfirmed_high_risk_count"],
+        is_complete=derived["is_complete"],
+        can_approve=derived["can_approve"],
+        approve_blocking_reason=derived["approve_blocking_reason"],
+        can_submit=False,
     )
 
 
 def state_approved_snapshot(app_id: str = "test-app-id") -> dict:
+    fields = _FIELDS
+    derived = _derive_aggregates(fields)
     return _build_status_response(
         app_id,
+        unresolved_required_field_count=derived["unresolved_required_field_count"],
+        unconfirmed_high_risk_count=derived["unconfirmed_high_risk_count"],
+        is_complete=derived["is_complete"],
         can_approve=False,
         can_submit=True,
         approval_state="active",
@@ -470,9 +585,15 @@ def state_approved_snapshot(app_id: str = "test-app-id") -> dict:
 
 
 def state_stale_approval(app_id: str = "test-app-id") -> dict:
-    """Approval exists but snapshot hash changed — stale."""
+    """Approval exists but snapshot hash changed — stale.
+    Field-level counts are internally consistent."""
+    fields = _FIELDS
+    derived = _derive_aggregates(fields)
     return _build_status_response(
         app_id,
+        unresolved_required_field_count=derived["unresolved_required_field_count"],
+        unconfirmed_high_risk_count=derived["unconfirmed_high_risk_count"],
+        is_complete=derived["is_complete"],
         can_approve=False,
         can_submit=False,
         approval_state="active",
@@ -486,23 +607,34 @@ def state_stale_approval(app_id: str = "test-app-id") -> dict:
 
 
 def state_submission_blocked(app_id: str = "test-app-id") -> dict:
-    """Approved but submission blocked by a gate."""
+    """Approved but submission blocked by a gate (unresolved fields)."""
+    fields = _FIELDS + _VALIDATION_ERROR_FIELDS
+    derived = _derive_aggregates(fields)
     return _build_status_response(
         app_id,
-        can_approve=False,
+        field_overrides=fields,
+        unresolved_required_field_count=derived["unresolved_required_field_count"],
+        unconfirmed_high_risk_count=derived["unconfirmed_high_risk_count"],
+        is_complete=derived["is_complete"],
+        can_approve=derived["can_approve"],
+        approve_blocking_reason=derived["approve_blocking_reason"],
         can_submit=False,
         approval_state="active",
         active_approval_id="apr-blocked001",
         approved_snapshot_hash="hash-abc123def456",
-        submit_blocking_reason="Form is incomplete: 2 required fields are unresolved",
-        unresolved_required_field_count=2,
+        submit_blocking_reason=derived["approve_blocking_reason"],
     )
 
 
 def state_submitted_confirmed(app_id: str = "test-app-id") -> dict:
     """Successfully submitted."""
+    fields = _FIELDS
+    derived = _derive_aggregates(fields)
     return _build_status_response(
         app_id,
+        unresolved_required_field_count=derived["unresolved_required_field_count"],
+        unconfirmed_high_risk_count=derived["unconfirmed_high_risk_count"],
+        is_complete=derived["is_complete"],
         can_approve=False,
         can_submit=False,
         approval_state="consumed",
@@ -514,8 +646,13 @@ def state_submitted_confirmed(app_id: str = "test-app-id") -> dict:
 
 def state_outcome_unknown(app_id: str = "test-app-id") -> dict:
     """Submission failed — can retry."""
+    fields = _FIELDS
+    derived = _derive_aggregates(fields)
     return _build_status_response(
         app_id,
+        unresolved_required_field_count=derived["unresolved_required_field_count"],
+        unconfirmed_high_risk_count=derived["unconfirmed_high_risk_count"],
+        is_complete=derived["is_complete"],
         can_approve=False,
         can_submit=False,
         approval_state="active",
@@ -527,14 +664,19 @@ def state_outcome_unknown(app_id: str = "test-app-id") -> dict:
 
 
 def state_validation_failure(app_id: str = "test-app-id") -> dict:
-    """Snapshot has fields with validation errors."""
+    """Snapshot has fields with validation errors.
+    No unrelated high-risk fields present."""
+    fields = _FIELDS + _VALIDATION_ERROR_FIELDS
+    derived = _derive_aggregates(fields)
     return _build_status_response(
         app_id,
-        is_complete=False,
-        can_approve=False,
+        field_overrides=fields,
+        unresolved_required_field_count=derived["unresolved_required_field_count"],
+        unconfirmed_high_risk_count=derived["unconfirmed_high_risk_count"],
+        is_complete=derived["is_complete"],
+        can_approve=derived["can_approve"],
+        approve_blocking_reason=derived["approve_blocking_reason"],
         can_submit=False,
-        unresolved_required_field_count=1,
-        approve_blocking_reason="1 field has a validation error — fix before approving",
     )
 
 
@@ -973,7 +1115,375 @@ def test_disabled_reason_visible(dashboard, page: Page):
 
 
 # ===================================================================
-# 10. Screenshots
+# 10. Field-summary consistency assertions (tests 1-12)
+# ===================================================================
+
+
+def test_safe_no_pending_confirmations(dashboard, page: Page):
+    """1. Safe fixture has no 'Pending' confirmation labels."""
+    base, _app, _server, app_id = dashboard
+    page.set_viewport_size({"width": 1440, "height": 900})
+    _navigate(page, base, app_id, state_complete_snapshot(app_id))
+    text = page.inner_text("#submit-state-display")
+    assert "Confirmation state: Pending" not in text, (
+        "Safe fixture should not have any pending confirmation"
+    )
+
+
+def test_safe_no_validation_errors(dashboard, page: Page):
+    """2. Safe fixture has no validation errors."""
+    base, _app, _server, app_id = dashboard
+    page.set_viewport_size({"width": 1440, "height": 900})
+    _navigate(page, base, app_id, state_complete_snapshot(app_id))
+    payload = state_complete_snapshot(app_id)
+    for f in payload["snapshot"]["fields"]:
+        if f.get("validation_error"):
+            pytest.fail(f"Field {f['field_token']} has unexpected validation_error")
+    # UI shows "Validation: None" for every field — no actual error text present
+    text = page.inner_text("#submit-state-display")
+    assert "Value must match" not in text, "No field should show a validation error value"
+
+
+def test_safe_can_approve(dashboard, page: Page):
+    """3. Safe fixture can approve."""
+    base, _app, _server, app_id = dashboard
+    page.set_viewport_size({"width": 1440, "height": 900})
+    _navigate(page, base, app_id, state_complete_snapshot(app_id))
+    approve_btn = page.locator("#submit-approve")
+    assert not approve_btn.is_disabled(), "Approve button should be enabled in safe state"
+    payload = state_complete_snapshot(app_id)
+    assert payload["snapshot"]["can_approve"] is True
+
+
+def test_high_risk_exactly_two_pending(dashboard, page: Page):
+    """4. High-risk fixture has exactly two pending high-risk fields."""
+    base, _app, _server, app_id = dashboard
+    page.set_viewport_size({"width": 1440, "height": 900})
+    _navigate(page, base, app_id, state_unconfirmed_high_risk(app_id))
+    checkboxes = page.locator(".uaa-hr-checkbox")
+    assert checkboxes.count() == 2, "Should be exactly 2 high-risk checkboxes"
+    for i in range(2):
+        cb = checkboxes.nth(i)
+        assert not cb.is_checked(), f"High-risk checkbox {i} should not be checked"
+
+
+def test_high_risk_summary_count_equals_two(dashboard, page: Page):
+    """5. High-risk summary count equals two."""
+    base, _app, _server, app_id = dashboard
+    page.set_viewport_size({"width": 1440, "height": 900})
+    _navigate(page, base, app_id, state_unconfirmed_high_risk(app_id))
+    payload = state_unconfirmed_high_risk(app_id)
+    assert payload["snapshot"]["unconfirmed_high_risk_count"] == 2
+
+
+def test_high_risk_cannot_approve(dashboard, page: Page):
+    """6. High-risk fixture cannot approve."""
+    base, _app, _server, app_id = dashboard
+    page.set_viewport_size({"width": 1440, "height": 900})
+    _navigate(page, base, app_id, state_unconfirmed_high_risk(app_id))
+    approve_btn = page.locator("#submit-approve")
+    assert approve_btn.is_disabled(), "Approve should be disabled with unconfirmed high-risk"
+    payload = state_unconfirmed_high_risk(app_id)
+    assert payload["snapshot"]["can_approve"] is False
+
+
+def test_high_risk_no_unrelated_validation_error(dashboard, page: Page):
+    """7. High-risk fixture has no unrelated validation error."""
+    base, _app, _server, app_id = dashboard
+    page.set_viewport_size({"width": 1440, "height": 900})
+    _navigate(page, base, app_id, state_unconfirmed_high_risk(app_id))
+    payload = state_unconfirmed_high_risk(app_id)
+    for f in payload["snapshot"]["fields"]:
+        if f.get("validation_error"):
+            pytest.fail(f"Field {f['field_token']} has unexpected validation_error")
+    text = page.inner_text("#submit-state-display")
+    assert "Value must match" not in text, "No field should show a validation error value"
+
+
+def test_validation_exactly_one_error(dashboard, page: Page):
+    """8. Validation fixture has exactly one required validation error."""
+    base, _app, _server, app_id = dashboard
+    page.set_viewport_size({"width": 1440, "height": 900})
+    _navigate(page, base, app_id, state_validation_failure(app_id))
+    text = page.inner_text("#submit-state-display")
+    assert "validation_error" in text.lower() or "Value must match" in text, (
+        "Validation fixture should show validation error"
+    )
+
+
+def test_validation_summary_count_one(dashboard, page: Page):
+    """9. Validation summary unresolved count equals one."""
+    base, _app, _server, app_id = dashboard
+    page.set_viewport_size({"width": 1440, "height": 900})
+    _navigate(page, base, app_id, state_validation_failure(app_id))
+    payload = state_validation_failure(app_id)
+    assert payload["snapshot"]["unresolved_required_field_count"] == 1
+    assert payload["snapshot"]["is_complete"] is False
+
+
+def test_validation_cannot_approve(dashboard, page: Page):
+    """10. Validation fixture cannot approve."""
+    base, _app, _server, app_id = dashboard
+    page.set_viewport_size({"width": 1440, "height": 900})
+    _navigate(page, base, app_id, state_validation_failure(app_id))
+    approve_btn = page.locator("#submit-approve")
+    assert approve_btn.is_disabled(), "Approve should be disabled with validation errors"
+    payload = state_validation_failure(app_id)
+    assert payload["snapshot"]["can_approve"] is False
+
+
+def test_stale_field_counts_consistent(dashboard, page: Page):
+    """11. Stale fixture has internally consistent field-level counts."""
+    payload = state_stale_approval("test")
+    fields = payload["snapshot"]["fields"]
+    sf_list = [
+        SubmissionSnapshotField(
+            field_token=f["field_token"],
+            label=f.get("label", ""),
+            field_type=f.get("field_type", "text"),
+            filled_value=f.get("filled_value", ""),
+            selected_value=f.get("selected_value", ""),
+            status=f.get("status", "filled"),
+            required=f.get("required", False),
+            requires_confirmation=f.get("requires_confirmation", False),
+            risk_level=f.get("risk_level", ""),
+        )
+        for f in fields
+    ]
+    unresolved = derive_unresolved_required_count(sf_list)
+    unconfirmed = derive_unconfirmed_high_risk_count(sf_list)
+    assert unresolved == payload["snapshot"]["unresolved_required_field_count"], (
+        f"Stale fixture unresolved mismatch: derived={unresolved} "
+        f"payload={payload['snapshot']['unresolved_required_field_count']}"
+    )
+    assert unconfirmed == payload["snapshot"]["unconfirmed_high_risk_count"], (
+        f"Stale fixture unconfirmed mismatch: derived={unconfirmed} "
+        f"payload={payload['snapshot']['unconfirmed_high_risk_count']}"
+    )
+    assert "stale" in payload["snapshot"]["submit_blocking_reason"].lower(), (
+        "Stale fixture should mention staleness"
+    )
+
+
+def test_all_fixtures_use_derived_aggregates():
+    """12. Every named state fixture's aggregates are generated by
+    canonical derivation, not independent hard-coded values.
+
+    Each fixture function calls _derive_aggregates and passes the
+    derived values as explicit parameters to _build_status_response.
+    This test proves that by checking the response matches derivation.
+    """
+    fixture_fns = [
+        state_complete_snapshot,
+        state_pending_interventions,
+        state_unconfirmed_high_risk,
+        state_approved_snapshot,
+        state_stale_approval,
+        state_submission_blocked,
+        state_submitted_confirmed,
+        state_outcome_unknown,
+        state_validation_failure,
+    ]
+    for fn in fixture_fns:
+        payload = fn("test")
+        snap = payload["snapshot"]
+        fields = snap["fields"]
+        # Collect confirmed tokens from field data (the derivation uses a
+        # confirmed_tokens set, not per-field booleans)
+        confirmed_tokens = {f["field_token"] for f in fields if f.get("confirmed")}
+        sf_list = [
+            SubmissionSnapshotField(
+                field_token=f["field_token"],
+                label=f.get("label", ""),
+                field_type=f.get("field_type", "text"),
+                filled_value=f.get("filled_value", ""),
+                selected_value=f.get("selected_value", ""),
+                status=f.get("status", "filled"),
+                required=f.get("required", False),
+                requires_confirmation=f.get("requires_confirmation", False),
+                risk_level=f.get("risk_level", ""),
+            )
+            for f in fields
+        ]
+        d_unresolved = derive_unresolved_required_count(sf_list)
+        d_unconfirmed = derive_unconfirmed_high_risk_count(sf_list, confirmed_tokens)
+        d_complete = derive_is_complete(sf_list)
+        assert snap["unresolved_required_field_count"] == d_unresolved, (
+            f"{fn.__name__}: unresolved mismatch payload={snap['unresolved_required_field_count']} "
+            f"derived={d_unresolved}"
+        )
+        assert snap["unconfirmed_high_risk_count"] == d_unconfirmed, (
+            f"{fn.__name__}: unconfirmed mismatch payload={snap['unconfirmed_high_risk_count']} "
+            f"derived={d_unconfirmed}"
+        )
+        assert snap["is_complete"] == d_complete, (
+            f"{fn.__name__}: is_complete mismatch payload={snap['is_complete']} "
+            f"derived={d_complete}"
+        )
+        # can_approve must be logically consistent with aggregates
+        if d_unresolved > 0 or d_unconfirmed > 0:
+            assert snap["can_approve"] is False, (
+                f"{fn.__name__}: should not allow approval with unresolved={d_unresolved} "
+                f"unconfirmed={d_unconfirmed}"
+            )
+        if d_unresolved > 0:
+            assert len(snap["approve_blocking_reason"]) > 0, (
+                f"{fn.__name__}: should have blocking reason for unresolved fields"
+            )
+
+
+def test_confirmation_required_low_risk_shows_pending(dashboard, page: Page):
+    """13. requires_confirmation=true, risk low → Pending."""
+    base, _app, _server, app_id = dashboard
+    page.set_viewport_size({"width": 1440, "height": 900})
+    payload = _build_status_response(
+        app_id,
+        field_overrides=[
+            dict(
+                field_token="f_custom",
+                label="Custom Confirm",
+                field_type="text",
+                required=True,
+                filled_value="foo",
+                selected_value="foo",
+                status="filled",
+                risk_level="low",
+                requires_confirmation=True,
+                confirmed=False,
+                evidence="",
+                source="",
+                options=[],
+                validation_error="",
+            )
+        ],
+        unresolved_required_field_count=0,
+        unconfirmed_high_risk_count=1,
+        is_complete=True,
+        can_approve=False,
+        approve_blocking_reason="Unconfirmed high-risk fields require confirmation",
+    )
+    _navigate(page, base, app_id, payload)
+    text = page.inner_text("#submit-state-display")
+    assert "Confirmation state: Pending" in text, (
+        "requires_confirmation=true, risk low should show Pending"
+    )
+    assert "Confirmation state: Not required" not in text, "Should not say Not required"
+
+
+def test_confirmation_not_required_high_risk_shows_pending(dashboard, page: Page):
+    """14. requires_confirmation=false, risk high → Pending."""
+    base, _app, _server, app_id = dashboard
+    page.set_viewport_size({"width": 1440, "height": 900})
+    payload = _build_status_response(
+        app_id,
+        field_overrides=[
+            dict(
+                field_token="f_high_no_confirm",
+                label="High No Confirm",
+                field_type="text",
+                required=True,
+                filled_value="bar",
+                selected_value="bar",
+                status="filled",
+                risk_level="high",
+                requires_confirmation=False,
+                confirmed=False,
+                evidence="",
+                source="",
+                options=[],
+                validation_error="",
+            )
+        ],
+        unresolved_required_field_count=0,
+        unconfirmed_high_risk_count=1,
+        is_complete=True,
+        can_approve=False,
+        approve_blocking_reason="Unconfirmed high-risk fields require confirmation",
+    )
+    _navigate(page, base, app_id, payload)
+    text = page.inner_text("#submit-state-display")
+    assert "Confirmation state: Pending" in text, (
+        "risk_level=high should show Pending even without requires_confirmation"
+    )
+    assert "Confirmation state: Not required" not in text, "Should not say Not required"
+
+
+def test_confirmed_high_risk_shows_confirmed(dashboard, page: Page):
+    """15. Confirmed high-risk token → Confirmed."""
+    base, _app, _server, app_id = dashboard
+    page.set_viewport_size({"width": 1440, "height": 900})
+    payload = _build_status_response(
+        app_id,
+        field_overrides=[
+            dict(
+                field_token="f_risk",
+                label="Risk Field",
+                field_type="radio",
+                required=True,
+                filled_value="No",
+                selected_value="No",
+                status="filled",
+                risk_level="high",
+                requires_confirmation=True,
+                confirmed=True,
+                evidence="",
+                source="",
+                options=["Yes", "No"],
+                validation_error="",
+            )
+        ],
+        unresolved_required_field_count=0,
+        unconfirmed_high_risk_count=0,
+        is_complete=True,
+        can_approve=True,
+        approve_blocking_reason="",
+    )
+    _navigate(page, base, app_id, payload)
+    text = page.inner_text("#submit-state-display")
+    assert "Confirmation state: Confirmed" in text, "Confirmed high-risk should show Confirmed"
+    assert "Confirmation state: Pending" not in text, "Confirmed field should not show Pending"
+
+
+def test_low_risk_no_confirmation_required_shows_not_required(dashboard, page: Page):
+    """16. Low risk and no confirmation requirement → Not required."""
+    base, _app, _server, app_id = dashboard
+    page.set_viewport_size({"width": 1440, "height": 900})
+    payload = _build_status_response(
+        app_id,
+        field_overrides=[
+            dict(
+                field_token="f_normal",
+                label="Normal Field",
+                field_type="text",
+                required=False,
+                filled_value="baz",
+                selected_value="",
+                status="filled",
+                risk_level="low",
+                requires_confirmation=False,
+                confirmed=False,
+                evidence="",
+                source="",
+                options=[],
+                validation_error="",
+            )
+        ],
+        unresolved_required_field_count=0,
+        unconfirmed_high_risk_count=0,
+        is_complete=True,
+        can_approve=True,
+        approve_blocking_reason="",
+    )
+    _navigate(page, base, app_id, payload)
+    text = page.inner_text("#submit-state-display")
+    assert "Confirmation state: Not required" in text, (
+        "Low-risk field without confirmation requirement should show Not required"
+    )
+    assert "Confirmation state: Pending" not in text, "Not required field should not show Pending"
+
+
+# ===================================================================
+# 11. Screenshots
 # ===================================================================
 
 

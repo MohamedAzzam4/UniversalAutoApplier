@@ -550,6 +550,11 @@
       confirmDisabled: true,
     };
 
+    function fieldNeedsConfirmation(f) {
+      return f.requires_confirmation === true ||
+        String(f.risk_level || "").toLowerCase() === "high";
+    }
+
     const hasSnapshot = !!data.snapshot_hash;
     const fields = data.fields || [];
     const docs = data.documents || [];
@@ -599,7 +604,7 @@
       html += '<h3>Form Fields <span class="uaa-submit-confidence">(' + fields.length + ' fields)</span></h3>';
       fields.forEach(function (f, idx) {
         var isSecret = (f.field_type === "password" || f.field_type === "token" || f.field_type === "api_key");
-        var isHighRisk = f.requires_confirmation || f.risk_level === "high";
+        var isHighRisk = fieldNeedsConfirmation(f);
         html += '<div class="uaa-submit-field-detail">';
         html += '<div><strong>Label:</strong> ' + esc(f.label || esc(f.field_token)) + '</div>';
         html += '<div><strong>Type:</strong> <span class="uaa-field-type-tag">' + esc(f.field_type) + '</span> ' + (f.required ? '<span class="uaa-submit-state-pill pending">Required</span>' : '') + '</div>';
@@ -636,7 +641,11 @@
           var checkedAttr = f.confirmed ? ' checked="checked" disabled="disabled"' : '';
           html += '<div class="uaa-submit-checkbox-label"><input type="checkbox" class="uaa-hr-checkbox" data-field-token="' + esc(f.field_token) + '" aria-label="Confirm high-risk: ' + esc(f.label) + '"' + checkedAttr + ' /> <span>High-risk field' + (f.confirmed ? ' (confirmed)' : ' — requires confirmation') + '</span></div>';
         }
-        html += '<div class="uaa-submit-confidence"><strong>Confirmation state:</strong> ' + (f.confirmed ? 'Confirmed' : 'Pending') + '</div>';
+        if (fieldNeedsConfirmation(f)) {
+          html += '<div class="uaa-submit-confidence"><strong>Confirmation state:</strong> ' + (f.confirmed ? 'Confirmed' : 'Pending') + '</div>';
+        } else {
+          html += '<div class="uaa-submit-confidence"><strong>Confirmation state:</strong> Not required</div>';
+        }
         html += '</div>';
       });
       html += '</div>';
