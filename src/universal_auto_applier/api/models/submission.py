@@ -83,6 +83,8 @@ class LiveReviewSnapshotResponse(BaseModel):
     latest_submission_state: str | None = None
     latest_submission_error: str | None = None
     latest_submission_timestamp: datetime | None = None
+    latest_submission_approval_id: str | None = None
+    latest_submission_snapshot_hash: str | None = None
 
 
 class LiveReviewConfirmHighRiskRequest(BaseModel):

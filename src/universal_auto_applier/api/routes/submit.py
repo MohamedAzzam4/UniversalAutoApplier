@@ -244,6 +244,10 @@ def _build_snapshot_response(
         if latest_result and latest_result.error_message
         else None,
         latest_submission_timestamp=latest_result.attempted_at if latest_result else None,
+        latest_submission_approval_id=latest_result.approval_id if latest_result else None,
+        latest_submission_snapshot_hash=latest_result.snapshot_hash_at_submit
+        if latest_result
+        else None,
     )
 
 
@@ -324,10 +328,16 @@ def get_submission_status(request: Request, application_id: str) -> LiveReviewSt
     settings = app.state.settings
     session_factory = app.state.session_factory
 
+    # Extract result fields inside the session to avoid detached-object issues.
+    latest_approval_id: str | None = None
+    latest_snapshot_hash: str | None = None
     with session_scope(session_factory) as session:
         approval = get_active_approval(session, application_id)
         latest = get_latest_result(session, application_id)
         job = get_application_job(session, application_id)
+        if latest is not None:
+            latest_approval_id = latest.approval_id
+            latest_snapshot_hash = latest.snapshot_hash_at_submit
 
     # Load the snapshot from the approval's snapshot_json.
     snapshot = None
@@ -335,6 +345,9 @@ def get_submission_status(request: Request, application_id: str) -> LiveReviewSt
         snapshot = _load_snapshot_from_approval(approval)
 
     resp = _build_snapshot_response(settings, application_id, snapshot, approval, latest, job)
+    # Override the latest result fields with values extracted inside the session.
+    resp.latest_submission_approval_id = latest_approval_id
+    resp.latest_submission_snapshot_hash = latest_snapshot_hash
     return LiveReviewStatusResponse(snapshot=resp)
 
 

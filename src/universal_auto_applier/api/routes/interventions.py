@@ -101,12 +101,22 @@ def resolve_intervention_endpoint(
     """Resolve an intervention with a user decision.
 
     If ``save_to_memory`` is True and an answer is provided, stores the
-    answer in answer memory for future reuse.
+    answer in answer memory for future reuse AND updates the job's
+    ``form_answers`` metadata so the deterministic mapper can reuse the
+    answer on pipeline retry.
+
+    The field identity is obtained from the intervention's structured
+    ``llm_metadata`` (``field_label``). The ``question`` display text is
+    never parsed for structured data.
     """
     from universal_auto_applier.interventions.answer_memory import store_answer
     from universal_auto_applier.interventions.store import (
         get_intervention,
         resolve_intervention,
+    )
+    from universal_auto_applier.persistence.job_repository import (
+        get_application_job,
+        upsert_application_job,
     )
 
     app = request.app
@@ -134,12 +144,31 @@ def resolve_intervention_endpoint(
 
         # Save to answer memory if requested.
         if body.save_to_memory and body.answer:
+            # Use the structured field_label from llm_metadata as the question
+            # identity. This ensures the stored answer can be matched back to
+            # the form field without parsing display text.
+            field_label = None
+            if existing.llm_metadata:
+                field_label = existing.llm_metadata.get("field_label")
+
+            question_for_memory = field_label or existing.question
             store_answer(
                 session,
-                question=existing.question,
+                question=question_for_memory,
                 answer=body.answer,
                 source="user_confirmed",
             )
+
+            # Also update job.metadata.form_answers so the deterministic
+            # mapper can reuse the answer on pipeline retry.
+            job = get_application_job(session, existing.application_id)
+            if job is not None:
+                form_answers = dict(job.metadata.get("form_answers", {}) or {})
+                # Key by field_label so the deterministic mapper can match
+                # via _try_explicit_job_answer (which normalises field labels).
+                form_answers[field_label] = body.answer if field_label else body.answer
+                job.metadata["form_answers"] = form_answers
+                upsert_application_job(session, job)
 
         session.commit()
 
