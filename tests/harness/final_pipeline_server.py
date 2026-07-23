@@ -39,7 +39,14 @@ def _find_free_port() -> int:
 class _MetricsHandler(SimpleHTTPRequestHandler):
     """HTTP handler that serves fixture HTML and tracks clicks/uploads."""
 
-    metrics: dict = {"click_count": 0, "confirmation_count": 0}
+    metrics: dict = {
+        "click_count": 0,
+        "confirmation_count": 0,
+        "cv_filename": "",
+        "cover_filename": "",
+        "uploaded_cv_at_submit": "",
+        "uploaded_cover_at_submit": "",
+    }
     upload_log: list[str] = []
     fixture_html: str = ""
     landing_html: str = ""
@@ -86,6 +93,22 @@ class _MetricsHandler(SimpleHTTPRequestHandler):
             filename = data.get("filename", "unknown")
             self.upload_log.append(filename)
             self._send_json({"ok": True})
+        elif self.path == "/record-file":
+            body = self._read_body()
+            data = json.loads(body) if body else {}
+            input_name = data.get("input", "")
+            filename = data.get("filename", "")
+            if input_name == "cv_upload":
+                self.metrics["cv_filename"] = filename
+            elif input_name == "cover_letter":
+                self.metrics["cover_filename"] = filename
+            self._send_json({"ok": True})
+        elif self.path == "/record-submit-files":
+            body = self._read_body()
+            data = json.loads(body) if body else {}
+            self.metrics["uploaded_cv_at_submit"] = data.get("cv_filename", "")
+            self.metrics["uploaded_cover_at_submit"] = data.get("cover_filename", "")
+            self._send_json({"ok": True})
         elif self.path == "/set-html":
             body = self._read_body()
             data = json.loads(body) if body else {}
@@ -110,7 +133,14 @@ def _start_fixture_server(
     _MetricsHandler.landing_html = (fixture_dir / "final_pipeline_landing.html").read_text(
         encoding="utf-8"
     )
-    _MetricsHandler.metrics = {"click_count": 0, "confirmation_count": 0}
+    _MetricsHandler.metrics = {
+        "click_count": 0,
+        "confirmation_count": 0,
+        "cv_filename": "",
+        "cover_filename": "",
+        "uploaded_cv_at_submit": "",
+        "uploaded_cover_at_submit": "",
+    }
     _MetricsHandler.upload_log = []
 
     port = _find_free_port()
@@ -451,6 +481,10 @@ def main() -> int:
             "cover_hash": _cover_hash,
             "cv_path": str(cv_path),
             "cover_path": str(cover_path),
+            "cv_filename": _MetricsHandler.metrics["cv_filename"],
+            "cover_filename": _MetricsHandler.metrics["cover_filename"],
+            "uploaded_cv_at_submit": _MetricsHandler.metrics["uploaded_cv_at_submit"],
+            "uploaded_cover_at_submit": _MetricsHandler.metrics["uploaded_cover_at_submit"],
             "upload_log": _MetricsHandler.upload_log,
             "fixture_url": job_url,
         }

@@ -34,7 +34,6 @@ import pytest
 
 pytestmark = [
     pytest.mark.playwright,
-    pytest.mark.live,
 ]
 
 REPO_ROOT = Path(__file__).resolve().parent.parent.parent
@@ -332,7 +331,59 @@ class TestFinalCompletePipeline:
             assert snapshot["submit_control"] is not None
 
             # ================================================================
-            # 7. Document filename and hash verification
+            # -- Pre-confirmation high-risk gate proof --
+            # ================================================================
+            # Before high-risk confirmation, the snapshot must report
+            # can_approve=False and can_submit=False.
+            assert not snapshot["can_approve"], (
+                f"can_approve must be False with unconfirmed high-risk, "
+                f"got True (unconfirmed_high_risk_count={snapshot['unconfirmed_high_risk_count']})"
+            )
+            assert not snapshot["can_submit"], (
+                f"can_submit must be False with unconfirmed high-risk, "
+                f"got True (unconfirmed_high_risk_count={snapshot['unconfirmed_high_risk_count']})"
+            )
+
+            # Calling /approve before confirmation must be rejected with
+            # an explicit "unconfirmed high-risk" error.
+            resp = client.post(
+                f"/api/submit/{app_id}/approve",
+                json={"snapshot_hash": snapshot_hash, "confirm": True},
+            )
+            assert resp.status_code == 409, (
+                f"Expected 409 rejecting pre-confirmation approve, "
+                f"got {resp.status_code}: {resp.json()}"
+            )
+            assert "unconfirmed high-risk" in resp.json()["detail"].lower(), (
+                f"detail must mention unconfirmed high-risk: {resp.json()['detail']}"
+            )
+
+            # The approval exists (created by observe) but remains
+            # unapproved — can_approve is False due to unconfirmed
+            # high-risk fields.
+            resp = client.get(f"/api/submit/{app_id}/status")
+            status_before = resp.json()["snapshot"]
+            assert status_before.get("approval_state") == "active", (
+                f"Expected active approval_state, got {status_before.get('approval_state')}"
+            )
+            # No additional approval was created — the pre-confirmation
+            # approve call (above) failed with 409 and did not change
+            # the approval state.
+            assert status_before.get("approved_snapshot_hash") == snapshot_hash, (
+                f"approved_snapshot_hash should match the observed hash, "
+                f"got {status_before.get('approved_snapshot_hash')!r}"
+            )
+            assert not status_before["can_approve"], "can_approve must remain False"
+            assert not status_before["can_submit"], "can_submit must remain False"
+
+            # Fixture click count is still zero.
+            metrics = server.get_metrics()
+            assert metrics["click_count"] == 0, (
+                f"click_count must stay 0 before confirm, got {metrics['click_count']}"
+            )
+
+            # ================================================================
+            # 7. Document filename and hash verification AND browser file upload proof
             # ================================================================
             metrics = server.get_metrics()
             docs = snapshot["documents"]
@@ -363,6 +414,29 @@ class TestFinalCompletePipeline:
             )
             assert cover_doc["exists"]
             assert cover_doc["readable"]
+
+            # Browser file input proof: the real browser file inputs received
+            # the correct filenames via Playwright's setInputFiles.  The
+            # change-event handlers in the fixture HTML reported them back
+            # to the fixture server.  Poll briefly if the events haven't
+            # arrived yet (async POST from the browser).
+            deadline = time.time() + 3.0
+            file_metrics = metrics
+            while time.time() < deadline:
+                file_metrics = server.get_metrics()
+                if (
+                    file_metrics.get("cv_filename") == "cv.pdf"
+                    and file_metrics.get("cover_filename") == "cover.pdf"
+                ):
+                    break
+                time.sleep(0.2)
+            assert file_metrics["cv_filename"] == "cv.pdf", (
+                f"Browser CV input filename: expected cv.pdf, got {file_metrics['cv_filename']!r}"
+            )
+            assert file_metrics["cover_filename"] == "cover.pdf", (
+                f"Browser cover-letter input filename: expected cover.pdf, "
+                f"got {file_metrics['cover_filename']!r}"
+            )
 
             # ================================================================
             # 8. Confirm high-risk fields + approve
@@ -497,6 +571,24 @@ class TestFinalCompletePipeline:
             metrics = server.get_metrics()
             assert metrics["click_count"] == 1
 
+            # Submit-time file upload proof: the fixture's submit handler
+            # inspected the real file inputs and reported their filenames.
+            assert metrics.get("uploaded_cv_at_submit") == "cv.pdf", (
+                f"Submit-time CV filename: expected cv.pdf, "
+                f"got {metrics.get('uploaded_cv_at_submit')!r}"
+            )
+            assert metrics.get("uploaded_cover_at_submit") == "cover.pdf", (
+                f"Submit-time cover-letter filename: expected cover.pdf, "
+                f"got {metrics.get('uploaded_cover_at_submit')!r}"
+            )
+            # Document hashes in snapshot still match the actual files.
+            assert cv_doc["content_hash"] == metrics["cv_hash"], (
+                f"CV hash mismatch after submit: {cv_doc['content_hash']} vs {metrics['cv_hash']}"
+            )
+            assert cover_doc["content_hash"] == metrics["cover_hash"], (
+                f"Cover hash mismatch after submit: {cover_doc['content_hash']} vs {metrics['cover_hash']}"
+            )
+
             # Persisted result references the exact approval ID and snapshot hash
             # Check via the harness endpoint (direct DB query) first.
             # The stale-attempt result from step 9 also recorded a result,
@@ -571,13 +663,17 @@ class TestFinalCompletePipeline:
             ], f"Unexpected result states: {clicked_states}"
 
             # ================================================================
-            # 12. No job remains in-progress
+            # 12. Final steady state
+            #     After browser submission through the submit API, the job
+            #     status is review_ready (the pipeline-orchestrator path
+            #     would set submitted, but the browser path does not change
+            #     the job status — the SubmissionResult records the outcome).
             # ================================================================
             resp = client.get(f"/api/queue/{app_id}")
             assert resp.status_code == 200
             final_job = resp.json()
-            assert final_job["status"] not in ("in_progress", "queued"), (
-                f"Unexpected job status: {final_job['status']}"
+            assert final_job["status"] == "review_ready", (
+                f"Expected review_ready final state, got {final_job['status']!r}"
             )
 
         finally:

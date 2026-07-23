@@ -46,6 +46,32 @@
       document.getElementById('apply-form').style.display = 'none';
       document.getElementById('confirmation').style.display = 'block';
       fetch('/click', { method: 'POST' });
+      var cv = document.getElementById('cv_upload');
+      var cl = document.getElementById('cover_letter');
+      fetch('/record-submit-files', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({
+          cv_filename: cv.files.length > 0 ? cv.files[0].name : '',
+          cover_filename: cl.files.length > 0 ? cl.files[0].name : ''
+        })
+      });
+    });
+    document.getElementById('cv_upload').addEventListener('change', function(e) {
+      var name = e.target.files.length > 0 ? e.target.files[0].name : '';
+      fetch('/record-file', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({input: 'cv_upload', filename: name})
+      });
+    });
+    document.getElementById('cover_letter').addEventListener('change', function(e) {
+      var name = e.target.files.length > 0 ? e.target.files[0].name : '';
+      fetch('/record-file', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({input: 'cover_letter', filename: name})
+      });
     });
   </script>
 </body>
