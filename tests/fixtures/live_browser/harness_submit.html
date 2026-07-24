@@ -1,0 +1,40 @@
+<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8"><title>Harness ATS fixture with click counter</title></head>
+<body data-submitted="false">
+  <main>
+    <h1>Harness Application Form</h1>
+    <form id="apply-form" onsubmit="return false;">
+      <label for="first_name">First name</label>
+      <input id="first_name" name="first_name" required>
+
+      <label for="email">Email address</label>
+      <input id="email" name="email" type="email" required>
+
+      <button type="submit" id="submit-btn">Submit application</button>
+    </form>
+    <div id="confirmation" style="display:none;">
+      <h2>Thank you for your application!</h2>
+      <p>Your application has been received. Reference: HARNESS-12345</p>
+    </div>
+  </main>
+  <script>
+    // POST to /click on the fixture server to record the click server-side.
+    // This allows the harness to verify the actual DOM click count.
+    document.getElementById('submit-btn').addEventListener('click', function(e) {
+      e.preventDefault();
+      document.body.dataset.submitted = 'true';
+      // Record the click on the fixture server.
+      fetch('/click', { method: 'POST' }).then(function() {
+        // Delay confirmation briefly so concurrent requests overlap.
+        setTimeout(function() {
+          fetch('/confirm', { method: 'POST' }).then(function() {
+            document.getElementById('apply-form').style.display = 'none';
+            document.getElementById('confirmation').style.display = 'block';
+          });
+        }, 500);
+      });
+    });
+  </script>
+</body>
+</html>

@@ -84,6 +84,10 @@ class ApplicationJobRow(Base):
         back_populates="job",
         cascade="all, delete-orphan",
     )
+    submission_approvals: Mapped[list[SubmissionApprovalRow]] = relationship(
+        back_populates="job",
+        cascade="all, delete-orphan",
+    )
 
 
 class ApplicationAttemptRow(Base):
@@ -212,6 +216,89 @@ class SystemRunRow(Base):
     summary: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
 
 
+class SubmissionApprovalRow(Base):
+    """A one-time approval for a specific form snapshot.
+
+    Tied to (application_id, snapshot_hash). Changing the form state
+    produces a new snapshot hash, invalidating this approval. Consumed
+    by a :class:`SubmissionClaimRow` when a submit click is attempted.
+    """
+
+    __tablename__ = "submission_approvals"
+
+    approval_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    application_id: Mapped[str] = mapped_column(
+        String(64),
+        ForeignKey("application_jobs.application_id"),
+        index=True,
+    )
+    snapshot_hash: Mapped[str] = mapped_column(String(64), index=True)
+    snapshot_json: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    confirmed_high_risk_fields_json: Mapped[list[str]] = mapped_column(JSON, default=list)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
+    consumed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+    job: Mapped[ApplicationJobRow] = relationship(back_populates="submission_approvals")
+
+
+class SubmissionClaimRow(Base):
+    """A transactional one-time lock preventing duplicate submit clicks.
+
+    Acquired BEFORE the click, consumed AFTER the outcome is recorded.
+    If the process crashes between acquisition and consumption, the claim
+    remains held and blocks automatic retry.
+    """
+
+    __tablename__ = "submission_claims"
+
+    claim_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    application_id: Mapped[str] = mapped_column(
+        String(64),
+        ForeignKey("application_jobs.application_id"),
+        index=True,
+    )
+    approval_id: Mapped[str] = mapped_column(
+        String(64),
+        ForeignKey("submission_approvals.approval_id"),
+        index=True,
+    )
+    snapshot_hash: Mapped[str] = mapped_column(String(64))
+    acquired_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
+    consumed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    consumed_state: Mapped[str | None] = mapped_column(String(64), nullable=True)
+
+
+class SubmissionResultRow(Base):
+    """The persisted outcome of one submission attempt.
+
+    Every click attempt is recorded here for audit. The unique constraint
+    on (application_id, approval_id) ensures one result per approval —
+    preventing duplicate audit records from concurrent requests.
+    """
+
+    __tablename__ = "submission_results"
+
+    result_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    application_id: Mapped[str] = mapped_column(
+        String(64),
+        ForeignKey("application_jobs.application_id"),
+        index=True,
+    )
+    approval_id: Mapped[str] = mapped_column(String(64), index=True)
+    snapshot_hash_at_submit: Mapped[str] = mapped_column(String(64))
+    state: Mapped[str] = mapped_column(String(64))
+    clicked: Mapped[bool] = mapped_column(Boolean, default=False)
+    pre_submit_screenshot: Mapped[str | None] = mapped_column(Text, nullable=True)
+    post_submit_screenshot: Mapped[str | None] = mapped_column(Text, nullable=True)
+    post_submit_url: Mapped[str | None] = mapped_column(Text, nullable=True)
+    post_submit_dom_path: Mapped[str | None] = mapped_column(Text, nullable=True)
+    confirmation_evidence: Mapped[str] = mapped_column(Text, default="")
+    validation_errors_json: Mapped[list[str]] = mapped_column(JSON, default=list)
+    error_message: Mapped[str] = mapped_column(Text, default="")
+    attempted_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
+
+
 __all__ = [
     "Base",
     "ApplicationJobRow",
@@ -221,4 +308,7 @@ __all__ = [
     "AnswerMemoryRow",
     "ArtifactRow",
     "SystemRunRow",
+    "SubmissionApprovalRow",
+    "SubmissionClaimRow",
+    "SubmissionResultRow",
 ]

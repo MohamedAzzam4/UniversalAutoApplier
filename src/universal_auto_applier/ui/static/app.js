@@ -443,6 +443,502 @@
     }
   }
 
+  // ---- Controlled Submission View ----
+  const submitLoadBtn = document.getElementById("submit-load");
+  const submitRefreshBtn = document.getElementById("submit-refresh");
+  const submitApproveBtn = document.getElementById("submit-approve");
+  const submitRevokeBtn = document.getElementById("submit-revoke");
+  const submitExecuteBtn = document.getElementById("submit-execute");
+  const submitConfirmHighRiskBtn = document.getElementById("submit-confirm-high-risk");
+  const submitConfirmYesBtn = document.getElementById("submit-confirm-yes");
+  const submitConfirmNoBtn = document.getElementById("submit-confirm-no");
+  let submitCurrentJobId = null;
+  let submitRequestInFlight = false;
+
+  function setSubmitBusy(busy) {
+    submitRequestInFlight = busy;
+    const btns = document.querySelectorAll("#submit-controls button, #submit-high-risk-controls button, #submit-refresh, #submit-load");
+    btns.forEach((b) => { b.disabled = busy; });
+    const display = document.getElementById("submit-state-display");
+    if (busy) {
+      display.classList.add("uaa-submit-loading");
+    } else {
+      display.classList.remove("uaa-submit-loading");
+    }
+  }
+
+  function announce(msg) {
+    const el = document.getElementById("submit-announce");
+    if (el) el.textContent = msg;
+  }
+
+  let _lastSubmitData = null;
+  let _lastButtonStates = null;
+
+  function _applyButtonStates() {
+    if (!_lastButtonStates) return;
+    const approveBtn = document.getElementById("submit-approve");
+    const revokeBtn = document.getElementById("submit-revoke");
+    const executeBtn = document.getElementById("submit-execute");
+    const confirmBtn = document.getElementById("submit-confirm-high-risk");
+    if (approveBtn) approveBtn.disabled = _lastButtonStates.approveDisabled;
+    if (revokeBtn) revokeBtn.disabled = _lastButtonStates.revokeDisabled;
+    if (executeBtn) executeBtn.disabled = _lastButtonStates.executeDisabled;
+    if (confirmBtn) confirmBtn.disabled = _lastButtonStates.confirmDisabled;
+  }
+
+  async function loadSubmitState(doObserve) {
+    const jobId = document.getElementById("submit-job-id").value.trim();
+    if (!jobId || submitRequestInFlight) return;
+    submitCurrentJobId = jobId;
+    const display = document.getElementById("submit-state-display");
+    const controls = document.getElementById("submit-controls");
+    const highRiskControls = document.getElementById("submit-high-risk-controls");
+    controls.style.display = "none";
+    highRiskControls.style.display = "none";
+    display.innerHTML = '<p class="uaa-empty">Loading...</p>';
+    announce("Loading submission state");
+    setSubmitBusy(true);
+    try {
+      let rawData;
+      if (doObserve) {
+        const resp = await fetch(`/api/submit/${encodeURIComponent(jobId)}/observe`, {
+          method: "POST",
+          headers: { Accept: "application/json" },
+        });
+        if (!resp.ok) {
+          const err = await resp.json().catch(() => ({ detail: resp.statusText }));
+          throw new Error(err.detail || `HTTP ${resp.status}`);
+        }
+        rawData = await resp.json();
+        announce("Observation complete");
+      } else {
+        const resp = await fetch(`/api/submit/${encodeURIComponent(jobId)}/status`, {
+          headers: { Accept: "application/json" },
+        });
+        if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+        rawData = await resp.json();
+      }
+      _lastSubmitData = rawData.snapshot || rawData;
+      renderSubmitState(_lastSubmitData);
+    } catch (err) {
+      _lastSubmitData = null;
+      _lastButtonStates = null;
+      display.innerHTML = `<p class="uaa-error">Error: ${esc(err.message)}</p>`;
+      announce("Error loading submission state");
+    } finally {
+      setSubmitBusy(false);
+      _applyButtonStates();
+    }
+  }
+
+  function renderSubmitState(data) {
+    const display = document.getElementById("submit-state-display");
+    const controls = document.getElementById("submit-controls");
+    const highRiskControls = document.getElementById("submit-high-risk-controls");
+    const gateStatus = document.getElementById("submit-gate-status");
+    const executeBtn = document.getElementById("submit-execute");
+    const approveBtn = document.getElementById("submit-approve");
+    const revokeBtn = document.getElementById("submit-revoke");
+    const confirmBtn = document.getElementById("submit-confirm-high-risk");
+
+    let html = "";
+    _lastButtonStates = {
+      approveDisabled: true,
+      revokeDisabled: true,
+      executeDisabled: true,
+      confirmDisabled: true,
+    };
+
+    function fieldNeedsConfirmation(f) {
+      return f.requires_confirmation === true ||
+        String(f.risk_level || "").toLowerCase() === "high";
+    }
+
+    const hasSnapshot = !!data.snapshot_hash;
+    const fields = data.fields || [];
+    const docs = data.documents || [];
+    const isComplete = data.is_complete;
+    const snapshotHash = data.snapshot_hash || "";
+    const isStale = data.is_stale || data.approval_is_stale || false;
+
+    // ---- Job section (always shown) ----
+    html += '<div class="uaa-submit-section">';
+    html += '<h3>Job</h3>';
+    html += '<div class="uaa-submit-field"><strong>Company:</strong> ' + esc(data.company || "") + '</div>';
+    html += '<div class="uaa-submit-field"><strong>Job Title:</strong> ' + esc(data.job_title || "") + '</div>';
+    html += '<div class="uaa-submit-field"><strong>Application ID:</strong> <code>' + esc(data.application_id || "") + '</code></div>';
+    if (data.external_job_id) {
+      html += '<div class="uaa-submit-field"><strong>External Job ID:</strong> ' + esc(data.external_job_id) + '</div>';
+    }
+    if (data.platform) {
+      html += '<div class="uaa-submit-field"><strong>Platform:</strong> ' + esc(data.platform) + '</div>';
+    }
+    if (data.application_url) {
+      html += '<div class="uaa-submit-field"><strong>URL:</strong> <a href="' + esc(data.application_url) + '" target="_blank" rel="noopener">' + esc(data.application_url) + '</a></div>';
+    }
+    if (data.observation_timestamp) {
+      html += '<div class="uaa-submit-field"><strong>Observation Timestamp:</strong> ' + esc(fmtDate(data.observation_timestamp)) + '</div>';
+    }
+    html += '</div>';
+
+    // ---- No snapshot state ----
+    if (!hasSnapshot) {
+      html += '<div class="uaa-submit-section">';
+      html += '<div class="uaa-submit-warning">No persisted snapshot. Click <strong>Refresh Live Review</strong> to observe the live form.</div>';
+      html += '</div>';
+      display.innerHTML = html;
+      controls.style.display = "flex";
+      highRiskControls.style.display = "none";
+      approveBtn.disabled = true;
+      revokeBtn.disabled = true;
+      executeBtn.disabled = true;
+      gateStatus.textContent = "No snapshot";
+      gateStatus.className = "uaa-pill uaa-pill-idle";
+      return;
+    }
+
+    // ---- Form fields section ----
+    if (fields.length > 0) {
+      html += '<div class="uaa-submit-section">';
+      html += '<h3>Form Fields <span class="uaa-submit-confidence">(' + fields.length + ' fields)</span></h3>';
+      fields.forEach(function (f, idx) {
+        var isSecret = (f.field_type === "password" || f.field_type === "token" || f.field_type === "api_key");
+        var isHighRisk = fieldNeedsConfirmation(f);
+        html += '<div class="uaa-submit-field-detail">';
+        html += '<div><strong>Label:</strong> ' + esc(f.label || esc(f.field_token)) + '</div>';
+        html += '<div><strong>Type:</strong> <span class="uaa-field-type-tag">' + esc(f.field_type) + '</span> ' + (f.required ? '<span class="uaa-submit-state-pill pending">Required</span>' : '') + '</div>';
+        if (isSecret) {
+          html += '<div><strong>Filled:</strong> <em class="uaa-submit-confidence">(hidden)</em></div>';
+        } else {
+          html += '<div><strong>Filled:</strong> ' + esc(f.filled_value || "—") + '</div>';
+        }
+        html += '<div><strong>Selected:</strong> ' + esc(f.selected_value || "—") + '</div>';
+        html += '<div><strong>Status:</strong> ' + esc(f.status || "—") + '</div>';
+        var riskClass = "";
+        if (f.risk_level === "high") riskClass = "uaa-field-risk-high";
+        else if (f.risk_level === "medium") riskClass = "uaa-field-risk-medium";
+        else riskClass = "uaa-field-risk-low";
+        html += '<div><strong>Risk:</strong> <span class="' + riskClass + '">' + esc(f.risk_level || "low") + '</span></div>';
+        if (f.evidence) {
+          html += '<div class="uaa-submit-confidence"><strong>Evidence:</strong> ' + esc(f.evidence) + '</div>';
+        } else {
+          html += '<div class="uaa-submit-confidence"><strong>Evidence:</strong> —</div>';
+        }
+        if (f.validation_error) {
+          html += '<div><strong>Validation:</strong> <span class="uaa-field-risk-high">' + esc(f.validation_error) + '</span></div>';
+        } else {
+          html += '<div><strong>Validation:</strong> None</div>';
+        }
+        if (f.source) {
+          html += '<div class="uaa-submit-confidence"><strong>Source:</strong> ' + esc(f.source) + '</div>';
+        }
+        if (f.options && f.options.length > 0) {
+          html += '<div class="uaa-submit-options"><strong>Options:</strong> ' + f.options.map(function (o) { return esc(o); }).join(", ") + '</div>';
+        }
+        // High-risk confirmation checkbox
+        if (isHighRisk) {
+          var checkedAttr = f.confirmed ? ' checked="checked" disabled="disabled"' : '';
+          html += '<div class="uaa-submit-checkbox-label"><input type="checkbox" class="uaa-hr-checkbox" data-field-token="' + esc(f.field_token) + '" aria-label="Confirm high-risk: ' + esc(f.label) + '"' + checkedAttr + ' /> <span>High-risk field' + (f.confirmed ? ' (confirmed)' : ' — requires confirmation') + '</span></div>';
+        }
+        if (fieldNeedsConfirmation(f)) {
+          html += '<div class="uaa-submit-confidence"><strong>Confirmation state:</strong> ' + (f.confirmed ? 'Confirmed' : 'Pending') + '</div>';
+        } else {
+          html += '<div class="uaa-submit-confidence"><strong>Confirmation state:</strong> Not required</div>';
+        }
+        html += '</div>';
+      });
+      html += '</div>';
+    }
+
+    // ---- Documents section ----
+    if (docs.length > 0) {
+      html += '<div class="uaa-submit-section">';
+      html += '<h3>Documents <span class="uaa-submit-confidence">(' + docs.length + ' documents)</span></h3>';
+      docs.forEach(function (d) {
+        html += '<div class="uaa-submit-doc">';
+        html += '<div><strong>Kind:</strong> ' + esc(d.document_kind || "—") + '</div>';
+        html += '<div><strong>Filename:</strong> ' + esc(d.filename || "—") + '</div>';
+        html += '<div class="uaa-doc-path"><strong>Path:</strong> ' + esc(d.path || "—") + '</div>';
+        html += '<div class="uaa-doc-path"><strong>Hash:</strong> ' + esc(d.content_hash || "—") + '</div>';
+        html += '<div><strong>Exists:</strong> ' + (d.exists ? 'Yes' : 'No') + '</div>';
+        html += '<div><strong>Readable:</strong> ' + (d.readable ? 'Yes' : 'No') + '</div>';
+        html += '</div>';
+      });
+      html += '</div>';
+    }
+
+    // ---- Safety & State section ----
+    html += '<div class="uaa-submit-section">';
+    html += '<h3>Safety &amp; State</h3>';
+    html += '<div class="uaa-submit-field"><strong>Form Fingerprint:</strong> <code>' + esc(snapshotHash ? (data.form_fingerprint || "—") : "—") + '</code></div>';
+    html += '<div class="uaa-submit-field"><strong>Snapshot Hash:</strong> <code>' + esc(snapshotHash) + '</code></div>';
+    html += '<div class="uaa-submit-field"><strong>Completeness:</strong> ' + (isComplete ? '<span class="uaa-submit-state-pill ready">Complete</span>' : '<span class="uaa-submit-state-pill blocked">Incomplete</span>') + '</div>';
+    html += '<div class="uaa-submit-field"><strong>Pending Interventions:</strong> ' + (data.pending_intervention_count || 0) + '</div>';
+    html += '<div class="uaa-submit-field"><strong>Unresolved Required Fields:</strong> ' + (data.unresolved_required_field_count || 0) + '</div>';
+    html += '<div class="uaa-submit-field"><strong>Unconfirmed High-Risk:</strong> ' + (data.unconfirmed_high_risk_count || 0) + '</div>';
+    html += '<div class="uaa-submit-field"><strong>Real Submission Enabled:</strong> ' + (data.enable_real_submission ? 'YES' : 'NO') + '</div>';
+    if (data.submit_control) {
+      html += '<div class="uaa-submit-field"><strong>Submit Control:</strong> ' + esc(data.submit_control.text || "—") + ' <code>' + esc(data.submit_control.selector || "") + '</code></div>';
+    }
+    html += '</div>';
+
+    // ---- Approval & Submit section ----
+    html += '<div class="uaa-submit-section">';
+    html += '<h3>Approval &amp; Submit</h3>';
+
+    var approvalStateLabel = data.approval_state || "none";
+    var approvalStateClass = "pending";
+    if (approvalStateLabel === "active") approvalStateClass = "ready";
+    else if (approvalStateLabel === "consumed") approvalStateClass = "completed";
+    else if (approvalStateLabel === "revoked") approvalStateClass = "blocked";
+    html += '<div class="uaa-submit-field"><strong>Approval State:</strong> <span class="uaa-submit-state-pill ' + approvalStateClass + '">' + esc(approvalStateLabel) + '</span></div>';
+
+    if (data.active_approval_id) {
+      html += '<div class="uaa-submit-field"><strong>Approval ID:</strong> <code>' + esc(data.active_approval_id) + '</code></div>';
+    }
+    if (data.approved_snapshot_hash) {
+      html += '<div class="uaa-submit-field"><strong>Approved Snapshot:</strong> <code>' + esc(data.approved_snapshot_hash) + '</code></div>';
+    }
+
+    if (isStale) {
+      html += '<div class="uaa-submit-warning">&#9888; Approval is STALE — the form state has changed since approval. Revoke and re-approve the new snapshot.</div>';
+    }
+
+    if (data.approve_blocking_reason) {
+      html += '<div class="uaa-submit-blocking-reason">Approve blocked: ' + esc(data.approve_blocking_reason) + '</div>';
+    }
+    if (data.submit_blocking_reason) {
+      html += '<div class="uaa-submit-blocking-reason">Submit blocked: ' + esc(data.submit_blocking_reason) + '</div>';
+    }
+
+    html += '<div class="uaa-submit-field"><strong>Can Approve:</strong> ' + (data.can_approve ? 'Yes' : 'No') + '</div>';
+    html += '<div class="uaa-submit-field"><strong>Can Submit:</strong> ' + (data.can_submit ? 'Yes' : 'No') + '</div>';
+
+    // Latest submission result
+    if (data.latest_submission_state) {
+      var resultClass = "completed";
+      if (data.latest_submission_state === "failed" || data.latest_submission_error) resultClass = "blocked";
+      html += '<div class="uaa-submit-field"><strong>Latest Submission:</strong> <span class="uaa-submit-state-pill ' + resultClass + '">' + esc(data.latest_submission_state) + '</span></div>';
+      if (data.latest_submission_timestamp) {
+        html += '<div class="uaa-submit-field"><strong>Submission Timestamp:</strong> ' + esc(fmtDate(data.latest_submission_timestamp)) + '</div>';
+      }
+      if (data.latest_submission_error) {
+        html += '<div class="uaa-submit-error"><strong>Submission Error:</strong> ' + esc(data.latest_submission_error) + '</div>';
+      }
+    }
+    html += '</div>';
+
+    display.innerHTML = html;
+    controls.style.display = "flex";
+    highRiskControls.style.display = "flex";
+
+    // Wire up high-risk checkboxes
+    var checkboxes = display.querySelectorAll(".uaa-hr-checkbox");
+    checkboxes.forEach(function (cb) {
+      cb.addEventListener("change", updateConfirmHighRiskButton);
+    });
+    updateConfirmHighRiskButton();
+
+    // Button enable/disable rules
+    approveBtn.disabled = !data.can_approve;
+    revokeBtn.disabled = (data.approval_state !== "active");
+    if (data.can_submit) {
+      executeBtn.disabled = false;
+      gateStatus.textContent = "Gates passed";
+      gateStatus.className = "uaa-pill uaa-pill-success";
+    } else {
+      executeBtn.disabled = true;
+      gateStatus.textContent = "Gates blocked";
+      gateStatus.className = "uaa-pill uaa-pill-danger";
+    }
+
+    // Disable submit if stale
+    if (isStale) {
+      executeBtn.disabled = true;
+    }
+
+    // Disable submit if already submitted
+    if (data.latest_submission_state && data.latest_submission_state !== "failed") {
+      executeBtn.disabled = true;
+      gateStatus.textContent = "Already submitted";
+      gateStatus.className = "uaa-pill uaa-pill-completed";
+    }
+
+    _lastButtonStates = {
+      approveDisabled: approveBtn.disabled,
+      revokeDisabled: revokeBtn.disabled,
+      executeDisabled: executeBtn.disabled,
+      confirmDisabled: submitConfirmHighRiskBtn.disabled,
+    };
+  }
+
+  function updateConfirmHighRiskButton() {
+    var checked = document.querySelectorAll(".uaa-hr-checkbox:checked:not(:disabled)");
+    submitConfirmHighRiskBtn.disabled = checked.length === 0;
+  }
+
+  function getSelectedHighRiskTokens() {
+    var checked = document.querySelectorAll(".uaa-hr-checkbox:checked:not(:disabled)");
+    return Array.from(checked).map(function (cb) { return cb.getAttribute("data-field-token"); });
+  }
+
+  function formatError(err) {
+    return err.message || String(err);
+  }
+
+  // ---- Event handlers ----
+  if (submitLoadBtn) {
+    submitLoadBtn.addEventListener("click", function () { loadSubmitState(false); });
+  }
+  if (submitRefreshBtn) {
+    submitRefreshBtn.addEventListener("click", function () { loadSubmitState(true); });
+  }
+
+  if (submitConfirmHighRiskBtn) {
+    submitConfirmHighRiskBtn.addEventListener("click", async function () {
+      if (!submitCurrentJobId || submitRequestInFlight) return;
+      var tokens = getSelectedHighRiskTokens();
+      if (tokens.length === 0) return;
+
+      // Get the current snapshot hash from the displayed state
+      var hashEl = document.querySelector("#submit-state-display .uaa-submit-field code");
+      if (!hashEl) return;
+      // Find the snapshot hash - it's in the Safety section
+      var allFields = document.querySelectorAll("#submit-state-display .uaa-submit-field");
+      var snapshotHash = "";
+      allFields.forEach(function (f) {
+        var txt = f.textContent || "";
+        if (txt.indexOf("Snapshot Hash:") !== -1) {
+          var code = f.querySelector("code");
+          if (code) snapshotHash = code.textContent || "";
+        }
+      });
+      if (!snapshotHash) return;
+
+      setSubmitBusy(true);
+      try {
+        var result = await postJSON("/api/submit/" + encodeURIComponent(submitCurrentJobId) + "/confirm-high-risk", {
+          snapshot_hash: snapshotHash,
+          field_tokens: tokens,
+          confirm: true,
+        });
+        var data = result.snapshot || result;
+        renderSubmitState(data);
+        announce("High-risk answers confirmed");
+      } catch (err) {
+        document.getElementById("submit-state-display").innerHTML =
+          '<p class="uaa-error">Confirm high-risk error: ' + esc(formatError(err)) + '</p>';
+        announce("Error confirming high-risk answers");
+      } finally {
+        setSubmitBusy(false);
+      }
+    });
+  }
+
+  if (submitApproveBtn) {
+    submitApproveBtn.addEventListener("click", async function () {
+      if (!submitCurrentJobId || submitRequestInFlight) return;
+
+      // Extract snapshot hash from rendered state.
+      var allFields = document.querySelectorAll("#submit-state-display .uaa-submit-field");
+      var snapshotHash = "";
+      allFields.forEach(function (f) {
+        var txt = f.textContent || "";
+        if (txt.indexOf("Snapshot Hash:") !== -1) {
+          var code = f.querySelector("code");
+          if (code) snapshotHash = code.textContent || "";
+        }
+      });
+      if (!snapshotHash) return;
+
+      setSubmitBusy(true);
+      try {
+        var result = await postJSON("/api/submit/" + encodeURIComponent(submitCurrentJobId) + "/approve", {
+          snapshot_hash: snapshotHash,
+          confirm: true,
+        });
+        await loadSubmitState(false);
+        announce("Snapshot approved");
+      } catch (err) {
+        document.getElementById("submit-state-display").innerHTML =
+          '<p class="uaa-error">Approve error: ' + esc(formatError(err)) + '</p>';
+        announce("Error approving snapshot");
+      } finally {
+        setSubmitBusy(false);
+      }
+    });
+  }
+
+  if (submitRevokeBtn) {
+    submitRevokeBtn.addEventListener("click", async function () {
+      if (!submitCurrentJobId || submitRequestInFlight) return;
+      setSubmitBusy(true);
+      try {
+        await postJSON("/api/submit/" + encodeURIComponent(submitCurrentJobId) + "/revoke", {});
+        await loadSubmitState(false);
+        announce("Approval revoked");
+      } catch (err) {
+        document.getElementById("submit-state-display").innerHTML =
+          '<p class="uaa-error">Revoke error: ' + esc(formatError(err)) + '</p>';
+        announce("Error revoking approval");
+      } finally {
+        setSubmitBusy(false);
+      }
+    });
+  }
+
+  if (submitExecuteBtn) {
+    submitExecuteBtn.addEventListener("click", function () {
+      document.getElementById("submit-confirm-dialog").style.display = "block";
+    });
+  }
+
+  if (submitConfirmNoBtn) {
+    submitConfirmNoBtn.addEventListener("click", function () {
+      document.getElementById("submit-confirm-dialog").style.display = "none";
+    });
+  }
+
+  // Close confirm dialog on Escape
+  document.addEventListener("keydown", function (e) {
+    if (e.key === "Escape") {
+      var dlg = document.getElementById("submit-confirm-dialog");
+      if (dlg && dlg.style.display !== "none") {
+        dlg.style.display = "none";
+      }
+    }
+  });
+
+  if (submitConfirmYesBtn) {
+    submitConfirmYesBtn.addEventListener("click", async function () {
+      document.getElementById("submit-confirm-dialog").style.display = "none";
+      if (!submitCurrentJobId || submitRequestInFlight) return;
+
+      setSubmitBusy(true);
+      try {
+        var statusResp = await fetchJSON("/api/submit/" + encodeURIComponent(submitCurrentJobId) + "/status");
+        var statusData = statusResp.snapshot || statusResp;
+        var approvalId = statusData.active_approval_id;
+        if (!approvalId) {
+          throw new Error("No active approval");
+        }
+        var result = await postJSON("/api/submit/" + encodeURIComponent(submitCurrentJobId) + "/submit", {
+          approval_id: approvalId,
+          confirm: true,
+        });
+        await loadSubmitState(false);
+        announce("Submission completed");
+      } catch (err) {
+        document.getElementById("submit-state-display").innerHTML =
+          '<p class="uaa-error">Submit error: ' + esc(formatError(err)) + '</p>';
+        announce("Error during submission");
+      } finally {
+        setSubmitBusy(false);
+      }
+    });
+  }
+
   // ---- HTML escape ----
   function esc(text) {
     if (text == null) return "";

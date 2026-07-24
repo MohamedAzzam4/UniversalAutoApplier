@@ -16,15 +16,12 @@ Coverage:
 
 from __future__ import annotations
 
-import threading
-from collections.abc import Iterator
-from functools import partial
-from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 import pytest
 from playwright.sync_api import BrowserContext
 
+from tests.playwright._fixture_server import serve_fixture_dir
 from universal_auto_applier.browser.live_runner import LiveBrowserConfig, LiveBrowserRunner
 from universal_auto_applier.core.identity import compute_application_id
 from universal_auto_applier.core.models import (
@@ -40,24 +37,9 @@ pytestmark = pytest.mark.playwright
 FIXTURE_DIR = Path(__file__).parent.parent / "fixtures" / "live_browser"
 
 
-class _QuietHandler(SimpleHTTPRequestHandler):
-    def log_message(self, _format: str, *args: object) -> None:
-        del args
-
-
 @pytest.fixture(scope="module")
-def fixture_server() -> Iterator[str]:
-    handler = partial(_QuietHandler, directory=str(FIXTURE_DIR))
-    server = ThreadingHTTPServer(("127.0.0.1", 0), handler)
-    thread = threading.Thread(target=server.serve_forever, daemon=True)
-    thread.start()
-    try:
-        host, port = server.server_address
-        yield f"http://{host}:{port}"
-    finally:
-        server.shutdown()
-        server.server_close()
-        thread.join(timeout=5)
+def fixture_server() -> str:
+    yield from serve_fixture_dir(FIXTURE_DIR)
 
 
 def _make_job(

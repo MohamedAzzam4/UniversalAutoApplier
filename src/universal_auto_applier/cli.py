@@ -67,6 +67,42 @@ def _build_parser() -> argparse.ArgumentParser:
     live.add_argument("--channel", help="Playwright browser channel, e.g. chrome or msedge.")
     live.add_argument("--timeout-ms", type=int)
     live.add_argument("--max-steps", type=int)
+
+    submit = subparsers.add_parser(
+        "live-submit",
+        help=(
+            "Execute the controlled final submission for an approved application. "
+            "Requires UAA_ENABLE_REAL_SUBMISSION=true and an active approval."
+        ),
+    )
+    submit.add_argument(
+        "--application-id",
+        required=True,
+        help="Full application ID or an unambiguous prefix shown by list-jobs.",
+    )
+    submit.add_argument(
+        "--approval-id",
+        required=True,
+        help="The approval ID returned by the approve-snapshot API/CLI.",
+    )
+    submit.add_argument(
+        "--confirm",
+        action="store_true",
+        required=True,
+        help="Deliberate confirmation that you want to click Submit.",
+    )
+    submit.add_argument("--profile-dir", type=Path)
+    submit.add_argument(
+        "--ephemeral-profile",
+        action="store_true",
+        help="Do not reuse saved browser cookies/login state.",
+    )
+    display = submit.add_mutually_exclusive_group()
+    display.add_argument("--headless", action="store_true", default=None)
+    display.add_argument("--headed", action="store_false", dest="headless")
+    submit.add_argument("--channel", help="Playwright browser channel, e.g. chrome or msedge.")
+    submit.add_argument("--timeout-ms", type=int)
+    submit.add_argument("--artifacts-dir", type=Path)
     return parser
 
 
@@ -320,6 +356,110 @@ def _browser_session(settings: Settings, args: argparse.Namespace) -> int:
     return 0
 
 
+"""Execute the controlled final submission for an approved application.
+
+This is the ONLY CLI command that can click the final submit control.
+It delegates to :class:`SubmissionExecutionService` which guarantees
+same-page execution (observation, gate checks, claim, click, and
+result detection all happen on one live ``Page``).
+
+Call path:
+CLI ``live-submit`` → ``SubmissionExecutionService.execute_controlled_submission``
+→ ``coordinator.execute_submission_from_page`` (same Page)
+
+Requires:
+- ``UAA_ENABLE_REAL_SUBMISSION=true``
+- An active approval (``--approval-id``) for this application
+- ``--confirm`` flag (deliberate confirmation)
+"""
+
+
+def _live_submit(settings: Settings, args: argparse.Namespace) -> int:
+    from universal_auto_applier.submission.execution_service import (
+        PlaywrightContextFactory,
+        SubmissionExecutionService,
+    )
+
+    if not settings.enable_real_submission:
+        print(
+            "ERROR: UAA_ENABLE_REAL_SUBMISSION is not true. "
+            "Controlled final submission is disabled by default."
+        )
+        return 2
+
+    if not args.confirm:
+        print("ERROR: --confirm is required to submit. This is a deliberate safety gate.")
+        return 2
+
+    try:
+        job = _find_job(settings, str(args.application_id))
+    except ValueError as exc:
+        print(f"ERROR: {exc}")
+        return 2
+
+    application_id = job.application_id
+
+    # Build the browser context factory.
+    profile_dir = args.profile_dir or settings.browser_profile_dir
+    if args.ephemeral_profile:
+        profile_dir = None
+    headless = args.headless if args.headless is not None else settings.browser_headless
+
+    context_factory = PlaywrightContextFactory(
+        settings=settings,
+        profile_dir=profile_dir,
+        headless=headless,
+        channel=args.channel or settings.browser_channel,
+    )
+
+    artifact_dir = args.artifacts_dir or (
+        settings.data_dir / "live-runs" / f"{application_id[:12]}-submit"
+    )
+
+    engine, session_factory = _open_store(settings)
+    try:
+        service = SubmissionExecutionService(settings, session_factory, context_factory)
+        result = service.execute_controlled_submission(
+            application_id=application_id,
+            approval_id=args.approval_id,
+            artifact_dir=artifact_dir,
+        )
+    finally:
+        engine.dispose()
+
+    # Report the result.
+    print(f"\nSubmission result: {result.state}")
+    print(f"  Clicked: {result.clicked}")
+    if result.confirmation_evidence:
+        print(f"  Evidence: {result.confirmation_evidence}")
+    if result.error_message:
+        print(f"  Error: {result.error_message}")
+    if result.post_submit_url:
+        print(f"  Post-submit URL: {result.post_submit_url}")
+    if result.pre_submit_screenshot:
+        print(f"  Pre-submit screenshot: {result.pre_submit_screenshot}")
+    if result.post_submit_screenshot:
+        print(f"  Post-submit screenshot: {result.post_submit_screenshot}")
+
+    # Update application status on confirmed success.
+    if result.state.value == "submitted_confirmed":
+        engine2, session_factory2 = _open_store(settings)
+        try:
+            from universal_auto_applier.core.statuses import ApplicationStatus
+            from universal_auto_applier.persistence.job_repository import (
+                update_application_status,
+            )
+
+            with session_scope(session_factory2) as session:
+                update_application_status(session, application_id, ApplicationStatus.SUBMITTED)
+        finally:
+            engine2.dispose()
+        return 0
+    if result.state.value in ("outcome_unknown", "already_submitted"):
+        return 2
+    return 3
+
+
 def run_command(argv: list[str], settings: Settings) -> int:
     """Run a non-server CLI command and return its process exit code."""
     parser = _build_parser()
@@ -330,6 +470,8 @@ def run_command(argv: list[str], settings: Settings) -> int:
         return _browser_session(settings, args)
     if args.command == "live-dry-run":
         return _live_dry_run(settings, args)
+    if args.command == "live-submit":
+        return _live_submit(settings, args)
     parser.error(f"unknown command: {args.command}")
     return 2
 

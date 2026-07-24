@@ -79,6 +79,7 @@ uaa.sqlite3
 data/
 artifacts/
 screenshots/
+_screenshots/
 traces/
 logs/
 history/

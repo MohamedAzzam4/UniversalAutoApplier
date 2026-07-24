@@ -12,6 +12,7 @@ creates appropriate interventions for:
 from __future__ import annotations
 
 import logging
+from typing import Any
 
 from sqlalchemy.orm import Session
 
@@ -36,6 +37,11 @@ def create_interventions_from_fill_summary(
     an appropriate intervention in the store. Interventions are idempotent
     (creating the same intervention twice returns the existing row).
 
+    Structured field identity (field_label, field_token) is stored in
+    ``llm_metadata`` on the intervention. This is the authoritative source
+    for the field identity — the ``question`` text is display-only and
+    must never be parsed to recover structured data.
+
     Args:
         session: An open SQLAlchemy session.
         application_id: The job/application ID.
@@ -50,27 +56,27 @@ def create_interventions_from_fill_summary(
     for result in summary.results:
         if result.status == "intervention_needed":
             kind = _determine_kind(result)
+            llm_metadata = _build_llm_metadata(result)
             question = _make_question(result)
-            options = _make_options(result)
 
             create_intervention(
                 session,
                 application_id=application_id,
                 kind=kind,
                 question=question,
-                options=options,
+                options=[],
                 suggested_answer=result.value,
                 confidence=result.confidence,
                 field_selector=result.field_selector,
                 page_url=page_url,
                 screenshot=screenshot,
+                llm_metadata=llm_metadata,
             )
             count += 1
 
         elif result.status == "blocked":
-            # Blocked fields (e.g. password) also need an intervention
-            # so the user knows they were blocked.
             kind = InterventionKind.FIELD_ANSWER
+            llm_metadata = _build_llm_metadata(result)
             question = f"Field blocked: {result.explanation}"
 
             create_intervention(
@@ -84,6 +90,7 @@ def create_interventions_from_fill_summary(
                 field_selector=result.field_selector,
                 page_url=page_url,
                 screenshot=screenshot,
+                llm_metadata=llm_metadata,
             )
             count += 1
 
@@ -104,18 +111,31 @@ def _determine_kind(result: FillResult) -> InterventionKind:
     return InterventionKind.FIELD_ANSWER
 
 
+def _build_llm_metadata(result: FillResult) -> dict[str, Any]:
+    """Build structured metadata for the intervention.
+
+    The returned dict carries the stable field identity so that downstream
+    consumers (resolve endpoint, answer memory, pipeline retry) can locate
+    the exact form field without parsing human-readable text.
+    """
+    return {
+        "field_label": result.label or "",
+        "field_type": result.field_type or "",
+    }
+
+
 def _make_question(result: FillResult) -> str:
-    """Create a human-readable question from a FillResult."""
+    """Create a human-readable question from a FillResult.
+
+    This is display-only text. The structured field identity is carried
+    in ``llm_metadata`` and must not be embedded in or parsed from this
+    string.
+    """
     if result.field_type == "file":
         return f"Missing document for field: {result.explanation}"
     if result.confidence > 0 and result.value:
         return f"Low-confidence answer for field: {result.explanation}"
     return f"Unknown required field: {result.explanation}"
-
-
-def _make_options(result: FillResult) -> list[str]:
-    """Create options list from a FillResult (empty for now)."""
-    return []
 
 
 __all__ = ["create_interventions_from_fill_summary"]

@@ -41,6 +41,14 @@ class Settings(BaseModel):
     browser_timeout_ms: int = Field(default=30_000, ge=1_000, le=120_000)
     browser_max_steps: int = Field(default=20, ge=1, le=100)
     submit_mode: SubmitMode = Field(default="review")
+    # Controlled final submission gate. When False (the default), the
+    # live browser runner NEVER clicks the final submit control, even if
+    # the user has approved a snapshot. This is the hard kill switch.
+    # When True, the SubmissionCoordinator may click submit ONLY after
+    # every other gate (approval, snapshot match, no pending
+    # interventions, no unresolved required fields, etc.) also passes.
+    # See docs/generalization/DRY_RUN_LEVELS.md Level 3.
+    enable_real_submission: bool = Field(default=False)
     # Execution mode: sequential (default) runs the UAA apply pipeline
     # one job at a time. Parallel allows ready-to-apply jobs to be
     # processed concurrently by a thread pool bounded by apply_workers.
@@ -121,6 +129,11 @@ def load_settings(env: dict[str, str] | None = None) -> Settings:
     submit_mode_raw = source.get("UAA_SUBMIT_MODE", "review").strip() or "review"
     execution_mode_raw = source.get("UAA_EXECUTION_MODE", "sequential").strip() or "sequential"
 
+    enable_real_submission_raw = source.get("UAA_ENABLE_REAL_SUBMISSION", "false").strip()
+    enable_real_submission = (
+        _parse_bool(enable_real_submission_raw) if enable_real_submission_raw else False
+    )
+
     def _parse_int(name: str, default: int, min_v: int = 1, max_v: int = 16) -> int:
         raw = source.get(name, "").strip()
         if not raw:
@@ -146,6 +159,7 @@ def load_settings(env: dict[str, str] | None = None) -> Settings:
         browser_max_steps=_parse_int("UAA_BROWSER_MAX_STEPS", 20, 1, 100),
         submit_mode=submit_mode_raw,  # type: ignore[arg-type]
         execution_mode=execution_mode_raw,  # type: ignore[arg-type]
+        enable_real_submission=enable_real_submission,
         scan_workers=_parse_int("UAA_SCAN_WORKERS", 1),
         evaluate_workers=_parse_int("UAA_EVALUATE_WORKERS", 1),
         tailor_workers=_parse_int("UAA_TAILOR_WORKERS", 1),

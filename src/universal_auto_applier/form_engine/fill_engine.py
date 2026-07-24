@@ -100,6 +100,7 @@ def _fill_single_field(
             field_type="password",
             status="blocked",
             explanation="Password fields are never filled",
+            label=field.label,
         )
 
     # Block unknown type fields (safety).
@@ -110,31 +111,34 @@ def _fill_single_field(
                 field_type=field.type,
                 status="intervention_needed",
                 explanation="Required field has unknown type and no mapping",
+                label=field.label,
             )
         return FillResult(
             field_selector=field.selector,
             field_type=field.type,
             status="skipped",
             explanation="Optional field has unknown type",
+            label=field.label,
         )
 
     # Try to map the field.
     mapping = map_field(field, candidate, job)
 
     if mapping is None:
-        # No mapping found.
         if field.required:
             return FillResult(
                 field_selector=field.selector,
                 field_type=field.type,
                 status="intervention_needed",
                 explanation="Required field has no deterministic mapping",
+                label=field.label,
             )
         return FillResult(
             field_selector=field.selector,
             field_type=field.type,
             status="skipped",
             explanation="Optional field has no mapping",
+            label=field.label,
         )
 
     # Check confidence threshold.
@@ -148,6 +152,7 @@ def _fill_single_field(
                 source=mapping.source,
                 confidence=mapping.confidence,
                 explanation=f"Low confidence ({mapping.confidence}): {mapping.explanation}",
+                label=field.label,
             )
         return FillResult(
             field_selector=field.selector,
@@ -157,6 +162,7 @@ def _fill_single_field(
             source=mapping.source,
             confidence=mapping.confidence,
             explanation=f"Low confidence optional field: {mapping.explanation}",
+            label=field.label,
         )
 
     # For file fields, validate the path exists.
@@ -170,6 +176,7 @@ def _fill_single_field(
                 source=mapping.source,
                 confidence=mapping.confidence,
                 explanation=f"File does not exist: {mapping.value}",
+                label=field.label,
             )
 
     # Field is mapped with sufficient confidence.
@@ -181,6 +188,7 @@ def _fill_single_field(
         source=mapping.source,
         confidence=mapping.confidence,
         explanation=mapping.explanation,
+        label=field.label,
     )
 
 

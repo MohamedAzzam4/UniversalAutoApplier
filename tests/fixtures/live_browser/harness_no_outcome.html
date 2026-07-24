@@ -1,0 +1,26 @@
+<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8"><title>Harness ATS fixture - no outcome</title></head>
+<body data-submitted="false">
+  <main>
+    <h1>Harness Application Form (no outcome)</h1>
+    <form id="apply-form" onsubmit="return false;">
+      <label for="first_name">First name</label>
+      <input id="first_name" name="first_name" required>
+
+      <label for="email">Email address</label>
+      <input id="email" name="email" type="email" required>
+
+      <button type="submit" id="submit-btn">Submit application</button>
+    </form>
+  </main>
+  <script>
+    document.getElementById('submit-btn').addEventListener('click', function(e) {
+      e.preventDefault();
+      document.body.dataset.submitted = 'true';
+      fetch('/click', { method: 'POST' });
+      // No confirmation — no /confirm POST, no visible confirmation.
+    });
+  </script>
+</body>
+</html>

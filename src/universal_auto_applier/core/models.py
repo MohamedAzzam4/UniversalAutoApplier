@@ -607,6 +607,7 @@ class FillResult(BaseModel):
     source: str | None = None
     explanation: str = Field(default="")
     confidence: float = Field(default=0.0, ge=0.0, le=1.0)
+    label: str = Field(default="", description="The field label for intervention identification.")
 
 
 class FormFillSummary(BaseModel):
