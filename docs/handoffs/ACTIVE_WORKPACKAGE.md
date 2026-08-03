@@ -3,7 +3,7 @@
 - **WP ID:** WP-H0 — Project Rebaseline and Durable AI Handoff (in progress).
 - **Branch:** `checkpoint/project-rebaseline`
 - **Base SHA:** `f7c49f7ad520b9765c2221b506960cd8b8e518bc` (`origin/main`)
-- **Current HEAD:** `5915ead0d7a0e3239a0f91134f91140fe422bf0c` (commit 1 of 2; commit 2 pending review corrections)
+- **Current HEAD:** `33bb2f4` (commit 2 of 2; corrections applied and pushed)
 - **Last updated:** 2026-08-04
 
 ## Objective
@@ -16,8 +16,9 @@ defects. No runtime code, tests, config, migrations, or workflows change.
 
 ## Status
 
-In progress. Commit 1 (`5915ead`) delivered the initial handoff pack.
-Commit 2 (this session) applies the review corrections. Not merged.
+Complete (awaiting merge). Commit 1 (`5915ead`) delivered the initial
+handoff pack. Commit 2 (`33bb2f4`) applies the review corrections. Not
+merged; merge once via a reviewed PR.
 
 ## Completed work (commit 1: `5915ead`)
 
@@ -28,7 +29,7 @@ Commit 2 (this session) applies the review corrections. Not merged.
   `docs/generalization/DRY_RUN_LEVELS.md`,
   `docs/testing/CONTROLLED_REAL_SUBMISSION_TEST_PLAN.md`.
 
-## Completed work (commit 2, in progress)
+## Completed work (commit 2: `33bb2f4`)
 
 - Correct submission capability language (all five handoff docs).
 - WQ-1 confirmed-defect status and required future behavior.
@@ -78,8 +79,9 @@ the stale-phrase search documented in the task.
 2. (Done) Verify: `git diff --check`; `git diff --name-only
    origin/main...HEAD`; stale-phrase search; submission-rule consistency
    review.
-3. `git add` the documentation files; `git commit`; `git push`.
-4. Do not merge. Report READY/NOT READY for merge.
+3. (Done) `git add` the documentation files; `git commit`; `git push`.
+4. Reviewer: merge `checkpoint/project-rebaseline` into `main` once via a
+   reviewed PR after confirming this report.
 
 ## Session protocol reminder
 
