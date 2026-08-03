@@ -1,9 +1,21 @@
 # Active Workpackage
 
-- **WP ID:** WP-H0 — Project Rebaseline and Durable AI Handoff (in progress).
+- **WP ID:** WP-H0 — Project Rebaseline and Durable AI Handoff (complete — awaiting PR review).
+- **Status:** complete — awaiting PR review.
 - **Branch:** `checkpoint/project-rebaseline`
 - **Base SHA:** `f7c49f7ad520b9765c2221b506960cd8b8e518bc` (`origin/main`)
-- **Current HEAD:** `33bb2f4` (commit 2 of 2; corrections applied and pushed)
+- **Last substantive documentation checkpoint:** `33bb2f4`
+- **Branch-head verification (must be run dynamically; do not trust an
+  embedded SHA as the current HEAD because committing changes the SHA):**
+
+  ```text
+  git fetch origin
+  git rev-parse HEAD
+  git rev-parse origin/checkpoint/project-rebaseline
+  ```
+
+  The reviewer must resolve the actual branch head with the commands above
+  and confirm the two values match before review/handoff.
 - **Last updated:** 2026-08-04
 
 ## Objective
@@ -11,14 +23,19 @@
 Documentation-only rebaseline: correct submission capability language,
 record the confirmed post-submit status-transition defect as WQ-1, expand
 the next-workpackage backlog, add the session/checkpoint protocol for AI
-context resets, finish the stale-document cleanup, and fix minor doc
-defects. No runtime code, tests, config, migrations, or workflows change.
+context resets, finish the stale-document cleanup, fix minor doc defects,
+and correct the merge-history wording. No runtime code, tests, config,
+migrations, or workflows change.
 
 ## Status
 
-Complete (awaiting merge). Commit 1 (`5915ead`) delivered the initial
-handoff pack. Commit 2 (`33bb2f4`) applies the review corrections. Not
-merged; merge once via a reviewed PR.
+Complete — awaiting PR review. Commit 1 (`5915ead`) delivered the initial
+handoff pack. Commit 2 (`33bb2f4`) applied the review corrections. Commit 3
+(this correction: `33bb2f4` is the last substantive checkpoint; the current
+branch head is newer) applies the self-referential-HEAD fix, the
+operational-gaps expansion, the merge-history wording, and the WQ-6
+strengthening. Not merged; open a PR, review, then merge once through the
+PR.
 
 ## Completed work (commit 1: `5915ead`)
 
@@ -38,23 +55,28 @@ merged; merge once via a reviewed PR.
 - `CURRENT_SYSTEM_MAP.md` and `PHASE_7_ATS_ADAPTERS.md` cleanup.
 - Minor doc defect fixes (Gemma wording, AGENTS.md typo, commands/paths).
 
-## Changed files (commit 2)
+## Completed work (commit 3: this correction)
+
+- Fixed the self-referential HEAD protocol in AGENTS.md and this file
+  (dynamic `git rev-parse` resolution; base SHA + last checkpoint instead
+  of an embedded current HEAD).
+- Expanded `docs/CURRENT_STATE.md` known operational gaps (5 entries).
+- Corrected merge-history wording (`2cf3f18` then duplicate `f7c49f7`).
+- Strengthened WQ-6 (sequential/parallel, worker limits, atomic handoff,
+  no duplicate processing, status visibility, forbidden shortcuts, tests).
+
+## Changed files (commit 3)
 
 - `AGENTS.md`
 - `docs/CURRENT_STATE.md`
 - `docs/handoffs/ACTIVE_WORKPACKAGE.md`
 - `docs/NEXT_WORKPACKAGES.md`
-- `docs/generalization/CURRENT_SYSTEM_MAP.md`
-- `docs/generalization/PHASE_7_ATS_ADAPTERS.md`
-- `docs/generalization/DRY_RUN_LEVELS.md`
-- `docs/generalization/ROADMAP.md`
-- `docs/testing/CONTROLLED_REAL_SUBMISSION_TEST_PLAN.md`
-- `README.md`
 
 ## Tests
 
-None required (documentation-only). Verification is `git diff --check` and
-the stale-phrase search documented in the task.
+None required (documentation-only). Verification is `git diff --check`, the
+changed-files audit, the operational-gap list check, and the WQ-6
+completeness check.
 
 ## Decisions made
 
@@ -63,6 +85,11 @@ the stale-phrase search documented in the task.
 - The post-submit job-status transition gap is a confirmed implementation
   defect (WQ-1), not an open design question.
 - No merge to `main` in this workpackage; merge once via reviewed PR.
+- The current branch HEAD must be resolved dynamically
+  (`git rev-parse HEAD` / `git rev-parse origin/<branch>`); no file
+  embeds its own commit SHA.
+- Merge history (`2cf3f18` then duplicate `f7c49f7`) is preserved and not
+  rewritten.
 
 ## Blockers / risks
 
@@ -75,13 +102,13 @@ the stale-phrase search documented in the task.
 
 ## Exact next action
 
-1. (Done) Editing commit-2 files.
-2. (Done) Verify: `git diff --check`; `git diff --name-only
-   origin/main...HEAD`; stale-phrase search; submission-rule consistency
-   review.
-3. (Done) `git add` the documentation files; `git commit`; `git push`.
-4. Reviewer: merge `checkpoint/project-rebaseline` into `main` once via a
-   reviewed PR after confirming this report.
+1. Reviewer: fetch the branch and resolve its head dynamically:
+   `git rev-parse HEAD` and `git rev-parse origin/checkpoint/project-rebaseline`;
+   confirm they match.
+2. Open a PR: base `main`, head `checkpoint/project-rebaseline`,
+   title "docs: rebaseline project state and durable AI handoff".
+3. Review the documentation diff; do not merge into `main` more than once.
+4. Merge once through the reviewed PR; then update `docs/CURRENT_STATE.md`.
 
 ## Session protocol reminder
 

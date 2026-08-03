@@ -88,15 +88,26 @@ submit with review-before-submit, and records evidence and history.
 ### At session start
 
 1. `git fetch origin`.
-2. Verify the repository, the current branch, and the base SHA against the
-   documented reference in `docs/CURRENT_STATE.md` /
-   `docs/handoffs/ACTIVE_WORKPACKAGE.md`.
-3. Inspect `git status --short` before any checkout or reset.
-4. Read, in order: `AGENTS.md`, `docs/CURRENT_STATE.md`,
+2. Verify the repository and the current branch.
+3. Resolve the branch head dynamically (never trust an embedded SHA for the
+   current HEAD; committing changes the SHA, so a file cannot self-report
+   the commit that contains it):
+
+   ```text
+   git rev-parse HEAD
+   git rev-parse origin/<branch>
+   ```
+
+   The two values must match before any handoff or review. Compare the
+   **base SHA** and the **last completed/checkpoint SHA** from
+   `docs/CURRENT_STATE.md` / `docs/handoffs/ACTIVE_WORKPACKAGE.md` against
+   the resolved values; they are reference points, not the current HEAD.
+4. Inspect `git status --short` before any checkout or reset.
+5. Read, in order: `AGENTS.md`, `docs/CURRENT_STATE.md`,
    `docs/handoffs/ACTIVE_WORKPACKAGE.md`, `docs/NEXT_WORKPACKAGES.md`,
    `docs/generalization/IMPLEMENTATION_RULES.md`,
    `docs/generalization/TESTING_STRATEGY.md`.
-5. **Stop immediately** if any local changes could be overwritten; do not
+6. **Stop immediately** if any local changes could be overwritten; do not
    `checkout`/`stash`/`reset` over them without explicit instruction.
 
 ### During work
@@ -190,7 +201,17 @@ The document must always contain:
 
 - WP ID and objective
 - status
-- base SHA / current branch / current HEAD
+- base SHA
+- current branch
+- last completed/checkpoint SHA
+- a mandatory command block to resolve the branch head dynamically:
+
+  ```text
+  git rev-parse HEAD
+  git rev-parse origin/<branch>
+  ```
+
+  The two resolved values must match before handoff/review.
 - completed work
 - changed files
 - tests and exact results
@@ -198,6 +219,11 @@ The document must always contain:
 - blockers / risks
 - exact next action and command
 - last-updated timestamp
+
+Do not embed a "current HEAD" SHA in the file — the file cannot contain the
+SHA of the commit that modifies it. Do not create status-only commits
+merely to update the file with its own new SHA. Update the file on
+substantive milestones; resolve the head dynamically when needed.
 
 ## This file's scope
 

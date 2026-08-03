@@ -30,8 +30,14 @@ If this document contradicts any older planning doc, this document wins for
 
 ## Status
 
-`main` (`f7c49f7ad520b9765c2...`) is a squash-merge of PR #3
-(`controlled-final-submission`, head `f5b2055`). Latest verified:
+`main` is at `f7c49f7ad520b9765c2221b506960cd8b8e518bc`. Merge history note:
+commit `2cf3f18` introduced the controlled-submission content directly onto
+`main` (a local squash onto main) rather than through a reviewed PR. PR #3
+(`controlled-final-submission`, head `f5b2055`) was then merged as `f7c49f7`
+carrying the same tree — an empty duplicate commit. Harmless: the tree is
+correct and clean; history must NOT be rewritten. From now on, every change
+to `main` arrives through exactly one reviewed-PR merge — never
+commit/squash to main first and also merge the PR. Latest verified:
 
 ```text
 Linux  runner: 30105080305  (main)  -> success
@@ -78,6 +84,27 @@ Windows runner: 30105128952  (main)  -> success
 - Live re-check of login state is user-required; UAA never bypasses login,
   CAPTCHA, SSO, or payment walls.
 - Test suite never touches real ATS sites in default runs.
+
+## Known operational gaps (post-roadmap production integration)
+
+These are integration gaps to complete when UAA and JobHunter run together
+in production; none of them are unimplemented core phases. See
+`docs/NEXT_WORKPACKAGES.md` for the corresponding workpackages.
+
+1. **JobHunter export is not auto-invoked by `run_all`** — the queue must be
+   produced, then imported; the wired trigger does not exist yet (WQ-2/WQ-3).
+2. **UAA `import_queue_file` is not wired into production startup or the
+   API.** It exists as a standalone CLI path; production startup/API have no
+   automatic ingest trigger. (WQ-2)
+3. **Dashboard `/api/pipeline/start` is synchronous, fixture/planning-only.**
+   It does not run the live-dry-run / live-submit execution paths; those
+   remain separate CLI-driven flows. (WQ-3)
+4. **Cross-repository concurrency is not wired.** JobHunter scanning /
+   evaluating / tailoring and UAA applying cannot yet run concurrently with
+   controlled handoff between the two processes. (WQ-6)
+5. **Real external ATS execution is unverified.** All real-platform behavior
+   is gated by the controlled test plan on the user's machine; no real ATS
+   submission has been executed from CI or a sandbox. (WQ-7/WQ-8)
 
 ## Environment
 

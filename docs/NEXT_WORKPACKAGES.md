@@ -131,17 +131,60 @@ restart.
 ## WQ-6 — Cross-repository sequential/parallel orchestration controls
 
 **Objective.** Let users drive `JobHunter export -> UAA import -> pipeline
--> submit approval` sequentially or in parallel with explicit controls.
+-> submit approval` sequentially or in parallel with explicit controls and
+a deterministic, atomic handoff between the two repositories.
 
-**Concrete behavior.** CLI commands / API endpoints to run export then
-UAA import; Siemens-adapted and generic paths are separated so they never
-interfere.
+**Concrete behavior.**
+
+- **Sequential mode.** JobHunter completes its export fully (writes and
+  closes a valid `application_queue.jsonl`), then UAA imports and applies.
+  UAA never starts against a partial export.
+- **Parallel mode.** JobHunter scans/evaluates/tailors new jobs while UAA
+  processes already-exported jobs; the shared queue is consumed with
+  atomic handoff so neither process reads a partially-written file.
+- **Worker counts.** Separate, bounded worker counts per phase (export vs
+  import/apply) that users configure explicitly; no unbounded pools.
+- **Queue handoff is atomic.** A JSONL row is handed from exporter to
+  importer only as a complete, validated record; the importer never consumes
+  a partially-written `application_id`.
+- **No duplicate processing.** Once an `application_id` is claimed, no
+  other worker/phase re-processes it, in either mode.
+- **Status visibility.** Both repositories' pipelines expose a visible
+  status (started / exporting / exported / importing / applying / done /
+  blocked) through the dashboard/health surface so the operator sees the
+  cross-process state.
+- **Repository boundaries.** Orchestration talks only client/CLI/API
+  boundaries with the queue files (JSONL + DB). JobHunter never imports UAA
+  Python modules, and UAA never imports JobHunter modules; no process parses
+  human logs to learn completion.
+
+**Forbidden shortcuts.**
+
+- Exporting and importing on the same path concurrently without file-level
+  locking / atomic rename.
+- Reading a partially-written JSONL file; reading tail-only lines then
+  assuming the rest of the record.
+- Re-processing an `application_id` already handled within a run or across
+  runs (duplicate applications).
+- One process silently waiting for the other with no status indicator.
+- Cross-repository Python imports or human-log parsing to determine
+  "success".
+- Running parallel mode as a disguised sequential loop with no worker
+  limiting.
 
 **Acceptance criteria.** Coordinated swap without hand-editing;
-deterministic ordering.
+deterministic ordering in sequential mode; in parallel mode, both
+pipelines make progress and every `application_id` is processed exactly
+once; a crash at any point leaves the queue in a state that resumes without
+duplicating or dropping rows; the dashboard shows a visible status for both
+repositories.
 
-**Required tests.** Contract tests proving export -> import is stable;
-orchestrator tests.
+**Required tests.** Contract tests proving export -> import is stable
+under sequential and parallel schedules; atomic handoff tests (partial
+file, then completed row); duplicate-`application_id` tests proving exactly-once
+processing in both modes; worker-count limit tests; status-visibility API
+tests; process-boundary tests asserting no cross-repo Python imports and no
+human-log parsing.
 
 **Predecessor/dependency.** WQ-2, WQ-3.
 
