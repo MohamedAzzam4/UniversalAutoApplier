@@ -4,9 +4,9 @@ This roadmap is written for an implementation agent. Follow the phases in
 order. Do not skip acceptance criteria. Do not change working Siemens behavior
 unless the phase explicitly requires it.
 
-All generalized production implementation in this roadmap belongs in a new
-`UniversalAutoApplier` repository. The planning documents currently live in
-the Siemens repository only as the bootstrap source. Read
+All generalized production implementation in this roadmap belongs in this
+`UniversalAutoApplier` repository. The planning documents live under
+`docs/generalization/` in this repository. Read
 `DEPLOYMENT_AND_REPO_STRATEGY.md` before implementing any phase.
 
 ## Phase Status (as of the project rebaseline)

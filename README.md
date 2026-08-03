@@ -138,9 +138,11 @@ Its persistent login profile defaults to `.uaa_data/browser-profile`.
 See `docs/generalization/LIVE_BROWSER_DRY_RUN.md` for configuration and
 result meanings.
 
-### Controlled real submission (trusted adapters)
+### Controlled real submission (manually approved)
 
-A human-approved, snapshot-gated submit path exists for trusted adapters:
+A human-approved, snapshot-gated submit path exists for any `review_ready`
+job — generic, ATS, or Siemens. Untrusted adapters never auto-submit; the
+controlled `live-submit` CLI/API requires an explicitly approved snapshot:
 
 ```powershell
 python -m universal_auto_applier list-jobs
@@ -151,7 +153,8 @@ python -m universal_auto_applier live-submit --application-id <PREFIX> --approva
 
 Follow `docs/testing/CONTROLLED_REAL_SUBMISSION_TEST_PLAN.md` exactly. It is
 the only sanctioned way to exercise a real submission locally; default tests
-never submit.
+never submit, and `UAA_ENABLE_REAL_SUBMISSION` must be explicitly true plus
+the snapshot approved and high-risk fields confirmed.
 
 ### Refreshing an existing checkout (line endings)
 

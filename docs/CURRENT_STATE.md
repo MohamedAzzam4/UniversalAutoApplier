@@ -21,7 +21,7 @@ If this document contradicts any older planning doc, this document wins for
 | Navigator | `navigator/page_observer.py`, `clickable_classifier.py`, `safe_explorer.py`, `apply_path_finder.py` | DOM-based observation, strict dangerous-submit blocking. |
 | Form engine | `form_engine/schema_extractor.py`, `field_mapper.py`, `fill_engine.py`, `live_executor.py` | extraction, mapping, fill, live execution. |
 | Interventions | `interventions/store.py`, `answer_memory.py`, `review.py`, fill/navigation bridges | intervention records, answer memory, review-before-submit gate. |
-| LLM helpers | `llm/` (answer_validator, qa_service, question_classifier, question_resolver, truth_ledger) | grounded Gemini so questions resolve || help; no inventing facts. |
+| LLM helpers | `llm/` (answer_validator, qa_service, question_classifier, question_resolver, truth_ledger) | grounded Google AI (Gemma) answer validation and question resolution; no inventing facts. |
 | Browser | `browser/live_runner.py`, `live_models.py` | live browser dry-run with Playwright, evidence, traces; never clicks final submit. |
 | CLI | `cli.py`, `__main__.py` | `list-jobs`, `browser-session`, `live-dry-run`, `live-submit`. |
 | Submission | `submission/coordinator.py`, `execution_service.py`, `models.py`, `store.py`, `api/routes/submit.py` | approval + snapshot + gated submit; `submitted_confirmed`, `outcome_unknown`, `already_submitted` result states. |
@@ -46,14 +46,35 @@ Windows runner: 30105128952  (main)  -> success
 1124 total                      passed, 1 skipped (live)
 ```
 
+## Submission capability (accurate contract)
+
+- **Untrusted adapters never auto-submit.** Generic and ATS adapters
+  (`is_trusted=False`) never submit through adapter `submit_or_pause`
+  behavior; that path always returns `review_ready`.
+- **Manual controlled submission is job-type-agnostic.** A `review_ready`
+  job — generic or ATS, not only Siemens — MAY be submitted manually
+  through the `live-submit` CLI or the submission API, and only when ALL
+  of these gates pass:
+  - `UAA_ENABLE_REAL_SUBMISSION=true`
+  - the current snapshot is explicitly approved (hash + form fingerprint
+    match)
+  - high-risk fields are explicitly confirmed
+  - no pending intervention, stale snapshot, or duplicate gate blocks it
+- **Siemens is the only trusted adapter path** for adapter-driven submit
+  (`is_trusted=True`), but it is not the only job type supported by the
+  manually approved controlled submission route.
+- **Default behavior remains no submission.** No adapter and no API/CLI
+  path submits without the approved-snapshot gates above.
+
 ## Known gaps / limitations
 
-- The `submit` endpoint/CLI (`live-submit`) is the real-submission path, and
-  it requires an explicitly approved snapshot and `UAA_ENABLE_REAL_SUBMISSION=true`
-  per the controlled test plan. Generic/ATS adapters are `is_trusted=False`
-  and can never submit.
-- Only the trusted Siemens adapter path (`is_trusted=True`) may reach a real
-  submit, and only when config + approval gates pass.
+- **Post-submit status transition (confirmed defect, see WQ-1):** the
+  submission result (`submitted_confirmed`, `outcome_unknown`) is
+  recorded in the submission tables, but `ApplicationJob.status` is not
+  transitioned to `SUBMITTED` / `NEEDS_REVIEW` by the submit route or the
+  execution service. The dashboard queue/history therefore does not
+  immediately show the effective post-submit state. Duplicate prevention
+  already blocks resubmission via the gates above.
 - Live re-check of login state is user-required; UAA never bypasses login,
   CAPTCHA, SSO, or payment walls.
 - Test suite never touches real ATS sites in default runs.

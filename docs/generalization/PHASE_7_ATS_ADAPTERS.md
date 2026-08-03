@@ -123,11 +123,34 @@ applications.
 - The adapters do not store or submit credentials.
 - The adapters do not call live external ATS websites in default tests.
   All tests use local fixture HTML.
-- Level 1 (local browser dry-run) and Level 2 (live external dry-run)
-  tests are not implemented in this phase. Only Level 0 (fixture
-  dry-run) tests are present, per `DRY_RUN_LEVELS.md`.
+- Level 1 (local browser dry-run) tests exist via the shared live browser
+  executor (`tests/playwright/test_live_browser_executor.py`) and cover
+  the generic/live path rather than per-ATS live pages. Level 2 (live
+  external dry-run) per-ATS tests are not implemented for these adapters
+  yet; that is planned as `docs/NEXT_WORKPACKAGES.md` WQ-7. Per-ATS
+  fixture dry-run (Level 0) tests are present in CI, per
+  `DRY_RUN_LEVELS.md`.
 
 ## Stop / approval state
 
-This branch is **not merged**. It is awaiting review. The branch name
-is `checkpoint/phase-7-ats-platform-adapters`.
+Phase 7 is **merged into `main`** (commit `2a1a50a`, later superseded by
+later main commits; the adapter set is present in `main` @ `f7c49f7`).
+The original development branch was `checkpoint/phase-7-ats-platform-adapters`.
+
+## Verification status (what is proven vs. not)
+
+- **Implemented fixture behavior:** all five ATS adapters and the Generic
+  fallback are covered by unit tests (`tests/unit/test_ats_adapters.py`),
+  registry tests, and fixture dry-run Playwright tests
+  (`tests/playwright/test_phase7_adapter_dry_run.py`) using static HTML
+  fixtures. This is verified in CI.
+- **Implemented live-browser behavior:** adapters run through the shared
+  Level 1/2 live browser path (`browser/live_runner.py`); the opt-in live
+  test exists (`tests/live/test_live_browser_real_job.py`) but is excluded
+  from default CI.
+- **Unverified real external behavior:** no ATS adapter has been exercised
+  against a real external site in CI. Real external dry-runs are a planned
+  workpackage (see `docs/NEXT_WORKPACKAGES.md` WQ-7).
+- **Remaining production orchestration gaps:** see `docs/NEXT_WORKPACKAGES.md`
+  (post-submit job-status transitions WQ-1, queue production wiring WQ-3,
+  background pipeline WQ-4, restart recovery WQ-5).

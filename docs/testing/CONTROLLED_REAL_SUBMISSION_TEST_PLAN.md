@@ -233,4 +233,7 @@ No real external submission was attempted from the GLM sandbox. All
 implementation and testing used local HTML fixtures only. The real
 submission pipeline is merged into `main` (`f7c49f7`) but must be
 performed by the user following this procedure on their local machine,
-with an approved snapshot, before any trusted adapter submits.
+with an approved snapshot before the `live-submit` CLI/API submits
+(whether the job is generic, ATS, or Siemens). Untrusted adapters never
+auto-submit; the controlled route is manually approved for any
+`review_ready` job.

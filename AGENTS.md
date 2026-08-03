@@ -24,17 +24,34 @@ submit with review-before-submit, and records evidence and history.
 | --- | --- |
 | `docs/CURRENT_STATE.md` | Authoritative snapshot of what is implemented right now, with commit SHAs and test status. Read this first. |
 | `docs/handoffs/ACTIVE_WORKPACKAGE.md` | The current workpackage, its branch, pending items, and how to resume it. |
-| `docs/NEXT_WORKPACKAGES.md` | Backlog, stale-note follow-ups, and optional work. |
+| `docs/NEXT_WORKPACKAGES.md` | Backlog, ordered workpackages, stale-note follow-ups, and optional work. |
 | `docs/testing/CONTROLLED_REAL_SUBMISSION_TEST_PLAN.md` | The only sanctioned way to test a real submission locally. |
 | `docs/generalization/ROADMAP.md` | Original phase plan (phases 0-8, all completed) plus status annotations. |
 | `docs/generalization/README.md` | Index of the generalization pack. |
 | `README.md` | Quick start and repository overview. |
 
+## Submission capability (accurate contract)
+
+- **Untrusted adapters never auto-submit.** Generic and ATS (`is_trusted=False`)
+  adapters never submit through adapter `submit_or_pause`; that path always
+  returns `review_ready`.
+- **Manual controlled submission is job-type-agnostic.** A `review_ready`
+  job — generic or ATS, not only Siemens — MAY be submitted manually through
+  the `live-submit` CLI or the submission API, and only when ALL gates pass:
+  - `UAA_ENABLE_REAL_SUBMISSION=true`
+  - the current snapshot is explicitly approved (hash + form fingerprint match)
+  - high-risk fields are explicitly confirmed
+  - no pending intervention, stale snapshot, or duplicate gate blocks it
+- **Siemens is the only trusted adapter path** (`is_trusted=True`) for an
+  adapter-driven submit, but it is not the only job type supported by the
+  manually approved controlled submission route.
+- **Default behavior remains no submission.**
+
 ## Doctrine (non-negotiable)
 
 - **Safe by default.** Dry-run and review-before-submit are the default.
   Unknown platforms never auto-submit. Final submit requires explicit
-  approval and is gated by the status machine (`review_ready` only).
+  approval of the current snapshot.
 - **Preserve what works.** Siemens page objects, selectors, and the
   application stage flow are never copied or rewritten here.
 - **State through store APIs.** All job/attempt/phase mutations go through
@@ -48,19 +65,50 @@ submit with review-before-submit, and records evidence and history.
   document paths. AI answers must carry `source`, `confidence`, `reason`,
   and `requires_confirmation`.
 
-## Branch and commit workflow
+## Git rules
 
-- Default branch is `main` (integration). Prior work was developed on
-  `checkpoint/*` branches and squash-merged into `main`.
-- Documentation-only rebaseline work is developed on
-  `checkpoint/project-rebaseline` and merged into `main`.
+- **Never push or merge directly into `main`.**
+- **Merge exactly once through the reviewed PR.** Never perform a local or
+  direct squash merge and then also merge the PR; that produced duplicate
+  commits in the past and is forbidden.
+- **Preserve `checkpoint/*` branches** unless explicitly approved for
+  deletion.
+- Documentation-only work is developed on `checkpoint/project-rebaseline`
+  and merged to `main` via a reviewed PR.
 - **Only commit what the workpackage asked for.** Never commit screenshots,
   PDFs, `live-runs`, `.uaa_data`, `.env`, browser profiles, traces, or a
-  local database. Check `git status --short` before committing and `git
-  diff --check` for whitespace.
+  local database. Check `git status --short` before committing and
+  `git diff --check` for whitespace.
 - Commit messages match the repo style, e.g.
   `feat(phase-4): generic form filling engine` or
   `docs(rebaseline): project-state audit and handoff pack`.
+
+## Session protocol (mandatory for AI context resets)
+
+### At session start
+
+1. `git fetch origin`.
+2. Verify the repository, the current branch, and the base SHA against the
+   documented reference in `docs/CURRENT_STATE.md` /
+   `docs/handoffs/ACTIVE_WORKPACKAGE.md`.
+3. Inspect `git status --short` before any checkout or reset.
+4. Read, in order: `AGENTS.md`, `docs/CURRENT_STATE.md`,
+   `docs/handoffs/ACTIVE_WORKPACKAGE.md`, `docs/NEXT_WORKPACKAGES.md`,
+   `docs/generalization/IMPLEMENTATION_RULES.md`,
+   `docs/generalization/TESTING_STRATEGY.md`.
+5. **Stop immediately** if any local changes could be overwritten; do not
+   `checkout`/`stash`/`reset` over them without explicit instruction.
+
+### During work
+
+- Update `docs/handoffs/ACTIVE_WORKPACKAGE.md` after every major milestone
+  (status, completed work, changed files, tests and exact results,
+  decisions, blockers, next action).
+- **Checkpoint before context reaches approximately 60-70 percent.**
+  Persist progress and commit before continuing.
+- Checkpoint before pausing, handing off, or switching AI.
+- **Never rely on chat history as project memory.** The documents are the
+  memory.
 
 ## Commands
 
@@ -84,17 +132,15 @@ python -m ruff format --check src tests migrations
 python -m pyright
 python -m pytest                      # default: not live, not playwright
 python -m pytest -m "not live"        # includes playwright if installed
-python -m pytest -m task_drive_unit --unit
 ```
 
 `filterwarnings = ["error", "error::ResourceWarning"]` means any
 `ResourceWarning` is a test failure — dispose engines/close contexts in
 `finally` blocks.
 
-## What to verify after a change
+## What to verify after a change to code
 
-There is no new work here; this (m) describes the gate to run after any
-change that touches code:
+Run the full gate after any change that touches code:
 
 1. Unit + contract + integration + pipeline tests pass.
 2. Playwright (UI/browser) tests pass if browser or dashboard changed.
@@ -103,8 +149,8 @@ change that touches code:
 5. If UI or browser behavior changed, run the local system and verify with
    Playwright MCP at 1440x900 and 390x844 before claiming acceptance.
 
-For real-submission builds: only the standalone `live-submit` CLI/API
-path plus the user run per `docs/testing/CONTROLLED_REAL_SUBMISSION_TEST_PLAN.md`.
+For real-submission work: only the standalone `live-submit` CLI/API path
+plus a user-approved run per `docs/testing/CONTROLLED_REAL_SUBMISSION_TEST_PLAN.md`.
 
 ## Markers and naming
 
@@ -137,6 +183,21 @@ enters a new state (in progress, blocked, needs-review). Update
 `docs/CURRENT_STATE.md` whenever `main` advances and any fact in that
 document goes stale. Audit against the generalization docs for
 contradictions rather than silently carrying them forward.
+
+## ACTIVE_WORKPACKAGE.md required content
+
+The document must always contain:
+
+- WP ID and objective
+- status
+- base SHA / current branch / current HEAD
+- completed work
+- changed files
+- tests and exact results
+- decisions made
+- blockers / risks
+- exact next action and command
+- last-updated timestamp
 
 ## This file's scope
 

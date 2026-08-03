@@ -38,17 +38,31 @@ fixture coverage; CI also runs the local Playwright suite where configured.
   `UAA_LIVE_APPLICATION_ID`; it is marked `live` and excluded from normal
   CI selection.
 
-## Level 3 - Trusted Adapter Controlled Submit
+## Level 3 - Controlled Submit
 
-- Only for explicitly trusted adapters (e.g., SiemensAdapter with
-  `dry_run=False`).
-- Requires:
-  - `UAA_ENABLE_REAL_SUBMISSION=true` and/or `UAA_SUBMIT_MODE=trusted_auto_submit` in config
-  - adapter is marked trusted
-  - job passed eligibility gate
-  - no unresolved interventions
-  - review evidence was captured
-  - an approved snapshot (see `docs/testing/CONTROLLED_REAL_SUBMISSION_TEST_PLAN.md`)
+The controlled real-submission path. Two distinct flows share the same
+safety gates; neither is enabled by default:
+
+- **Trusted adapter (adapter-driven) submit.** Only explicitly trusted
+  adapters (e.g., `SiemensAdapter` with `dry_run=False` /
+  `trusted_auto_submit` mode) may advance through `submit_or_pause`. This
+  is the only adapter-driven auto-submit path (`is_trusted=True`);
+  generic and ATS adapters (`is_trusted=False`) never submit through
+  adapter behavior.
+- **Manual controlled submission (job-type-agnostic).** A `review_ready`
+  job — generic or ATS, not only Siemens — MAY be submitted manually
+  through the `live-submit` CLI or the submission API.
+
+Both flows require ALL of:
+
+- `UAA_ENABLE_REAL_SUBMISSION=true` (and/or `UAA_SUBMIT_MODE=trusted_auto_submit`
+  for the trusted-adapter path)
+- the current snapshot is explicitly approved (hash + form fingerprint match)
+- high-risk fields are explicitly confirmed
+- no pending interventions
+- review evidence was captured
+- no stale snapshot, duplicate-prevention, or concurrency claim gate blocks it
+
 - Never enabled by default. Live submission is exercised only via the
   explicit `live-submit` CLI / submit API, and the safety gate
   (`check_submit_approval`) plus the submission coordinator enforce it.
