@@ -9,6 +9,32 @@ All generalized production implementation in this roadmap belongs in a new
 the Siemens repository only as the bootstrap source. Read
 `DEPLOYMENT_AND_REPO_STRATEGY.md` before implementing any phase.
 
+## Phase Status (as of the project rebaseline)
+
+All roadmap phases are **implemented and merged to `main`**. The text below
+is preserved as the historical plan and behavioral contract; it is not a
+to-do list anymore.
+
+| Phase | Title | Status | Merge commit (main) |
+| --- | --- | --- | --- |
+| Bootstrap | Repository skeleton | Done | `10667fc` |
+| 0 | Architecture baseline (system map, ADR-001) | Done | `0596d2f` |
+| 1 | Shared data contract and queue | Done | `33da7a3` |
+| 2 | Adapter architecture | Done | `7d102ba` |
+| 3 | Generic navigation layer | Done | `ae86046` |
+| 4 | Generic form filling engine | Done | `4f13cab` |
+| 5 | Human intervention and review flow | Done | `4824296` |
+| 6 | UI/UX dashboard | Done | `3a1a1e8` |
+| 7 | ATS platform adapters | Done | `2a1a50a` |
+| 8 | Safe pipeline orchestration | Done | `21bb46d` |
+| + | JobHunter -> UAA integration | Done | `ba7631c` |
+| + | Live browser execution + grounded Gemma form resolution | Done | `6feac65` |
+| + | Controlled final submission | Done | `f7c49f7` (PR #3) |
+
+Additional merged follow-ups: `6feac65` (live browser), `f7c49f7` (PR #3,
+controlled final submission). See `docs/CURRENT_STATE.md` for the live
+status and `docs/NEXT_WORKPACKAGES.md` for remaining follow-ups.
+
 ## Target Architecture
 
 ```text

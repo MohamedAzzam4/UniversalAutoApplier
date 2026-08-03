@@ -15,20 +15,22 @@ and browser profile.
    job in `review_ready` status.
 2. **Browser profile**: your existing `UAA_BROWSER_PROFILE_DIR` with
    active login sessions for the target ATS.
-3. **Checkpoint branch**: `checkpoint/controlled-final-submission`
-   checked out and up to date.
+3. **Branch**: `main`, up to date (the controlled final submission
+   pipeline is merged; formerly
+   `checkpoint/controlled-final-submission`).
 4. **Database backup**: see step 3 below.
 5. **Python environment**: `source .venv/bin/activate` with all
    dependencies installed.
 
-## Stage 1 — Pull and verify the checkpoint branch
+## Stage 1 — Pull and verify the merged branch
 
 ```bash
 cd /path/to/UniversalAutoApplier
 git fetch origin --prune
-git checkout checkpoint/controlled-final-submission
-git pull --ff-only origin checkpoint/controlled-final-submission
+git checkout main
+git pull --ff-only origin main
 git rev-parse HEAD
+# Should be f7c49f7ad520b9765c2221b506960cd8b8e518bc or newer.
 # Verify the working tree is clean.
 git status
 ```
@@ -229,5 +231,6 @@ backup only restores your local UAA state.
 
 No real external submission was attempted from the GLM sandbox. All
 implementation and testing used local HTML fixtures only. The real
-submission must be performed by the user following this procedure on
-their local machine.
+submission pipeline is merged into `main` (`f7c49f7`) but must be
+performed by the user following this procedure on their local machine,
+with an approved snapshot, before any trusted adapter submits.
