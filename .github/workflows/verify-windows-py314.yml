@@ -27,7 +27,12 @@ jobs:
   verify-windows-py314:
     name: Windows + Python 3.14 bootstrap gate
     runs-on: windows-latest
-    timeout-minutes: 45
+    # The gate intentionally runs the full pytest suite TWICE (once inside
+    # test.ps1 -All -IncludePlaywright, once as the direct pytest step) to
+    # mirror a manual reviewer run. With the Playwright suite that takes
+    # ~52 minutes on the hosted runner, so a 45-minute cap cancelled the job
+    # mid-run; 65 minutes leaves headroom.
+    timeout-minutes: 65
 
     steps:
       - name: Checkout
