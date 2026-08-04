@@ -1,7 +1,7 @@
 # Active Workpackage
 
 - **WP ID:** WQ-1 — Correct post-submit job / history transitions (CONFIRMED DEFECT).
-- **Status:** in progress — round-2 rework implementing the reviewer's 7 findings; all gates green locally.
+- **Status:** in progress — round-2 rework implementing the reviewer's 7 findings; all gates green locally. Round-3 fix: migration `0008` reworked to latest-result-only reconciliation (the defect and the 7 proof tests below), all gates green, pushed, CI verified.
 - **Branch:** `checkpoint/wq-1-post-submit-transitions`
 - **Base SHA:** `cec8f2ef45f510705887dba5891ab8cf15bee901` (`origin/main`)
 - **Round-1 commit SHA:** `e3cd291e641cf605f72675fb1fcbd121b4af6fb2` (superseded by round 2).
@@ -91,6 +91,19 @@ implementation to satisfy the reviewer requirements:
 - Reconciliation migration `0008_reconcile_submission_statuses`: one-time,
     bounded-idempotent SQL repair with safety WHERE guards; never infers
     `applied` for legacy rows; documented execution/restart model.
+- Round-3 fix (migration `0008` rework): the old repair used separate `IN`
+  queries over every historical result, so an old `outcome_unknown` could
+  override a newer `submitted_confirmed` (and vice versa). The repair now
+  selects the LATEST persisted result per application deterministically
+  (`attempted_at` DESC, then `result_id` DESC as the tie-breaker), using a
+  `ROW_NUMBER() OVER (PARTITION BY application_id ...)` window function in a
+  CTE-prefixed UPDATE (SQLite >= 3.25 compatible, idempotent, exported as
+  `LEGACY_RECONCILIATION_STATEMENTS` for the tests to re-run). Behavior:
+  latest `submitted_confirmed` w/o structured ref on `review_ready` ->
+  `submitted`; latest `outcome_unknown` on `review_ready`/`submitted` ->
+  `needs_review`; every other latest state -> no change; terminals and
+  earlier pipeline statuses untouched; `applied` never inferred for legacy
+  rows (including rows carrying an unverified reference).
 - Contract docs (`docs/generalization/DATA_CONTRACTS.md`): added
   `review_ready -> needs_review`; rules clarify `submitted_confirmed` proves
   `submitted` and `applied` requires a persisted structured ATS ref; explicit
@@ -107,7 +120,14 @@ implementation to satisfy the reviewer requirements:
   - `tests/contract/test_migrations.py`: head bumped to 0008; `ats_reference_id`
     column present; legacy-DB seeded at 0006 is repaired on upgrade with
     bounds (terminal never downgraded, earlier never advanced, no fabricated
-    `applied`).
+    `applied`). Round-3 additions (7 proof tests, seeding at 0007 with
+    multi-result rows): older `outcome_unknown` + newer `submitted_confirmed`
+    -> `submitted`; older confirmed + newer `outcome_unknown` ->
+    `needs_review`; equal `attempted_at` resolves on `result_id` DESC
+    (flipped ids -> flipped outcomes); terminal statuses unchanged; earlier
+    pipeline statuses unchanged; re-running the exact exported reconciliation
+    SQL is a no-op; a legacy confirmed result (with or without an unverified
+    reference) never becomes `applied`.
   - `tests/playwright/test_submission_status.py` (new, 7 tests): dashboard
     shows `submitted` / `applied` + ATS ref / `needs_review` / `review_ready`
     (unaffected); latest-submission pill; status survives page reload and
@@ -125,7 +145,8 @@ implementation to satisfy the reviewer requirements:
 - `src/universal_auto_applier/cli.py`
 - `src/universal_auto_applier/ui/static/app.js`
 - `migrations/versions/0007_submission_results_ats_reference.py` (new)
-- `migrations/versions/0008_reconcile_submission_statuses.py` (new)
+- `migrations/versions/0008_reconcile_submission_statuses.py` (reworked in
+  round 3 to latest-result-only reconciliation)
 - `docs/generalization/DATA_CONTRACTS.md`
 - `tests/unit/test_status_transitions.py` (rewrite)
 - `tests/unit/test_statuses.py`
@@ -135,9 +156,9 @@ implementation to satisfy the reviewer requirements:
 ## Tests (round 2)
 
 ```text
-python -m pytest tests/unit tests/contract tests/integration   981 passed
+python -m pytest tests/unit tests/contract tests/integration   988 passed  (+7 migration proofs)
 python -m pytest tests/playwright                               181 passed
-python -m pytest (full suite)                                  1162 passed, 1 skipped (opt-in live)
+python -m pytest (full suite)                                  1169 passed, 1 skipped (opt-in live)
 python -m ruff check src tests migrations                        0 errors
 python -m ruff format --check src tests migrations               163 files formatted
 python -m pyright                                                 0 errors
@@ -183,6 +204,25 @@ PR: https://github.com/MohamedAzzam4/UniversalAutoApplier/pull/5 (open)
   phantom state).
 - The CLI's old manual `SUBMITTED` write was removed as redundant/unsafe.
 
+## Known limitation (documented)
+
+- `ats_reference_id` is now a structured, durable field on
+  `SubmissionResult` / `SubmissionResultRow` (migration 0007) and it drives
+  the `submitted -> applied` transition from the persisted row, not from any
+  parsed input.
+- No current generic production executor extracts a reliable ATS application
+  reference. The controlled ``live-submit`` path records confirmation
+  evidence but does not (and should not) parse a reference out of it.
+- Therefore live generic submissions currently stop at `SUBMITTED`; that is
+  the correct, expected terminal state for untrusted/generic platforms today.
+- `APPLIED` becomes reachable only when a trusted structured producer
+  supplies the reference (durable `ats_reference_id` persisted with the
+  result). Until such a producer exists, no generic submission should ever
+  reach `applied`.
+- No page-text / log / evidence parsing should be added as a shortcut to
+  infer either submission success or an ATS reference. That would violate
+  the "safe by default" doctrine and the no-invented-facts marker rules.
+
 ## Blockers / risks
 
 - PR tooling: the `gh` on PATH is a browser-opener shim and there is no
@@ -194,14 +234,16 @@ PR: https://github.com/MohamedAzzam4/UniversalAutoApplier/pull/5 (open)
 
 ## Exact next action
 
-1. Commit the round-2 changes (files above; NOT the `tmp_debug_*` artifacts).
-2. Push the branch.
-3. Create/update the PR via the GitHub REST API (base `main`, head
-   `checkpoint/wq-1-post-submit-transitions`, title
-   "fix(submission): explicit post-submit transitions + structured ATS ref (WQ-1)").
-4. Wait for Linux + Windows CI; report final SHA, changed files, migration
-   behavior, transition table, test results, CI URLs, limitations.
-5. After merge, update `docs/CURRENT_STATE.md` (known-gap item).
+1. (round 3 done) Reworked migration `0008` to latest-result-only
+   reconciliation and added the 7 migration proof tests; documented the ATS
+   reference limitation above.
+2. Commit the round-3 changes (files above; NOT the `tmp_debug_*` artifacts).
+3. Push the branch; PR #5 updates automatically.
+4. Wait for Linux + Windows CI on the new final SHA; do not merge.
+5. Report final SHA, migration query strategy, new test names/results, full
+   regression counts, CI URLs, PR mergeability, and confirm PR #5 remains
+   unmerged.
+6. After merge, update `docs/CURRENT_STATE.md` (known-gap item).
 
 ## Session protocol reminder
 

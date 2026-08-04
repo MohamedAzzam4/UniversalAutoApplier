@@ -5,15 +5,28 @@ Revises: 0007_submission_results_ats_reference
 Create Date: 2026-08-04 12:00:00
 
 Before WQ-1, ``submission_results`` rows were persisted without any job
-status transition, so databases could hold a job in ``review_ready`` while a
-``submitted_confirmed`` or ``outcome_unknown`` result existed. This one-time
-data repair brings those databases in line with the explicit policy in
-``submission/status_transitions.py``:
+status transition, so databases could hold a job in ``review_ready`` while
+one or more ``submitted_confirmed`` / ``outcome_unknown`` results existed.
 
-- ``submitted_confirmed`` without a structured ATS reference, on a
+This one-time data repair brings those databases in line with the explicit
+policy in ``submission/status_transitions.py``, using ONLY the LATEST
+persisted result per application:
+
+- latest ``submitted_confirmed`` without a structured ATS reference, on a
   ``review_ready`` job  ->  job ``submitted``.
-- ``outcome_unknown`` on a ``review_ready`` or ``submitted`` job
+- latest ``outcome_unknown`` on a ``review_ready`` or ``submitted`` job
   ->  job ``needs_review`` (explicit human review).
+- every other latest result state  ->  no change.
+
+The latest result is selected deterministically:
+
+1. ``attempted_at`` DESCENDING (the persisted attempt timestamp)
+2. ``result_id`` DESCENDING as the tie-breaker (stable, never depends on
+   insertion or SQLite rowid order)
+
+So an old ``outcome_unknown`` can never override a newer
+``submitted_confirmed`` result (and vice versa): the repair is driven by the
+most recent outcome only.
 
 Safety bounds (matching the runtime policy):
 
@@ -21,9 +34,21 @@ Safety bounds (matching the runtime policy):
   touched: terminal statuses (``applied``, ``rejected``, ``skipped``,
   ``closed``) are never downgraded, and earlier pipeline statuses are never
   auto-advanced.
-- ``APPLIED`` is NEVER inferred for legacy rows: pre-WQ-1 results have no
-  durable structured reference, so legacy ``submitted_confirmed`` rows can
-  only ever establish ``SUBMITTED``.
+- ``APPLIED`` is NEVER inferred for legacy rows: ``ats_reference_id`` only
+  became durable after migration 0007, so a reference carried by a legacy row
+  is not verified structured data and the repair will not act on it. A
+  legacy ``submitted_confirmed`` result WITHOUT a reference establishes
+  ``SUBMITTED``; one WITH an unverified reference is left untouched (it is
+  already ``SUBMITTED``/``APPLIED`` at application level in the runtime
+  path, and never downgraded here).
+
+Implementation: uses ``ROW_NUMBER() OVER (PARTITION BY application_id ORDER
+BY attempted_at DESC, result_id DESC)`` inside a common-table-expression
+prefixed UPDATE. SQLite has supported window functions since 3.25 (bundled
+with every Python version this repo supports), so the SQL is
+SQLite-compatible. The statements are exported as
+``LEGACY_RECONCILIATION_STATEMENTS`` so tests can re-run the exact
+production logic to prove idempotency.
 
 Execution model: Alembic runs this exactly once per database, inside the
 same transaction as the schema changes, when the database is upgraded to
@@ -45,45 +70,55 @@ down_revision: Union[str, None] = "0007_submission_results_ats_reference"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 
+# One row per application, ranked by attempted_at DESC then result_id DESC.
+LATEST_RESULT_RANKING = """
+    WITH ranked AS (
+        SELECT
+            application_id,
+            state,
+            ats_reference_id,
+            ROW_NUMBER() OVER (
+                PARTITION BY application_id
+                ORDER BY attempted_at DESC, result_id DESC
+            ) AS rn
+        FROM submission_results
+    )
+"""
+
+# Bounded, idempotent repair statements. Exported so the contract tests can
+# re-run the exact production SQL to prove idempotency.
+LEGACY_RECONCILIATION_STATEMENTS: tuple[str, ...] = (
+    LATEST_RESULT_RANKING
+    + """
+    UPDATE application_jobs
+    SET status = 'submitted'
+    WHERE status = 'review_ready'
+      AND application_id IN (
+        SELECT application_id
+        FROM ranked
+        WHERE rn = 1
+          AND state = 'submitted_confirmed'
+          AND (ats_reference_id IS NULL OR ats_reference_id = '')
+      )
+    """,
+    LATEST_RESULT_RANKING
+    + """
+    UPDATE application_jobs
+    SET status = 'needs_review'
+    WHERE status IN ('review_ready', 'submitted')
+      AND application_id IN (
+        SELECT application_id
+        FROM ranked
+        WHERE rn = 1 AND state = 'outcome_unknown'
+      )
+    """,
+)
+
 
 def upgrade() -> None:
     bind = op.get_bind()
-
-    # submitted_confirmed without a structured ATS reference:
-    # review_ready -> submitted. Rows that already have an ats_reference_id
-    # are NOT upgraded to applied: the reference predates the durable field
-    # and cannot be trusted as structured data.
-    bind.execute(
-        sa.text(
-            """
-            UPDATE application_jobs
-            SET status = 'submitted'
-            WHERE status = 'review_ready'
-              AND application_id IN (
-                SELECT application_id
-                FROM submission_results
-                WHERE state = 'submitted_confirmed'
-                  AND (ats_reference_id IS NULL OR ats_reference_id = '')
-              )
-            """
-        )
-    )
-
-    # outcome_unknown on review_ready or submitted: needs_review.
-    bind.execute(
-        sa.text(
-            """
-            UPDATE application_jobs
-            SET status = 'needs_review'
-            WHERE status IN ('review_ready', 'submitted')
-              AND application_id IN (
-                SELECT application_id
-                FROM submission_results
-                WHERE state = 'outcome_unknown'
-              )
-            """
-        )
-    )
+    for statement in LEGACY_RECONCILIATION_STATEMENTS:
+        bind.execute(sa.text(statement))
 
 
 def downgrade() -> None:
