@@ -89,6 +89,7 @@ def _build_snapshot_response(
     if snapshot is None:
         return LiveReviewSnapshotResponse(
             application_id=application_id,
+            application_status=str(job.status) if job is not None else "",
             company=company,
             job_title=job_title,
             external_job_id=external_job_id,
@@ -212,6 +213,7 @@ def _build_snapshot_response(
 
     return LiveReviewSnapshotResponse(
         application_id=application_id,
+        application_status=str(job.status) if job is not None else "",
         external_job_id=external_job_id,
         company=company,
         job_title=job_title,

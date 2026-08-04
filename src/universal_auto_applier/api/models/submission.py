@@ -56,6 +56,7 @@ class LiveReviewSnapshotResponse(BaseModel):
 
     application_id: str
     external_job_id: str = ""
+    application_status: str = ""
     company: str = ""
     job_title: str = ""
     application_url: str = ""

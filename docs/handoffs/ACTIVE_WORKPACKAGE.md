@@ -1,114 +1,131 @@
 # Active Workpackage
 
-- **WP ID:** WP-H0 — Project Rebaseline and Durable AI Handoff (complete — awaiting PR review).
-- **Status:** complete — awaiting PR review.
-- **Branch:** `checkpoint/project-rebaseline`
-- **Base SHA:** `f7c49f7ad520b9765c2221b506960cd8b8e518bc` (`origin/main`)
-- **Last substantive documentation checkpoint:** `33bb2f4`
+- **WP ID:** WQ-1 — Correct post-submit job / history transitions (CONFIRMED DEFECT).
+- **Status:** in progress — implementation complete, tests green, ready for review.
+- **Branch:** `checkpoint/wq-1-post-submit-transitions`
+- **Base SHA:** `cec8f2ef45f510705887dba5891ab8cf15bee901` (`origin/main`)
+- **Last completed/checkpoint SHA:** none yet (first commit pending).
 - **Branch-head verification (must be run dynamically; do not trust an
   embedded SHA as the current HEAD because committing changes the SHA):**
 
   ```text
   git fetch origin
   git rev-parse HEAD
-  git rev-parse origin/checkpoint/project-rebaseline
+  git rev-parse origin/checkpoint/wq-1-post-submit-transitions
   ```
 
-  The reviewer must resolve the actual branch head with the commands above
-  and confirm the two values match before review/handoff.
+  The two resolved values must match before handoff/review.
 - **Last updated:** 2026-08-04
 
 ## Objective
 
-Documentation-only rebaseline: correct submission capability language,
-record the confirmed post-submit status-transition defect as WQ-1, expand
-the next-workpackage backlog, add the session/checkpoint protocol for AI
-context resets, finish the stale-document cleanup, fix minor doc defects,
-and correct the merge-history wording. No runtime code, tests, config,
-migrations, or workflows change.
+Close the confirmed post-submit status-transition defect. The controlled
+live-browser submission path (`submission/execution_service.py` +
+`api/routes/submit.py`) persists `SubmissionResult` rows but never
+transitions `ApplicationJob.status`. Implement one authoritative, typed
+transition policy:
 
-## Status
+- `submitted_confirmed` -> `ApplicationStatus.SUBMITTED`
+- `APPLIED` only with a reliable structured ATS application/reference ID
+- `outcome_unknown` -> `ApplicationStatus.NEEDS_REVIEW`
+- failed/pre-click/blocked/rejected/stale/validation outcomes never
+  `SUBMITTED`/`APPLIED`
+- duplicate/replay is idempotent and never downgrades terminal status
 
-Complete — awaiting PR review. Commit 1 (`5915ead`) delivered the initial
-handoff pack. Commit 2 (`33bb2f4`) applied the review corrections. Commit 3
-(this correction: `33bb2f4` is the last substantive checkpoint; the current
-branch head is newer) applies the self-referential-HEAD fix, the
-operational-gaps expansion, the merge-history wording, and the WQ-6
-strengthening. Not merged; open a PR, review, then merge once through the
-PR.
+Add `NEEDS_REVIEW` if missing (enum + persistence + migration + API +
+tests) through the established patterns. Do not substitute
+`NEEDS_USER_INPUT`.
 
-## Completed work (commit 1: `5915ead`)
+## Rules (from the task and repo doctrine)
 
-- Created `AGENTS.md`, `docs/CURRENT_STATE.md`, `docs/NEXT_WORKPACKAGES.md`,
-  `docs/handoffs/ACTIVE_WORKPACKAGE.md`.
-- Updated `README.md`, `docs/generalization/ROADMAP.md`,
-  `docs/generalization/AI_HANDOFF_PROMPTS.md`,
-  `docs/generalization/DRY_RUN_LEVELS.md`,
-  `docs/testing/CONTROLLED_REAL_SUBMISSION_TEST_PLAN.md`.
+- Keep the transition policy in ONE named production function/service.
+- Base transitions on structured `SubmissionResult` state and structured
+  ATS reference data; never parse human logs or arbitrary page text.
+- Persist result + status transactionally (or a clearly tested
+  recovery-safe design). Persistence failure must not return success.
+- Preserve approval, snapshot, staleness, high-risk confirmation,
+  kill-switch, claim, and duplicate-prevention gates. Do not weaken
+  untrusted-adapter safety or Siemens behavior.
+- Status APIs and dashboard show the persisted status immediately.
+- No unrelated refactors. Contents only WQ-1-relevant files.
+- Local fixtures only. No real ATS contact.
 
-## Completed work (commit 2: `33bb2f4`)
+## Completed work
 
-- Correct submission capability language (all five handoff docs).
-- WQ-1 confirmed-defect status and required future behavior.
-- Expanded `NEXT_WORKPACKAGES.md` (WQ-1 .. WQ-9 + optional UI polish).
-- AGENTS.md session protocol, ACTIVE_WORKPACKAGE required content, git rules.
-- `CURRENT_SYSTEM_MAP.md` and `PHASE_7_ATS_ADAPTERS.md` cleanup.
-- Minor doc defect fixes (Gemma wording, AGENTS.md typo, commands/paths).
+- Added `submission/status_transitions.py` — the ONE authoritative,
+  typed post-submit status transition policy:
+  - `target_status_for_result()` maps a structured `SubmissionResult`
+    to the post-submit status: `submitted_confirmed` -> `SUBMITTED`;
+    `APPLIED` only when a structured `ats_reference_id` is provided;
+    `outcome_unknown` -> `NEEDS_REVIEW`; all pre-click/failed/blocked/
+    stale/validation outcomes -> no change.
+  - `apply_result_status_transition()` applies the transition by walking
+    the allowed-transition graph one validated edge at a time, is
+    idempotent, and never downgrades a terminal status or overwrites it.
+- Wired the policy into `submission/store.record_result()` (the single
+  choke point every result flows through): the job-status transition and
+  the result row persist in the SAME transaction; replay of an
+  already-recorded result (UNIQUE on approval_id) is a no-op.
+- `NEEDS_REVIEW` required no enum/migration/API work — it already exists
+  in `ApplicationStatus`, `ALLOWED_TRANSITIONS`, and the contract test.
+- Surfaced the persisted status immediately: `LiveReviewSnapshotResponse`
+  gained `application_status` (populated in `api/routes/submit.py`), and
+  the submit view in `ui/static/app.js` renders it.
+- Tests: new `tests/unit/test_status_transitions.py` (19 tests);
+  `tests/playwright/test_final_pipeline.py` step 12 now asserts the job
+  reaches `submitted` after a confirmed controlled submission (was
+  asserting the defect: `review_ready`); `test_submission_harness.py`
+  asserts `application_status == "submitted"` after a valid submission.
 
-## Completed work (commit 3: this correction)
+## Changed files
 
-- Fixed the self-referential HEAD protocol in AGENTS.md and this file
-  (dynamic `git rev-parse` resolution; base SHA + last checkpoint instead
-  of an embedded current HEAD).
-- Expanded `docs/CURRENT_STATE.md` known operational gaps (5 entries).
-- Corrected merge-history wording (`2cf3f18` then duplicate `f7c49f7`).
-- Strengthened WQ-6 (sequential/parallel, worker limits, atomic handoff,
-  no duplicate processing, status visibility, forbidden shortcuts, tests).
-
-## Changed files (commit 3)
-
-- `AGENTS.md`
-- `docs/CURRENT_STATE.md`
+- `src/universal_auto_applier/submission/status_transitions.py` (new)
+- `src/universal_auto_applier/submission/store.py`
+- `src/universal_auto_applier/api/models/submission.py`
+- `src/universal_auto_applier/api/routes/submit.py`
+- `src/universal_auto_applier/ui/static/app.js`
+- `tests/unit/test_status_transitions.py` (new)
+- `tests/integration/test_submission_harness.py`
+- `tests/playwright/test_final_pipeline.py`
 - `docs/handoffs/ACTIVE_WORKPACKAGE.md`
-- `docs/NEXT_WORKPACKAGES.md`
 
 ## Tests
 
-None required (documentation-only). Verification is `git diff --check`, the
-changed-files audit, the operational-gap list check, and the WQ-6
-completeness check.
+```text
+tests/unit/test_status_transitions.py          19 passed
+tests/unit + contract + integration          969 passed
+tests/playwright (browser)                    174 passed
+ruff check / ruff format --check / pyright     0 errors
+git diff --check                               clean
+```
 
 ## Decisions made
 
-- Generic/ATS jobs are submit-eligible via the controlled live-submit
-  CLI/API when all gates pass; untrusted adapters never auto-submit.
-- The post-submit job-status transition gap is a confirmed implementation
-  defect (WQ-1), not an open design question.
-- No merge to `main` in this workpackage; merge once via reviewed PR.
-- The current branch HEAD must be resolved dynamically
-  (`git rev-parse HEAD` / `git rev-parse origin/<branch>`); no file
-  embeds its own commit SHA.
-- Merge history (`2cf3f18` then duplicate `f7c49f7`) is preserved and not
-  rewritten.
+- `NEEDS_REVIEW` needs no enum/persistence/migration work — it was already
+  present. WQ-1 is purely the missing application wiring.
+- The transition policy lives in ONE named module
+  (`submission.status_transitions`) and is applied from
+  `store.record_result` so every submission path (CLI, API, coordinator,
+  execution service) is covered transactionally.
+- `APPLIED` requires a reliable structured ATS application/reference ID
+  passed explicitly as `ats_reference_id` — page text and human-readable
+  `confirmation_evidence` are never parsed into one (per doctrine).
+- Status transition is best-effort after a result is recorded: a failed
+  walk (no allowed path) logs and leaves the job unchanged rather than
+  failing the submission transaction.
 
 ## Blockers / risks
 
-- No runtime verification possible from sandbox; real submission requires
-  the user's machine per the controlled test plan.
-- Stale planning docs that were NOT part of this cleanup (e.g.,
-  `DEPLOYMENT_AND_REPO_STRATEGY.md` "initial repository milestones",
-  `TECHNICAL_BASELINE.md` "before Phase 1 begins") may still read as
-  forward-looking; recorded for a future doc pass.
+- None. No real ATS contact; all tests run against local fixtures.
 
 ## Exact next action
 
-1. Reviewer: fetch the branch and resolve its head dynamically:
-   `git rev-parse HEAD` and `git rev-parse origin/checkpoint/project-rebaseline`;
-   confirm they match.
-2. Open a PR: base `main`, head `checkpoint/project-rebaseline`,
-   title "docs: rebaseline project state and durable AI handoff".
-3. Review the documentation diff; do not merge into `main` more than once.
-4. Merge once through the reviewed PR; then update `docs/CURRENT_STATE.md`.
+1. Reviewer: fetch the branch and resolve its head dynamically
+   (`git rev-parse HEAD` / `git rev-parse origin/<branch>`).
+2. Open a PR: base `main`, head `checkpoint/wq-1-post-submit-transitions`,
+   title "fix(submission): post-submit job status transitions (WQ-1)".
+3. Review the diff; do not merge into `main` more than once.
+4. After merge, update `docs/CURRENT_STATE.md` (known-gap item).
 
 ## Session protocol reminder
 

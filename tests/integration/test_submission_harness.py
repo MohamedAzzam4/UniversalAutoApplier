@@ -255,6 +255,14 @@ class TestValidApprovedSubmission:
             assert "click_count" in metrics, f"Metrics missing click_count: {metrics}"
             assert metrics["click_count"] == 1, f"Expected 1 click, got {metrics['click_count']}"
 
+            # Verify the persisted job status is transitioned to submitted (WQ-1).
+            resp_status = client.get(f"/api/submit/{server.application_id}/status")
+            assert resp_status.status_code == 200
+            status = resp_status.json()["snapshot"]
+            assert status["application_status"] == "submitted", (
+                f"Expected application_status submitted, got {status['application_status']!r}"
+            )
+
 
 # ---------------------------------------------------------------------------
 # 2. Feature disabled

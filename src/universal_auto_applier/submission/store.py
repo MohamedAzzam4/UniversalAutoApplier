@@ -371,6 +371,8 @@ def has_consumed_claim(session: Session, application_id: str) -> bool:
 def record_result(
     session: Session,
     result: SubmissionResult,
+    *,
+    ats_reference_id: str = "",
 ) -> SubmissionResultRow:
     """Persist a submission result for audit.
 
@@ -379,6 +381,16 @@ def record_result(
     try to record a result for the same approval, only one INSERT
     succeeds; the other gets an :class:`IntegrityError` which is caught
     and the existing row is returned.
+
+    WQ-1: recording a result ALSO applies the authoritative post-submit
+    :class:`ApplicationJob` status transition (see
+    :mod:`submission.status_transitions`), in the same session and
+    transaction as the result row. Replay of an already-recorded result
+    is idempotent and never downgrades a terminal status.
+
+    ``ats_reference_id`` is the ONLY path to ``APPLIED``: it must be a
+    reliable structured ATS application/reference ID, never text parsed
+    from page content or logs.
     """
     from sqlalchemy.exc import IntegrityError as SAIntegrityError
 
@@ -395,6 +407,11 @@ def record_result(
         return existing
 
     result_id = _make_id(result.application_id, result.approval_id, "result")
+    from universal_auto_applier.submission.status_transitions import (
+        apply_result_status_transition,
+    )
+
+    apply_result_status_transition(session, result, ats_reference_id=ats_reference_id)
     row = SubmissionResultRow(
         result_id=result_id,
         application_id=result.application_id,

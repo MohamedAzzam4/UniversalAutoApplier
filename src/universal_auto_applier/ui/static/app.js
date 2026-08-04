@@ -727,6 +727,12 @@
         html += '<div class="uaa-submit-error"><strong>Submission Error:</strong> ' + esc(data.latest_submission_error) + '</div>';
       }
     }
+
+    // Persisted application status (WQ-1: shown immediately after submit)
+    if (data.application_status) {
+      var statusClass = pillClassFor(data.application_status) || "";
+      html += '<div class="uaa-submit-field"><strong>Application Status:</strong> <span class="uaa-pill ' + statusClass + '">' + esc(data.application_status) + '</span></div>';
+    }
     html += '</div>';
 
     display.innerHTML = html;
