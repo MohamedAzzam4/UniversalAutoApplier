@@ -8,10 +8,10 @@ Policy (typed, no human-log parsing):
 
 - ``submitted_confirmed`` -> ``SUBMITTED``.
 - ``APPLIED`` is returned ONLY when a reliable structured ATS
-  application/reference ID accompanies the confirmation. Page text and
-  human-readable ``confirmation_evidence`` are NEVER parsed into a
-  reference ID, so without structured ATS data the policy stops at
-  ``SUBMITTED``.
+  application/reference ID accompanies the confirmation (as the persisted
+  ``ats_reference_id`` field of the result). Page text and human-readable
+  ``confirmation_evidence`` are NEVER parsed into a reference ID, so without
+  structured ATS data the policy stops at ``SUBMITTED``.
 - ``outcome_unknown`` -> ``NEEDS_REVIEW`` (explicit human review of an
   ambiguous submission).
 - Every other state (validation_failed, blocked_user_action,
@@ -19,26 +19,38 @@ Policy (typed, no human-log parsing):
   already_submitted) yields NO job-status change: a pre-click or failed
   attempt never transitions the job to ``SUBMITTED``/``APPLIED``.
 
-Application is idempotent and monotone:
+Transition application is EXPLICIT and monotone. There is no graph walk:
 
-- Re-applying the same result leaves the job unchanged.
-- Terminal statuses (``APPLIED``, ``REJECTED``, ``SKIPPED``, ``CLOSED``)
-  are never downgraded or overwritten.
-- Transitions are applied by walking the allowed-transition graph from
-  the job's current status to the target, one validated edge at a time
-  (e.g. ``review_ready -> submitted -> needs_review``). If no path
-  exists, the job status is left untouched and the reason is logged.
+- Only these edges are ever applied, keyed on the job's current status:
+
+  +--------------------------+--------------------------+------------------------------------+
+  | current status           | result state             | explicit transition(s)              |
+  +==========================+==========================+====================================+
+  | review_ready             | submitted_confirmed      | review_ready -> submitted           |
+  | review_ready             | submitted_confirmed+ref  | review_ready -> submitted -> applied|
+  | submitted                | submitted_confirmed+ref  | submitted -> applied                |
+  | review_ready             | outcome_unknown          | review_ready -> needs_review (direct)|
+  | submitted                | outcome_unknown          | submitted -> needs_review           |
+  +--------------------------+--------------------------+------------------------------------+
+
+- Earlier pipeline statuses (``discovered``...``in_progress``,
+  ``needs_user_input``, ``failed``, ``blocked``, ``queued``, ``skipped``,
+  ``closed``, ``rejected``) are NEVER auto-advanced by a result. A result
+  can only move a job from ``review_ready`` or ``submitted``.
+- Same-status replays are no-ops. Terminal statuses (``APPLIED``,
+  ``REJECTED``, ``SKIPPED``, ``CLOSED``) are never downgraded or overwritten.
+- Invariant failures (missing allowed edge) raise :class:`ValueError` from
+  the persistence store; they are NOT swallowed here so the caller's
+  transaction rolls back the result row and the status change together.
 """
 
 from __future__ import annotations
 
 import logging
-from collections import deque
 
 from sqlalchemy.orm import Session
 
 from universal_auto_applier.core.statuses import (
-    ALLOWED_TRANSITIONS,
     TERMINAL_STATUSES,
     ApplicationStatus,
 )
@@ -53,24 +65,42 @@ from universal_auto_applier.submission.models import (
 
 logger = logging.getLogger("universal_auto_applier.submission.status_transitions")
 
+# The explicit post-submission transition table. Keyed on
+# (current job status, policy target). Each value is the exact sequence of
+# validated edges to apply. Missing keys mean "no transition" — earlier
+# pipeline statuses are never auto-advanced, and failed/blocked results never
+# touch the job status.
+POST_SUBMIT_TRANSITIONS: dict[
+    tuple[ApplicationStatus, ApplicationStatus], tuple[ApplicationStatus, ...]
+] = {
+    (ApplicationStatus.REVIEW_READY, ApplicationStatus.SUBMITTED): (ApplicationStatus.SUBMITTED,),
+    (ApplicationStatus.REVIEW_READY, ApplicationStatus.APPLIED): (
+        ApplicationStatus.SUBMITTED,
+        ApplicationStatus.APPLIED,
+    ),
+    (ApplicationStatus.REVIEW_READY, ApplicationStatus.NEEDS_REVIEW): (
+        ApplicationStatus.NEEDS_REVIEW,
+    ),
+    (ApplicationStatus.SUBMITTED, ApplicationStatus.APPLIED): (ApplicationStatus.APPLIED,),
+    (ApplicationStatus.SUBMITTED, ApplicationStatus.NEEDS_REVIEW): (
+        ApplicationStatus.NEEDS_REVIEW,
+    ),
+}
 
-def target_status_for_result(
-    result: SubmissionResult,
-    *,
-    ats_reference_id: str = "",
-) -> ApplicationStatus | None:
-    """Map a structured :class:`SubmissionResult` to the post-submit status.
+
+def target_status_for_result(result: SubmissionResult) -> ApplicationStatus | None:
+    """Map a structured :class:`SubmissionResult` to the post-submission status.
 
     Returns ``None`` when the result must NOT change the job status
     (pre-click failures, validation failures, blocked actions, stale
     approvals, already-submitted replays).
 
-    ``ats_reference_id`` is the ONLY path to ``APPLIED``: it must be a
-    reliable structured ATS application/reference ID, never text parsed
-    from page content or logs.
+    ``result.ats_reference_id`` is the ONLY path to ``APPLIED``: it must be a
+    reliable structured ATS application/reference ID, never text parsed from
+    page content or logs.
     """
     if result.state == SubmissionResultState.SUBMITTED_CONFIRMED:
-        if ats_reference_id:
+        if result.ats_reference_id:
             return ApplicationStatus.APPLIED
         return ApplicationStatus.SUBMITTED
     if result.state == SubmissionResultState.OUTCOME_UNKNOWN:
@@ -78,39 +108,11 @@ def target_status_for_result(
     return None
 
 
-def _find_transition_path(
-    current: ApplicationStatus,
-    target: ApplicationStatus,
-) -> list[ApplicationStatus] | None:
-    """BFS a path from ``current`` to ``target`` along allowed transitions.
-
-    Returns the list of intermediate statuses INCLUDING ``target`` (may be
-    empty when ``current == target``), or ``None`` when no path exists.
-    """
-    if current == target:
-        return []
-    queue: deque[tuple[ApplicationStatus, list[ApplicationStatus]]] = deque([(current, [])])
-    seen: set[ApplicationStatus] = {current}
-    while queue:
-        node, path = queue.popleft()
-        for nxt in ALLOWED_TRANSITIONS.get(node, frozenset()):
-            if nxt in seen:
-                continue
-            new_path = path + [nxt]
-            if nxt == target:
-                return new_path
-            seen.add(nxt)
-            queue.append((nxt, new_path))
-    return None
-
-
 def apply_result_status_transition(
     session: Session,
     result: SubmissionResult,
-    *,
-    ats_reference_id: str = "",
 ) -> ApplicationStatus | None:
-    """Apply the post-submit status transition for ``result``.
+    """Apply the post-submission status transition for ``result``.
 
     Returns the job's final status when a transition was applied (or was
     already satisfied), the unchanged status when the policy keeps it, or
@@ -119,54 +121,46 @@ def apply_result_status_transition(
     Rules:
     - The policy target comes from :func:`target_status_for_result`.
     - Terminal statuses are never downgraded.
-    - The transition graph is walked one validated edge at a time; a
-      missing edge/path leaves the status untouched (idempotent).
+    - Only the explicit edges in :data:`POST_SUBMIT_TRANSITIONS` are applied;
+      there is no graph-walking, so earlier pipeline statuses are never
+      auto-advanced by a result.
+    - Invariant failures raise (no best-effort swallowing): the caller's
+      transaction rolls back together with the result row.
     - Runs inside the caller's session; the caller controls commit.
     """
-    target = target_status_for_result(result, ats_reference_id=ats_reference_id)
+    target = target_status_for_result(result)
     job = get_application_job(session, result.application_id)
     if job is None:
         logger.warning("[%s] job not found; no status transition", result.application_id[:12])
         return None
-    if target is None:
-        return job.status
     current = job.status
     if current in TERMINAL_STATUSES:
         logger.info(
-            "[%s] status %s is terminal; no post-submit transition applied",
+            "[%s] status %s is terminal; no post-submission transition applied",
             result.application_id[:12],
             current.value,
         )
         return current
+    if target is None:
+        return current
     if current == target:
         return current
 
-    path = _find_transition_path(current, target)
-    if path is None:
-        logger.warning(
-            "[%s] no allowed transition path %s -> %s; status left unchanged",
+    steps = POST_SUBMIT_TRANSITIONS.get((current, target))
+    if steps is None:
+        logger.info(
+            "[%s] no post-submission transition %s -> %s; status left unchanged",
             result.application_id[:12],
             current.value,
             target.value,
         )
         return current
 
-    try:
-        for step in path:
-            update_application_status(session, result.application_id, step)
-    except ValueError as exc:
-        # The result row is persisted by the caller in the same session;
-        # do NOT roll back the whole transaction. Best-effort: the job
-        # status stays unchanged and the reason is logged for review.
-        logger.error(
-            "[%s] transition walk failed (%s); status left unchanged",
-            result.application_id[:12],
-            exc,
-        )
-        return current
+    for step in steps:
+        update_application_status(session, result.application_id, step)
 
     logger.info(
-        "[%s] post-submit status transitioned %s -> %s (state=%s)",
+        "[%s] post-submission status transitioned %s -> %s (state=%s)",
         result.application_id[:12],
         current.value,
         target.value,
@@ -176,6 +170,7 @@ def apply_result_status_transition(
 
 
 __all__ = [
+    "POST_SUBMIT_TRANSITIONS",
     "apply_result_status_transition",
     "target_status_for_result",
 ]

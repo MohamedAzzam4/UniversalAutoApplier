@@ -1,10 +1,10 @@
 # Active Workpackage
 
 - **WP ID:** WQ-1 — Correct post-submit job / history transitions (CONFIRMED DEFECT).
-- **Status:** in progress — implementation complete, tests green, ready for review.
+- **Status:** in progress — round-2 rework implementing the reviewer's 7 findings; all gates green locally.
 - **Branch:** `checkpoint/wq-1-post-submit-transitions`
 - **Base SHA:** `cec8f2ef45f510705887dba5891ab8cf15bee901` (`origin/main`)
-- **Last completed/checkpoint SHA:** none yet (first commit pending).
+- **Round-1 commit SHA:** `e3cd291e641cf605f72675fb1fcbd121b4af6fb2` (superseded by round 2).
 - **Branch-head verification (must be run dynamically; do not trust an
   embedded SHA as the current HEAD because committing changes the SHA):**
 
@@ -20,112 +20,167 @@
 ## Objective
 
 Close the confirmed post-submit status-transition defect. The controlled
-live-browser submission path (`submission/execution_service.py` +
-`api/routes/submit.py`) persists `SubmissionResult` rows but never
-transitions `ApplicationJob.status`. Implement one authoritative, typed
-transition policy:
+live-browser submission path persists `SubmissionResult` rows but never
+transitioned `ApplicationJob.status`. Round 2 reworks the round-1
+implementation to satisfy the reviewer requirements:
 
-- `submitted_confirmed` -> `ApplicationStatus.SUBMITTED`
-- `APPLIED` only with a reliable structured ATS application/reference ID
-- `outcome_unknown` -> `ApplicationStatus.NEEDS_REVIEW`
-- failed/pre-click/blocked/rejected/stale/validation outcomes never
-  `SUBMITTED`/`APPLIED`
-- duplicate/replay is idempotent and never downgrades terminal status
-
-Add `NEEDS_REVIEW` if missing (enum + persistence + migration + API +
-tests) through the established patterns. Do not substitute
-`NEEDS_USER_INPUT`.
+1. Explicit transitions only — no BFS graph walk.
+2. Structured, durable ATS reference (`ats_reference_id`) on the result,
+   persisted via migration; status derived from the persisted row.
+3. Transactional consistency — transition failure rolls back result + status
+   together; no best-effort swallowing.
+4. Bounded idempotent reconciliation for legacy inconsistent rows.
+5. Corrected `SubmissionResultState` contract documentation.
+6. User-POV Playwright/dashboard tests (status visible + reload/restart).
+7. All required regressions.
 
 ## Rules (from the task and repo doctrine)
 
-- Keep the transition policy in ONE named production function/service.
-- Base transitions on structured `SubmissionResult` state and structured
-  ATS reference data; never parse human logs or arbitrary page text.
-- Persist result + status transactionally (or a clearly tested
-  recovery-safe design). Persistence failure must not return success.
-- Preserve approval, snapshot, staleness, high-risk confirmation,
-  kill-switch, claim, and duplicate-prevention gates. Do not weaken
-  untrusted-adapter safety or Siemens behavior.
-- Status APIs and dashboard show the persisted status immediately.
-- No unrelated refactors. Contents only WQ-1-relevant files.
-- Local fixtures only. No real ATS contact.
+- Explicit post-submission transitions ONLY:
 
-## Completed work
+  ```
+  review_ready + submitted_confirmed            -> submitted
+  review_ready + submitted_confirmed + ref      -> submitted -> applied
+  submitted    + submitted_confirmed + ref      -> applied
+  review_ready + outcome_unknown                -> needs_review   (direct)
+  submitted    + outcome_unknown                -> needs_review
+  ```
 
-- Added `submission/status_transitions.py` — the ONE authoritative,
-  typed post-submit status transition policy:
-  - `target_status_for_result()` maps a structured `SubmissionResult`
-    to the post-submit status: `submitted_confirmed` -> `SUBMITTED`;
-    `APPLIED` only when a structured `ats_reference_id` is provided;
-    `outcome_unknown` -> `NEEDS_REVIEW`; all pre-click/failed/blocked/
-    stale/validation outcomes -> no change.
-  - `apply_result_status_transition()` applies the transition by walking
-    the allowed-transition graph one validated edge at a time, is
-    idempotent, and never downgrades a terminal status or overwrites it.
-- Wired the policy into `submission/store.record_result()` (the single
-  choke point every result flows through): the job-status transition and
-  the result row persist in the SAME transaction; replay of an
-  already-recorded result (UNIQUE on approval_id) is a no-op.
-- `NEEDS_REVIEW` required no enum/migration/API work — it already exists
-  in `ApplicationStatus`, `ALLOWED_TRANSITIONS`, and the contract test.
-- Surfaced the persisted status immediately: `LiveReviewSnapshotResponse`
-  gained `application_status` (populated in `api/routes/submit.py`), and
-  the submit view in `ui/static/app.js` renders it.
-- Tests: new `tests/unit/test_status_transitions.py` (19 tests);
-  `tests/playwright/test_final_pipeline.py` step 12 now asserts the job
-  reaches `submitted` after a confirmed controlled submission (was
-  asserting the defect: `review_ready`); `test_submission_harness.py`
-  asserts `application_status == "submitted"` after a valid submission.
+- Earlier pipeline statuses are NEVER auto-advanced by a result. Terminal
+  statuses are never downgraded. Same-status replay is a no-op.
+- `APPLIED` requires the durable structured `ats_reference_id` persisted with
+  the `SubmissionResult`. Never parse page text / logs / evidence into one;
+  never confuse it with `external_job_id`; production may leave it empty.
+- Result row + status commit or roll back together; invariant failures
+  propagate (no catch-and-commit).
+- Reconciliation: `submitted_confirmed` w/o ref -> `submitted`;
+  `outcome_unknown` -> `needs_review`; never downgrade terminal; never infer
+  `applied` for legacy rows; document when it runs + restart behavior.
+- Preserve approval/snapshot/staleness/high-risk/kill-switch/claim/duplicate
+  gates. No unrelated refactors. Local fixtures only.
 
-## Changed files
+## Completed work (round 2)
 
-- `src/universal_auto_applier/submission/status_transitions.py` (new)
+- Rewrote `submission/status_transitions.py`:
+  - Removed the BFS walk (`_find_transition_path` / `deque`).
+  - Explicit table `POST_SUBMIT_TRANSITIONS` keyed on (current, target)
+    mapping to the exact validated edge sequence; missing key = no change.
+  - `target_status_for_result(result)` now reads the structured
+    `result.ats_reference_id` (no kwarg).
+  - No `try/except ValueError` swallowing — invalid transitions raise and
+    the caller's `session_scope` rolls back result + status together.
+- `core/statuses.py`: `ALLOWED_TRANSITIONS[REVIEW_READY]` now includes
+  `NEEDS_REVIEW` (canonical direct edge); `tests/unit/test_statuses.py`
+  spot-check updated.
+- Structured ATS ref end-to-end:
+  - `submission/models.py`: `SubmissionResult.ats_reference_id: str = ""`;
+    `SubmissionResultState` docstring corrected (proves `submitted`;
+    `applied` additionally requires the structured ref).
+  - `persistence/models.py`: `SubmissionResultRow.ats_reference_id` column.
+  - Migration `0007_submission_results_ats_reference` (adds the column,
+    server_default `''`).
+  - `submission/store.record_result()` no longer takes a kwarg; persists
+    `result.ats_reference_id` and uses it for the transition.
+  - `api/models/submission.py` + `api/routes/submit.py`: submit response
+    returns `ats_reference_id`; snapshot response exposes
+    `latest_submission_ats_reference_id`.
+  - `cli.py`: the redundant manual `update_application_status(SUBMITTED)`
+    block removed (the service now applies the transition from the
+    persisted result; the old block could downgrade an APPLIED result or
+    raise). Reports the ATS reference when present.
+- Reconciliation migration `0008_reconcile_submission_statuses`: one-time,
+    bounded-idempotent SQL repair with safety WHERE guards; never infers
+    `applied` for legacy rows; documented execution/restart model.
+- Contract docs (`docs/generalization/DATA_CONTRACTS.md`): added
+  `review_ready -> needs_review`; rules clarify `submitted_confirmed` proves
+  `submitted` and `applied` requires a persisted structured ATS ref; explicit
+  monotone transitions only.
+- Dashboard (`ui/static/app.js`): new always-visible "Submission Outcome"
+  section (latest submission + application status + ATS reference) rendered
+  even when no persisted snapshot exists — status stays readable after
+  restart on a submitted job.
+- Tests:
+  - `tests/unit/test_status_transitions.py` rewritten (32 tests): explicit
+    table literal, early-state regressions, APPLIED-unreachable-without-ref,
+    ref-persistence across restart, rollback atomicity via failure injection,
+    terminal protection, idempotent replay.
+  - `tests/contract/test_migrations.py`: head bumped to 0008; `ats_reference_id`
+    column present; legacy-DB seeded at 0006 is repaired on upgrade with
+    bounds (terminal never downgraded, earlier never advanced, no fabricated
+    `applied`).
+  - `tests/playwright/test_submission_status.py` (new, 7 tests): dashboard
+    shows `submitted` / `applied` + ATS ref / `needs_review` / `review_ready`
+    (unaffected); latest-submission pill; status survives page reload and
+    full server restart.
+
+## Changed files (round 2)
+
+- `src/universal_auto_applier/submission/status_transitions.py` (rewrite)
+- `src/universal_auto_applier/core/statuses.py`
+- `src/universal_auto_applier/submission/models.py`
 - `src/universal_auto_applier/submission/store.py`
+- `src/universal_auto_applier/persistence/models.py`
 - `src/universal_auto_applier/api/models/submission.py`
 - `src/universal_auto_applier/api/routes/submit.py`
+- `src/universal_auto_applier/cli.py`
 - `src/universal_auto_applier/ui/static/app.js`
-- `tests/unit/test_status_transitions.py` (new)
-- `tests/integration/test_submission_harness.py`
-- `tests/playwright/test_final_pipeline.py`
-- `docs/handoffs/ACTIVE_WORKPACKAGE.md`
+- `migrations/versions/0007_submission_results_ats_reference.py` (new)
+- `migrations/versions/0008_reconcile_submission_statuses.py` (new)
+- `docs/generalization/DATA_CONTRACTS.md`
+- `tests/unit/test_status_transitions.py` (rewrite)
+- `tests/unit/test_statuses.py`
+- `tests/contract/test_migrations.py`
+- `tests/playwright/test_submission_status.py` (new)
 
-## Tests
+## Tests (round 2)
 
 ```text
-tests/unit/test_status_transitions.py          19 passed
-tests/unit + contract + integration          969 passed
-tests/playwright (browser)                    174 passed
-ruff check / ruff format --check / pyright     0 errors
-git diff --check                               clean
+python -m pytest tests/unit tests/contract tests/integration   981 passed
+python -m pytest tests/playwright                               181 passed
+python -m pytest (full suite)                                  1162 passed, 1 skipped (opt-in live)
+python -m ruff check src tests migrations                        0 errors
+python -m ruff format --check src tests migrations               163 files formatted
+python -m pyright                                                 0 errors
+git diff --check                                                 clean
 ```
 
 ## Decisions made
 
-- `NEEDS_REVIEW` needs no enum/persistence/migration work — it was already
-  present. WQ-1 is purely the missing application wiring.
-- The transition policy lives in ONE named module
-  (`submission.status_transitions`) and is applied from
-  `store.record_result` so every submission path (CLI, API, coordinator,
-  execution service) is covered transactionally.
-- `APPLIED` requires a reliable structured ATS application/reference ID
-  passed explicitly as `ats_reference_id` — page text and human-readable
-  `confirmation_evidence` are never parsed into one (per doctrine).
-- Status transition is best-effort after a result is recorded: a failed
-  walk (no allowed path) logs and leaves the job unchanged rather than
-  failing the submission transaction.
+- Replace the BFS lifecycle walk with a hard-coded explicit transition table;
+  earlier pipeline statuses get no automatic advancement from a result.
+- The ATS reference becomes a persisted column, read back on replay; the
+  `ats_reference_id` kwarg on `record_result` was dropped in favor of the
+  field on `SubmissionResult` itself (single source of truth).
+- Transition invariant failures propagate (no best-effort swallow); the
+  caller's `session_scope` rollback covers the result row and the status
+  together — verified by a failure-injection test.
+- Reconciliation lives in migration `0008` (runs exactly once per DB at
+  `alembic upgrade head`/startup; fresh DBs are no-ops; WHERE guards make it
+  idempotent). `applied` is never inferred for legacy rows.
+- `REVIEW_READY -> NEEDS_REVIEW` added to `ALLOWED_TRANSITIONS` so a direct
+  ambiguous-outcome transition is a canonical single edge (not a walk via a
+  phantom state).
+- The CLI's old manual `SUBMITTED` write was removed as redundant/unsafe.
 
 ## Blockers / risks
 
-- None. No real ATS contact; all tests run against local fixtures.
+- PR tooling: the `gh` on PATH is a browser-opener shim and there is no
+  `GITHUB_TOKEN`/gh config; PR creation/update must use the GitHub REST API
+  (token via `git credential-manager` on the `https://github.com/MohamedAzzam4/UniversalAutoApplier.git`
+  the only route — fallback limitation).
+- Untracked debug artifacts (`tmp_debug_status.py`, `tmp_debug_status/`,
+  `tmp_final_pipeline/`) exist but are excluded from commits.
 
 ## Exact next action
 
-1. Reviewer: fetch the branch and resolve its head dynamically
-   (`git rev-parse HEAD` / `git rev-parse origin/<branch>`).
-2. Open a PR: base `main`, head `checkpoint/wq-1-post-submit-transitions`,
-   title "fix(submission): post-submit job status transitions (WQ-1)".
-3. Review the diff; do not merge into `main` more than once.
-4. After merge, update `docs/CURRENT_STATE.md` (known-gap item).
+1. Commit the round-2 changes (files above; NOT the `tmp_debug_*` artifacts).
+2. Push the branch.
+3. Create/update the PR via the GitHub REST API (base `main`, head
+   `checkpoint/wq-1-post-submit-transitions`, title
+   "fix(submission): explicit post-submit transitions + structured ATS ref (WQ-1)").
+4. Wait for Linux + Windows CI; report final SHA, changed files, migration
+   behavior, transition table, test results, CI URLs, limitations.
+5. After merge, update `docs/CURRENT_STATE.md` (known-gap item).
 
 ## Session protocol reminder
 
@@ -144,7 +199,9 @@ never rely on chat history as project memory.
   `UAA_ENABLE_REAL_SUBMISSION=true`, the snapshot is explicitly approved,
   high-risk fields are confirmed, and no intervention/stale/duplicate gate
   blocks it.
-- Siemens is the only trusted adapter path, but not the only job type
-  supported by manually approved controlled submission.
-- Never parse human logs to determine submission success.
+- Only explicit post-submit edges are ever applied automatically; no graph
+  walking; terminal never downgraded; `applied` requires a persisted
+  structured ATS reference.
+- Never parse human logs or page text to determine submission success or an
+  ATS reference.
 - Keep the handoff files updated when this state changes.

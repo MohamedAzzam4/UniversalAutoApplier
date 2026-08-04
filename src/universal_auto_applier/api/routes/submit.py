@@ -101,6 +101,9 @@ def _build_snapshot_response(
             if latest_result and latest_result.error_message
             else None,
             latest_submission_timestamp=latest_result.attempted_at if latest_result else None,
+            latest_submission_ats_reference_id=latest_result.ats_reference_id
+            if latest_result and latest_result.ats_reference_id
+            else None,
         )
 
     # Build field list.
@@ -249,6 +252,9 @@ def _build_snapshot_response(
         latest_submission_approval_id=latest_result.approval_id if latest_result else None,
         latest_submission_snapshot_hash=latest_result.snapshot_hash_at_submit
         if latest_result
+        else None,
+        latest_submission_ats_reference_id=latest_result.ats_reference_id
+        if latest_result and latest_result.ats_reference_id
         else None,
     )
 
@@ -582,6 +588,7 @@ def submit_endpoint(
             state=str(result.state),
             clicked=result.clicked,
             confirmation_evidence=result.confirmation_evidence,
+            ats_reference_id=result.ats_reference_id,
             error_message=result.error_message,
         )
     else:

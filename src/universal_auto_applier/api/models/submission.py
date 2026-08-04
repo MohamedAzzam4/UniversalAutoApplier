@@ -86,6 +86,7 @@ class LiveReviewSnapshotResponse(BaseModel):
     latest_submission_timestamp: datetime | None = None
     latest_submission_approval_id: str | None = None
     latest_submission_snapshot_hash: str | None = None
+    latest_submission_ats_reference_id: str | None = None
 
 
 class LiveReviewConfirmHighRiskRequest(BaseModel):
@@ -134,4 +135,5 @@ class LiveReviewSubmitResponse(BaseModel):
     state: str
     clicked: bool
     confirmation_evidence: str = ""
+    ats_reference_id: str = ""
     error_message: str = ""

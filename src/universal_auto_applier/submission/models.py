@@ -403,8 +403,11 @@ class SubmissionResultState(StrEnum):
     """Terminal states for a submission attempt.
 
     - ``submitted_confirmed``: strong confirmation (ATS confirmation page,
-      application reference, recognized success state). The only state
-      that transitions the application to ``APPLIED``.
+      application reference, recognized success state). Proves the
+      submission happened and transitions the application to ``SUBMITTED``.
+      ``APPLIED`` ALSO requires a reliable structured ATS application /
+      reference ID persisted in ``ats_reference_id``; without it the job
+      stops at ``SUBMITTED``.
     - ``validation_failed``: client-side or server-side validation errors
       appeared after the click. The application returns to review or
       intervention. No automatic resubmit.
@@ -446,6 +449,7 @@ class SubmissionResult(BaseModel):
     post_submit_url: str = ""
     post_submit_dom_path: str | None = None
     confirmation_evidence: str = ""
+    ats_reference_id: str = ""
     validation_errors: list[str] = Field(default_factory=list[str])
     error_message: str = ""
     attempted_at: datetime = Field(default_factory=_utcnow)

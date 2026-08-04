@@ -368,12 +368,7 @@ def has_consumed_claim(session: Session, application_id: str) -> bool:
 # ---------------------------------------------------------------------------
 
 
-def record_result(
-    session: Session,
-    result: SubmissionResult,
-    *,
-    ats_reference_id: str = "",
-) -> SubmissionResultRow:
+def record_result(session: Session, result: SubmissionResult) -> SubmissionResultRow:
     """Persist a submission result for audit.
 
     Database-enforced idempotency: the ``submission_results`` table has
@@ -388,9 +383,14 @@ def record_result(
     transaction as the result row. Replay of an already-recorded result
     is idempotent and never downgrades a terminal status.
 
-    ``ats_reference_id`` is the ONLY path to ``APPLIED``: it must be a
-    reliable structured ATS application/reference ID, never text parsed
-    from page content or logs.
+    ``result.ats_reference_id`` is the ONLY path to ``APPLIED``: it must
+    be a reliable structured ATS application/reference ID, never text
+    parsed from page content or logs. It is persisted with the result row
+    so the job status can always be derived from durable data.
+
+    Transactional integrity: if the status transition raises (invalid
+    transition), the exception propagates to the caller and the whole
+    transaction — result row AND status change — rolls back together.
     """
     from sqlalchemy.exc import IntegrityError as SAIntegrityError
 
@@ -411,7 +411,7 @@ def record_result(
         apply_result_status_transition,
     )
 
-    apply_result_status_transition(session, result, ats_reference_id=ats_reference_id)
+    apply_result_status_transition(session, result)
     row = SubmissionResultRow(
         result_id=result_id,
         application_id=result.application_id,
@@ -424,6 +424,7 @@ def record_result(
         post_submit_url=result.post_submit_url or "",
         post_submit_dom_path=result.post_submit_dom_path,
         confirmation_evidence=result.confirmation_evidence,
+        ats_reference_id=result.ats_reference_id,
         validation_errors_json=list(result.validation_errors),
         error_message=result.error_message,
         attempted_at=result.attempted_at,
