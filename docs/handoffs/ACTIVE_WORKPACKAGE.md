@@ -157,9 +157,10 @@ cancellation — `test.ps1 -All -IncludePlaywright` reported `1162 passed,
 ruff format --check, and pyright all green. The job was then killed by the
 workflow's 45-minute `timeout-minutes` while re-running the DUPLICATE
 "direct pytest (full suite)" step (the workflow runs the full suite twice).
-Not a code failure; pre-existing workflow design (redundant double full-suite
-run). Suggested follow-up (outside WQ-1 scope): raise `timeout-minutes` or
-drop the duplicate step in `.github/workflows/verify-windows-py314.yml`.
+
+Fix applied on this branch (commit `a6dd0b3c77b3fbd5eb79303859016d02b645881c`):
+`.github/workflows/verify-windows-py314.yml` `timeout-minutes` 45 -> 65 with a
+comment explaining why. The final green check results are pending that re-run.
 
 PR: https://github.com/MohamedAzzam4/UniversalAutoApplier/pull/5 (open)
 
