@@ -9,14 +9,16 @@ relevant prompt and fill in the phase number.
 You are implementing part of a generalized job application system.
 
 Read these files first:
-- siemens-auto-apply/docs/generalization/README.md
-- siemens-auto-apply/docs/generalization/DEPLOYMENT_AND_REPO_STRATEGY.md
-- siemens-auto-apply/docs/generalization/TECHNICAL_BASELINE.md
-- siemens-auto-apply/docs/generalization/ROADMAP.md
-- siemens-auto-apply/docs/generalization/DATA_CONTRACTS.md
-- siemens-auto-apply/docs/generalization/IMPLEMENTATION_RULES.md
-- siemens-auto-apply/docs/generalization/TESTING_STRATEGY.md
-- siemens-auto-apply/docs/generalization/UI_UX_SPEC.md
+- docs/CURRENT_STATE.md
+- docs/generalization/README.md
+- docs/generalization/DEPLOYMENT_AND_REPO_STRATEGY.md
+- docs/generalization/TECHNICAL_BASELINE.md
+- docs/generalization/ROADMAP.md
+- docs/generalization/DATA_CONTRACTS.md
+- docs/generalization/IMPLEMENTATION_RULES.md
+- docs/generalization/TESTING_STRATEGY.md
+- docs/generalization/UI_UX_SPEC.md
+- docs/generalization/DRY_RUN_LEVELS.md
 
 Rules:
 - UniversalAutoApplier is a new sibling repository and owns generalized production code.
@@ -50,8 +52,10 @@ After editing, report:
 7. known risks
 ```
 
-After the bootstrap copies these files into UniversalAutoApplier, use their
-paths under `docs/generalization/` in that repository.
+Paths above are already relative to this repository (`docs/generalization/`).
+Do not reference `siemens-auto-apply/...` paths; the generalized repository
+owns its planning pack. Phase 0-8 and the controlled final submission are
+implemented; see `docs/CURRENT_STATE.md` before starting new work.
 
 ## Repository Bootstrap Prompt
 

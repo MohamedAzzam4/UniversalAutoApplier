@@ -5,9 +5,9 @@ adapter routing, generic navigation, form filling, interventions, answer
 memory, review-before-submit, evidence, application history, and the
 operational dashboard.
 
-> Repository bootstrap phase (checkpoint/bootstrap-phase-0).
-> No application behavior is implemented yet. See
-> `docs/generalization/ROADMAP.md` for the phase plan.
+> Phases 0-8 and the controlled final submission pipeline are implemented
+> and merged to `main`. See `docs/CURRENT_STATE.md` for the authoritative
+> status and `docs/generalization/ROADMAP.md` for the phase record.
 
 ## Repository boundaries
 
@@ -18,10 +18,10 @@ JobHunter
 UniversalAutoApplier
   import ready jobs -> route by platform -> navigate -> fill forms
   -> review -> submit
-  new repository; owns the generalized product and local dashboard
+  owns the generalized product and local dashboard
 
 SiemensAutoApplier
-  existing repository; preserved as a working Siemens implementation
+  existing repository (Siemens; integrated via adapter; not rewritten)
 ```
 
 The most important rule is:
@@ -45,7 +45,7 @@ flow and integrate it through a narrow adapter boundary.
 
 | Concern        | Choice                              |
 | -------------- | ----------------------------------- |
-| Runtime        | Python 3.11+ (3.12 reference; 3.14 not yet verified on Windows) |
+| Runtime        | Python 3.11+ (3.12 reference; 3.14 verified on Windows in CI) |
 | API            | FastAPI                             |
 | Contracts      | Pydantic v2                         |
 | Persistence    | SQLite + SQLAlchemy 2.x             |
@@ -82,6 +82,15 @@ suite under strict `filterwarnings = ["error"]`.
 To upgrade any dependency: bump the pin in `pyproject.toml` AND re-run the
 full gate (`ruff check`, `ruff format --check`, `pyright`, `pytest`) on both
 Python 3.12 and Python 3.14.
+
+## Documentation handoff
+
+For a summary of what is implemented, the active workpackage, and the
+shortlist of next workpackages:
+
+- `docs/CURRENT_STATE.md` — what is implemented, with commit SHAs.
+- `docs/handoffs/ACTIVE_WORKPACKAGE.md` — current state and how to resume.
+- `docs/NEXT_WORKPACKAGES.md` — candidate follow-ups.
 
 ## Quick start
 
@@ -129,6 +138,24 @@ Its persistent login profile defaults to `.uaa_data/browser-profile`.
 See `docs/generalization/LIVE_BROWSER_DRY_RUN.md` for configuration and
 result meanings.
 
+### Controlled real submission (manually approved)
+
+A human-approved, snapshot-gated submit path exists for any `review_ready`
+job — generic, ATS, or Siemens. Untrusted adapters never auto-submit; the
+controlled `live-submit` CLI/API requires an explicitly approved snapshot:
+
+```powershell
+python -m universal_auto_applier list-jobs
+python -m universal_auto_applier live-dry-run --application-id <PREFIX> --headed
+# approve the snapshot in the dashboard (Submit view) or via the API, then:
+python -m universal_auto_applier live-submit --application-id <PREFIX> --approval-id <ID> --confirm
+```
+
+Follow `docs/testing/CONTROLLED_REAL_SUBMISSION_TEST_PLAN.md` exactly. It is
+the only sanctioned way to exercise a real submission locally; default tests
+never submit, and `UAA_ENABLE_REAL_SUBMISSION` must be explicitly true plus
+the snapshot approved and high-risk fields confirmed.
+
 ### Refreshing an existing checkout (line endings)
 
 The repo enforces LF line endings via `.gitattributes` (`* text=auto eol=lf`).
@@ -145,7 +172,7 @@ To refresh an existing checkout after `git pull`:
 rm -rf UniversalAutoApplier
 git clone <repo>
 cd UniversalAutoApplier
-git checkout checkpoint/bootstrap-phase-0
+git checkout main
 
 # Option B: force Git to re-checkout with current .gitattributes rules
 git stash
@@ -156,7 +183,7 @@ git checkout -- .
 ```
 
 After refreshing, `ruff format --check src tests` should report
-"38 files already formatted".
+"already formatted" (exact file count varies as source grows).
 
 ## Configuration
 
