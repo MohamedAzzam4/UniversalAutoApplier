@@ -144,23 +144,24 @@ python -m pyright                                                 0 errors
 git diff --check                                                 clean
 ```
 
-## CI results (commit `3d48b12902d5576555506bac5fbe0f97afcdaa38`, PR #5)
+## CI results (final head `82a08e8aa3b397b996ceb890153124f71d28778b`, PR #5)
 
 ```text
 Linux + Python 3.11/3.12/3.13/3.14        completed  success (all 4)
-Windows + Python 3.14 bootstrap gate      completed  cancelled (45-min workflow timeout)
+Windows + Python 3.14 bootstrap gate      completed  success
 ```
 
-Windows evidence from the job log: every test-bearing step PASSED before the
-cancellation — `test.ps1 -All -IncludePlaywright` reported `1162 passed,
-1 deselected in 1286.65s` (full suite incl. Playwright), plus ruff check,
-ruff format --check, and pyright all green. The job was then killed by the
-workflow's 45-minute `timeout-minutes` while re-running the DUPLICATE
-"direct pytest (full suite)" step (the workflow runs the full suite twice).
+ALL GATES GREEN — Linux (4 matrix versions) and Windows + Python 3.14 all
+pass on the final head.
 
-Fix applied on this branch (commit `a6dd0b3c77b3fbd5eb79303859016d02b645881c`):
+History: the first Windows run was cancelled by the workflow's 45-minute
+`timeout-minutes` while re-running the duplicate "direct pytest (full suite)"
+step (the gate intentionally runs the full pytest suite twice, once inside
+`test.ps1 -All -IncludePlaywright` and once directly — ~52 min total on the
+hosted runner). Fix applied on this branch (commit
+`a6dd0b3c77b3fbd5eb79303859016d02b645881c`):
 `.github/workflows/verify-windows-py314.yml` `timeout-minutes` 45 -> 65 with a
-comment explaining why. The final green check results are pending that re-run.
+comment explaining why. The re-run completed successfully.
 
 PR: https://github.com/MohamedAzzam4/UniversalAutoApplier/pull/5 (open)
 
