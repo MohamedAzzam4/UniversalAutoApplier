@@ -665,15 +665,15 @@ class TestFinalCompletePipeline:
             # ================================================================
             # 12. Final steady state
             #     After browser submission through the submit API, the job
-            #     status is review_ready (the pipeline-orchestrator path
-            #     would set submitted, but the browser path does not change
-            #     the job status — the SubmissionResult records the outcome).
+            #     status is transitioned to submitted (WQ-1): the persisted
+            #     SubmissionResult drives the ApplicationJob status through
+            #     the single authoritative post-submit transition policy.
             # ================================================================
             resp = client.get(f"/api/queue/{app_id}")
             assert resp.status_code == 200
             final_job = resp.json()
-            assert final_job["status"] == "review_ready", (
-                f"Expected review_ready final state, got {final_job['status']!r}"
+            assert final_job["status"] == "submitted", (
+                f"Expected submitted final state, got {final_job['status']!r}"
             )
 
         finally:

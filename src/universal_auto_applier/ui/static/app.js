@@ -582,6 +582,33 @@
     }
     html += '</div>';
 
+    // ---- Submission outcome (always shown: the latest result and the
+    // derived job status must stay visible even without a persisted
+    // snapshot, e.g. after a restart on a submitted job) ----
+    if (data.latest_submission_state || data.application_status) {
+      html += '<div class="uaa-submit-section">';
+      html += '<h3>Submission Outcome</h3>';
+      if (data.latest_submission_state) {
+        var outcomeClass = "completed";
+        if (data.latest_submission_state === "failed" || data.latest_submission_error) outcomeClass = "blocked";
+        html += '<div class="uaa-submit-field"><strong>Latest Submission:</strong> <span class="uaa-submit-state-pill ' + outcomeClass + '">' + esc(data.latest_submission_state) + '</span></div>';
+        if (data.latest_submission_timestamp) {
+          html += '<div class="uaa-submit-field"><strong>Submission Timestamp:</strong> ' + esc(fmtDate(data.latest_submission_timestamp)) + '</div>';
+        }
+        if (data.latest_submission_ats_reference_id) {
+          html += '<div class="uaa-submit-field"><strong>ATS Reference:</strong> ' + esc(data.latest_submission_ats_reference_id) + '</div>';
+        }
+        if (data.latest_submission_error) {
+          html += '<div class="uaa-submit-error"><strong>Submission Error:</strong> ' + esc(data.latest_submission_error) + '</div>';
+        }
+      }
+      if (data.application_status) {
+        var statusClass = pillClassFor(data.application_status) || "";
+        html += '<div class="uaa-submit-field"><strong>Application Status:</strong> <span class="uaa-pill ' + statusClass + '">' + esc(data.application_status) + '</span></div>';
+      }
+      html += '</div>';
+    }
+
     // ---- No snapshot state ----
     if (!hasSnapshot) {
       html += '<div class="uaa-submit-section">';
@@ -714,19 +741,6 @@
 
     html += '<div class="uaa-submit-field"><strong>Can Approve:</strong> ' + (data.can_approve ? 'Yes' : 'No') + '</div>';
     html += '<div class="uaa-submit-field"><strong>Can Submit:</strong> ' + (data.can_submit ? 'Yes' : 'No') + '</div>';
-
-    // Latest submission result
-    if (data.latest_submission_state) {
-      var resultClass = "completed";
-      if (data.latest_submission_state === "failed" || data.latest_submission_error) resultClass = "blocked";
-      html += '<div class="uaa-submit-field"><strong>Latest Submission:</strong> <span class="uaa-submit-state-pill ' + resultClass + '">' + esc(data.latest_submission_state) + '</span></div>';
-      if (data.latest_submission_timestamp) {
-        html += '<div class="uaa-submit-field"><strong>Submission Timestamp:</strong> ' + esc(fmtDate(data.latest_submission_timestamp)) + '</div>';
-      }
-      if (data.latest_submission_error) {
-        html += '<div class="uaa-submit-error"><strong>Submission Error:</strong> ' + esc(data.latest_submission_error) + '</div>';
-      }
-    }
     html += '</div>';
 
     display.innerHTML = html;

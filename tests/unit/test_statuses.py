@@ -49,9 +49,10 @@ def test_allowed_transitions_cover_every_status() -> None:
 
 def test_allowed_transitions_match_contract() -> None:
     # Spot-check the most safety-critical transitions.
-    # review_ready is the only allowed entry to submitted.
+    # review_ready is the only entry to submitted; ambiguous outcomes can
+    # move it directly to needs_review (never via submitted).
     assert ALLOWED_TRANSITIONS[ApplicationStatus.REVIEW_READY] == frozenset(
-        {ApplicationStatus.SUBMITTED}
+        {ApplicationStatus.SUBMITTED, ApplicationStatus.NEEDS_REVIEW}
     )
     # submitted -> applied OR needs_review (never back to queued directly).
     assert ALLOWED_TRANSITIONS[ApplicationStatus.SUBMITTED] == frozenset(

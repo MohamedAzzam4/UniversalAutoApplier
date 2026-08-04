@@ -149,6 +149,7 @@ in_progress -> needs_user_input
 needs_user_input -> in_progress
 in_progress -> review_ready
 review_ready -> submitted
+review_ready -> needs_review
 submitted -> applied
 submitted -> needs_review
 in_progress -> failed
@@ -181,6 +182,15 @@ Rules:
 - `submitted` means the final action was triggered but confirmation has not yet
   been verified. If verification is interrupted or ambiguous, transition to
   `needs_review`; never retry submission automatically.
+- `submitted_confirmed` proves `submitted`. `applied` additionally requires a
+  durable, structured ATS application/reference ID persisted with the
+  submission result (`ats_reference_id`); never infer `applied` from page
+  text, logs, or human-readable evidence.
+- Post-submission transitions are explicit and monotone: only
+  `review_ready -> submitted`, `review_ready -> needs_review`,
+  `submitted -> applied`, and `submitted -> needs_review` are ever applied
+  automatically. Earlier pipeline statuses are never auto-advanced by a
+  submission result, and terminal statuses are never downgraded.
 - `failed`, `blocked`, and `needs_review` are retryable or recoverable states,
   not terminal outcomes.
 

@@ -294,6 +294,7 @@ class SubmissionResultRow(Base):
     post_submit_url: Mapped[str | None] = mapped_column(Text, nullable=True)
     post_submit_dom_path: Mapped[str | None] = mapped_column(Text, nullable=True)
     confirmation_evidence: Mapped[str] = mapped_column(Text, default="")
+    ats_reference_id: Mapped[str] = mapped_column(Text, default="")
     validation_errors_json: Mapped[list[str]] = mapped_column(JSON, default=list)
     error_message: Mapped[str] = mapped_column(Text, default="")
     attempted_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)

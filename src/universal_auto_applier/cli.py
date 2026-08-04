@@ -432,6 +432,8 @@ def _live_submit(settings: Settings, args: argparse.Namespace) -> int:
     print(f"  Clicked: {result.clicked}")
     if result.confirmation_evidence:
         print(f"  Evidence: {result.confirmation_evidence}")
+    if result.ats_reference_id:
+        print(f"  ATS reference: {result.ats_reference_id}")
     if result.error_message:
         print(f"  Error: {result.error_message}")
     if result.post_submit_url:
@@ -441,19 +443,12 @@ def _live_submit(settings: Settings, args: argparse.Namespace) -> int:
     if result.post_submit_screenshot:
         print(f"  Post-submit screenshot: {result.post_submit_screenshot}")
 
-    # Update application status on confirmed success.
+    # The job status transition was applied by the execution service when it
+    # persisted the result (record_result -> apply_result_status_transition).
+    # No manual status update here: the persisted result row is the source
+    # of truth, and a manual SUBMITTED write could overwrite an APPLIED
+    # status established from a structured ATS reference.
     if result.state.value == "submitted_confirmed":
-        engine2, session_factory2 = _open_store(settings)
-        try:
-            from universal_auto_applier.core.statuses import ApplicationStatus
-            from universal_auto_applier.persistence.job_repository import (
-                update_application_status,
-            )
-
-            with session_scope(session_factory2) as session:
-                update_application_status(session, application_id, ApplicationStatus.SUBMITTED)
-        finally:
-            engine2.dispose()
         return 0
     if result.state.value in ("outcome_unknown", "already_submitted"):
         return 2

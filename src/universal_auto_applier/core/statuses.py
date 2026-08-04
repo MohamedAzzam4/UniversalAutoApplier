@@ -70,7 +70,9 @@ ALLOWED_TRANSITIONS: dict[ApplicationStatus, frozenset[ApplicationStatus]] = {
     ApplicationStatus.NEEDS_USER_INPUT: frozenset(
         {ApplicationStatus.IN_PROGRESS, ApplicationStatus.QUEUED}
     ),
-    ApplicationStatus.REVIEW_READY: frozenset({ApplicationStatus.SUBMITTED}),
+    ApplicationStatus.REVIEW_READY: frozenset(
+        {ApplicationStatus.SUBMITTED, ApplicationStatus.NEEDS_REVIEW}
+    ),
     ApplicationStatus.SUBMITTED: frozenset(
         {ApplicationStatus.APPLIED, ApplicationStatus.NEEDS_REVIEW}
     ),
