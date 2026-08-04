@@ -144,6 +144,25 @@ python -m pyright                                                 0 errors
 git diff --check                                                 clean
 ```
 
+## CI results (commit `3d48b12902d5576555506bac5fbe0f97afcdaa38`, PR #5)
+
+```text
+Linux + Python 3.11/3.12/3.13/3.14        completed  success (all 4)
+Windows + Python 3.14 bootstrap gate      completed  cancelled (45-min workflow timeout)
+```
+
+Windows evidence from the job log: every test-bearing step PASSED before the
+cancellation — `test.ps1 -All -IncludePlaywright` reported `1162 passed,
+1 deselected in 1286.65s` (full suite incl. Playwright), plus ruff check,
+ruff format --check, and pyright all green. The job was then killed by the
+workflow's 45-minute `timeout-minutes` while re-running the DUPLICATE
+"direct pytest (full suite)" step (the workflow runs the full suite twice).
+Not a code failure; pre-existing workflow design (redundant double full-suite
+run). Suggested follow-up (outside WQ-1 scope): raise `timeout-minutes` or
+drop the duplicate step in `.github/workflows/verify-windows-py314.yml`.
+
+PR: https://github.com/MohamedAzzam4/UniversalAutoApplier/pull/5 (open)
+
 ## Decisions made
 
 - Replace the BFS lifecycle walk with a hard-coded explicit transition table;
