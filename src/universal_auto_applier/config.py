@@ -33,7 +33,10 @@ class Settings(BaseModel):
     host: str = Field(default="127.0.0.1")
     port: int = Field(default=8000, ge=1, le=65535)
     data_dir: Path = Field(default=Path(".uaa_data"))
-    jobhunter_queue: Path | None = Field(default=None)
+    queue_path: Path | None = Field(default=None)
+    # Import the configured JobHunter queue once during startup. False by
+    # default: startup must never import unless the operator opts in.
+    import_queue_on_startup: bool = Field(default=False)
     siemens_repo: Path | None = Field(default=None)
     browser_headless: bool = Field(default=False)
     browser_profile_dir: Path | None = Field(default=None)
@@ -74,6 +77,17 @@ class Settings(BaseModel):
     candidate_profile: Path | None = Field(default=None)
 
     model_config = {"frozen": True, "extra": "ignore"}
+
+    @property
+    def jobhunter_queue(self) -> Path | None:
+        """Backward-compatible alias of :attr:`queue_path`.
+
+        The queue health component and older consumers used ``jobhunter_queue``
+        / ``UAA_JOBHUNTER_QUEUE``. It now resolves to the same value as
+        ``queue_path``, so ``UAA_QUEUE_PATH`` and the legacy
+        ``UAA_JOBHUNTER_QUEUE`` variable are interchangeable.
+        """
+        return self.queue_path
 
     @field_validator("host")
     @classmethod
@@ -126,6 +140,18 @@ def load_settings(env: dict[str, str] | None = None) -> Settings:
     browser_headless_raw = source.get("UAA_BROWSER_HEADLESS", "false").strip()
     browser_headless = _parse_bool(browser_headless_raw) if browser_headless_raw else False
 
+    # UAA_QUEUE_PATH is the primary queue setting; UAA_JOBHUNTER_QUEUE is the
+    # legacy name and remains a fallback so existing deployments keep working.
+    queue_raw = (
+        source.get("UAA_QUEUE_PATH", "").strip() or source.get("UAA_JOBHUNTER_QUEUE", "").strip()
+    )
+    queue_path = Path(queue_raw) if queue_raw else None
+
+    import_queue_on_startup_raw = source.get("UAA_IMPORT_QUEUE_ON_STARTUP", "false").strip()
+    import_queue_on_startup = (
+        _parse_bool(import_queue_on_startup_raw) if import_queue_on_startup_raw else False
+    )
+
     submit_mode_raw = source.get("UAA_SUBMIT_MODE", "review").strip() or "review"
     execution_mode_raw = source.get("UAA_EXECUTION_MODE", "sequential").strip() or "sequential"
 
@@ -150,7 +176,8 @@ def load_settings(env: dict[str, str] | None = None) -> Settings:
         host=host,
         port=port,
         data_dir=data_dir,
-        jobhunter_queue=_get_path("UAA_JOBHUNTER_QUEUE"),
+        queue_path=queue_path,
+        import_queue_on_startup=import_queue_on_startup,
         siemens_repo=_get_path("UAA_SIEMENS_REPO"),
         browser_headless=browser_headless,
         browser_profile_dir=_get_path("UAA_BROWSER_PROFILE_DIR"),

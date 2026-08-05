@@ -23,6 +23,7 @@ from typing import TYPE_CHECKING
 from sqlalchemy import text
 from sqlalchemy.engine import Engine
 from sqlalchemy.exc import SQLAlchemyError
+from sqlalchemy.orm import Session, sessionmaker
 
 from universal_auto_applier.config import Settings
 from universal_auto_applier.core.models import ComponentHealth, HealthReport
@@ -119,11 +120,60 @@ def _check_siemens_adapter(path: Path | None) -> ComponentHealth:
     )
 
 
+def _check_queue_import(
+    settings: Settings, session_factory: sessionmaker[Session] | None
+) -> ComponentHealth:
+    """Report the state of the WQ-3 queue-import capability.
+
+    Reflects the latest durable import run so startup failures stay visible.
+    """
+    if settings.queue_path is None:
+        return ComponentHealth(
+            name="queue_import",
+            state=HealthState.NOT_CONFIGURED,
+            detail="UAA_QUEUE_PATH not set",
+        )
+    if session_factory is None:
+        return ComponentHealth(
+            name="queue_import",
+            state=HealthState.UNAVAILABLE,
+            detail="queue import history unavailable (no session factory)",
+        )
+    try:
+        from universal_auto_applier.services.queue_import_service import QueueImportService
+
+        latest = QueueImportService(settings, session_factory).latest_run()
+    except Exception as exc:  # noqa: BLE001 - health must never crash the report
+        return ComponentHealth(
+            name="queue_import",
+            state=HealthState.UNAVAILABLE,
+            detail=f"queue import history unavailable: {exc}",
+        )
+    if latest is None:
+        return ComponentHealth(
+            name="queue_import",
+            state=HealthState.READY,
+            detail=f"configured: {settings.queue_path} (no import run yet)",
+        )
+    if latest.state == "failed":
+        return ComponentHealth(
+            name="queue_import",
+            state=HealthState.INVALID,
+            detail=latest.failure_reason or f"last import failed: {latest.state}",
+        )
+    return ComponentHealth(
+        name="queue_import",
+        state=HealthState.READY,
+        detail=f"{latest.state}: {latest.imported} imported, {latest.error_count} errors",
+    )
+
+
 def build_health_report(
     settings: Settings,
     engine: Engine,
     *,
     skip_browser: bool = False,
+    session_factory: sessionmaker[Session] | None = None,
 ) -> HealthReport:
     """Return the aggregated system health.
 
@@ -140,9 +190,10 @@ def build_health_report(
         else ComponentHealth(name="browser", state=HealthState.READY, detail="check skipped")
     )
     queue = _check_jobhunter_queue(settings.jobhunter_queue)
+    queue_import = _check_queue_import(settings, session_factory)
     siemens = _check_siemens_adapter(settings.siemens_repo)
 
-    components = [api, store, worker, browser, queue, siemens]
+    components = [api, store, worker, browser, queue, queue_import, siemens]
 
     overall = HealthState.READY
     for component in components:
@@ -162,4 +213,10 @@ def make_health_report(app: FastAPI, *, skip_browser: bool = False) -> HealthRep
     """
     settings: Settings = app.state.settings
     engine: Engine = app.state.engine
-    return build_health_report(settings, engine, skip_browser=skip_browser)
+    session_factory = getattr(app.state, "session_factory", None)
+    return build_health_report(
+        settings,
+        engine,
+        skip_browser=skip_browser,
+        session_factory=session_factory,
+    )

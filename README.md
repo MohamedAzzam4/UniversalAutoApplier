@@ -195,7 +195,8 @@ provided as real environment variables (which take precedence).
 | `UAA_HOST`              | `127.0.0.1`    | API bind host (do not use `0.0.0.0`)           |
 | `UAA_PORT`              | `8000`         | API bind port                                  |
 | `UAA_DATA_DIR`          | `.uaa_data`    | Local data directory for DB, logs, artifacts   |
-| `UAA_JOBHUNTER_QUEUE`   | _(unset)_      | Absolute path to `application_queue.jsonl`     |
+| `UAA_QUEUE_PATH`        | _(unset)_      | Absolute path to `application_queue.jsonl` (legacy `UAA_JOBHUNTER_QUEUE` also works) |
+| `UAA_IMPORT_QUEUE_ON_STARTUP` | `false`  | Import the configured queue once during startup (opt-in)          |
 | `UAA_SIEMENS_REPO`      | _(unset)_      | Absolute path to SiemensAutoApplier repo       |
 | `UAA_BROWSER_HEADLESS`  | `false`        | Headed mode is local default                   |
 | `UAA_SUBMIT_MODE`       | `review`       | `dry_run` / `review` / `trusted_auto_submit`   |
@@ -210,7 +211,13 @@ provided as real environment variables (which take precedence).
 | `GET /`                | Dashboard shell                                     |
 
 The health report lists per-capability state for `api`, `store`, `worker`,
-`browser`, `jobhunter_queue`, and `siemens_adapter`.
+`browser`, `jobhunter_queue`, `queue_import`, and `siemens_adapter`.
+
+Queue import (WQ-3): `python -m universal_auto_applier queue-import`,
+`POST /api/queue/import` / `GET /api/queue/status`, and the dashboard Queue
+Import card all run the same named import service. Import only persists to
+the local database — it never launches a browser, fills a form, or starts
+the pipeline.
 
 ## Tests
 

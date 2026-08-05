@@ -300,6 +300,33 @@ class SubmissionResultRow(Base):
     attempted_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
 
 
+class QueueImportRunRow(Base):
+    """One durable run of the queue-import service.
+
+    Recorded for every import attempt so history survives restart. Row errors
+    are stored as structured ``{line_number, error}`` pairs — the raw JSONL
+    line is never persisted here, because it may carry candidate data.
+    """
+
+    __tablename__ = "queue_import_runs"
+
+    run_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    source_path: Mapped[str] = mapped_column(Text)
+    trigger: Mapped[str] = mapped_column(String(16))
+    # sha256 hex digest of the source file content; None when unreadable.
+    source_fingerprint: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    # success | partial | failed | skipped
+    state: Mapped[str] = mapped_column(String(16), index=True)
+    total_lines: Mapped[int] = mapped_column(Integer, default=0)
+    imported: Mapped[int] = mapped_column(Integer, default=0)
+    skipped: Mapped[int] = mapped_column(Integer, default=0)
+    error_count: Mapped[int] = mapped_column(Integer, default=0)
+    row_errors_json: Mapped[list[dict[str, Any]]] = mapped_column(JSON, default=list)
+    failure_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
 __all__ = [
     "Base",
     "ApplicationJobRow",
@@ -312,4 +339,5 @@ __all__ = [
     "SubmissionApprovalRow",
     "SubmissionClaimRow",
     "SubmissionResultRow",
+    "QueueImportRunRow",
 ]
