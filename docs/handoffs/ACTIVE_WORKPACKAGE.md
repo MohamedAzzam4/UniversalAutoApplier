@@ -1,270 +1,232 @@
 # Active Workpackage
 
-- **WP ID:** WQ-1 — Correct post-submit job / history transitions (CONFIRMED DEFECT).
-- **Status:** in progress — round-2 rework implementing the reviewer's 7 findings; all gates green locally. Round-3 fix: migration `0008` reworked to latest-result-only reconciliation (the defect and the 7 proof tests below), all gates green, pushed, CI verified.
-- **Branch:** `checkpoint/wq-1-post-submit-transitions`
-- **Base SHA:** `cec8f2ef45f510705887dba5891ab8cf15bee901` (`origin/main`)
-- **Round-1 commit SHA:** `e3cd291e641cf605f72675fb1fcbd121b4af6fb2` (superseded by round 2).
-- **Branch-head verification (must be run dynamically; do not trust an
-  embedded SHA as the current HEAD because committing changes the SHA):**
+- **WP ID:** WQ-3 — UAA production queue import, API, startup integration, and dashboard visibility.
+- **Status:** in progress — implementation complete; gate green; checkpoint committed + pushed; PR #6 open; CI running.
+- **Branch:** `checkpoint/wq-3-uaa-production-queue-import`
+- **Base SHA:** `3ddc4becdab1dac9cc8b867c82c190fc42178f51` (`origin/main`)
+- **Last completed/checkpoint SHA:** `f8ac791cf28d0a1379e6811b68a12786191fd125` (pushed to origin; PR #6 head)
+- **Branch-head verification (must be run dynamically; do not trust an embedded SHA):**
 
   ```text
   git fetch origin
   git rev-parse HEAD
-  git rev-parse origin/checkpoint/wq-1-post-submit-transitions
+  git rev-parse origin/checkpoint/wq-3-uaa-production-queue-import
   ```
 
   The two resolved values must match before handoff/review.
-- **Last updated:** 2026-08-04
+- **Last updated:** 2026-08-05
 
 ## Objective
 
-Close the confirmed post-submit status-transition defect. The controlled
-live-browser submission path persists `SubmissionResult` rows but never
-transitioned `ApplicationJob.status`. Round 2 reworks the round-1
-implementation to satisfy the reviewer requirements:
-
-1. Explicit transitions only — no BFS graph walk.
-2. Structured, durable ATS reference (`ats_reference_id`) on the result,
-   persisted via migration; status derived from the persisted row.
-3. Transactional consistency — transition failure rolls back result + status
-   together; no best-effort swallowing.
-4. Bounded idempotent reconciliation for legacy inconsistent rows.
-5. Corrected `SubmissionResultState` contract documentation.
-6. User-POV Playwright/dashboard tests (status visible + reload/restart).
-7. All required regressions.
+JobHunter now produces an atomic `application_queue.jsonl`. UAA must import
+that configured queue through a real local CLI/API/dashboard workflow, persist
+the result durably, and show the user what happened. This workpackage must not
+start a browser, fill a form, or submit an application.
 
 ## Rules (from the task and repo doctrine)
 
-- Explicit post-submission transitions ONLY:
+- Record every import run durably (survives restart), driven by one named
+  service — the only production entry point for queue import.
+- Calls the existing contract importer (`application_queue.importer.import_queue_file`);
+  never reimplement JSONL validation. Valid-row behavior preserved when other
+  lines are malformed (partial runs).
+- Re-import is idempotent; never erases terminal job states or previous
+  attempts; never starts the pipeline automatically after import.
+- `UAA_QUEUE_PATH` (absolute; no personal path hard-coding, no folder scanning)
+  and `UAA_IMPORT_QUEUE_ON_STARTUP` (default false). Startup import is opt-in;
+  failures surface in health/status/dashboard without crashing the server.
+- API endpoints POST `/api/queue/import` (only the configured path; never a
+  browser-supplied arbitrary path) and GET `/api/queue/status`. HTML errors for
+  missing configuration (400) and concurrent imports (409).
+- DashboardQueue section shows configured/not-configured, Import control, latest
+  result + timestamp, imported/skipped/error counts, readable error state, and
+  job summary. Import and pipeline-start controls remain separate. The UI never
+  implies import applies/submits jobs.
+- No direct JSON/database mutation outside repository/store/service boundaries.
+- No in-memory-only import status. No schema changes to compensate for malformed
+  JobHunter rows. No unrelated refactors.
+- Update `docs/CURRENT_STATE.md` (WQ-1 transitions merged, JobHunter WQ-2 merged
+  at JobHunter main `0e8ba2f`, WQ-3 accurate, real browser orchestration later).
 
-  ```
-  review_ready + submitted_confirmed            -> submitted
-  review_ready + submitted_confirmed + ref      -> submitted -> applied
-  submitted    + submitted_confirmed + ref      -> applied
-  review_ready + outcome_unknown                -> needs_review   (direct)
-  submitted    + outcome_unknown                -> needs_review
-  ```
+## Completed work
 
-- Earlier pipeline statuses are NEVER auto-advanced by a result. Terminal
-  statuses are never downgraded. Same-status replay is a no-op.
-- `APPLIED` requires the durable structured `ats_reference_id` persisted with
-  the `SubmissionResult`. Never parse page text / logs / evidence into one;
-  never confuse it with `external_job_id`; production may leave it empty.
-- Result row + status commit or roll back together; invariant failures
-  propagate (no catch-and-commit).
-- Reconciliation: `submitted_confirmed` w/o ref -> `submitted`;
-  `outcome_unknown` -> `needs_review`; never downgrade terminal; never infer
-  `applied` for legacy rows; document when it runs + restart behavior.
-- Preserve approval/snapshot/staleness/high-risk/kill-switch/claim/duplicate
-  gates. No unrelated refactors. Local fixtures only.
+- Session-start protocol done: fetched origin; verified `origin/main` == base
+  `3ddc4bec...`; `git status --short` shows only pre-existing untracked
+  artifacts (`tmp_debug_status.py`, `tmp_debug_status/`, `tmp_final_pipeline/`)
+  which are preserved and excluded from commits.
+- Created branch `checkpoint/wq-3-uaa-production-queue-import` from `origin/main`.
+- Read: `AGENTS.md`, `docs/CURRENT_STATE.md`, `docs/NEXT_WORKPACKAGES.md`,
+  `handoffs/ACTIVE_WORKPACKAGE.md`, `docs/generalization/DATA_CONTRACTS.md`,
+  and existing importer / config / persistence models / migrations / API routes /
+  health service / pipeline route / CLI / dashboard static files / tests.
+- Confirmed no contract conflict: JobHunter's merged export lines already
+  validate against the existing `ApplicationJob` contract importer; the WQ-3
+  migration is additive-only (new `queue_import_runs` table) so no existing
+  job/submission/intervention history is at risk; startup import only touches
+  the database through the importer, never the browser.
+- Implemented configuration: `Settings.queue_path` (primary) +
+  `import_queue_on_startup` (opt-in, default false); loader maps
+  `UAA_QUEUE_PATH` (primary) with `UAA_JOBHUNTER_QUEUE` as legacy fallback;
+  `settings.jobhunter_queue` is now a read-only alias of `queue_path`;
+  `.env.example` updated.
+- Implemented `persistence/models.py::QueueImportRunRow` and additive migration
+  `migrations/versions/0009_queue_import_runs.py` (down_revision
+  `0008_reconcile_submission_statuses`) — new table only, no data modification.
+- Implemented `services/queue_import_service.py`: `QueueImportService`
+  (app-scoped named service, non-blocking `threading.Lock`), states
+  `success/partial/failed/skipped`, durably persisted runs with sha256 fingerprint,
+  structured `{line_number, error}` row errors (raw JSONL never stored), bounded
+  safety-limited failure reasons, `latest_run()` / `job_summary()` / `status()`,
+  and `run_startup_import` (never raises; missing path -> failed, unconfigured ->
+  skipped, concurrent -> returns None).
+- Implemented `api/routes/queue_import.py`: `POST /api/queue/import`
+  (400 unconfigured, 409 concurrent, 200 with durable run summary incl. persisted
+  `failed` when file missing; no arbitrary-path parameter) and
+  `GET /api/queue/status` (configured/path/startup flag/source_exists/latest
+  durable run/queue-job summary). Wired into `api/app.py` lifespan (optional
+  opt-in startup import) and router, registered BEFORE the dynamic
+  `/api/queue/{application_id}` route so the fixed paths win.
+- Implemented queue-import CLI: `python -m universal_auto_applier queue-import
+  [--path <abs>]` (`cli.py::run_command`, `__main__.py` subcommand set).
+- Extended health: `queue_import` component in `services/health_service.py`
+  (`_check_queue_import`, `session_factory` kwarg on `build_health_report`;
+  `make_health_report` passes it through); existing component-name contract
+  preserved.
+- Extended dashboard: `ui/static/index.html` Queue Import card (configured
+  path, startup flag, Import Queue button, durable last-run details, job
+  summary, safety note) and `app.js` (`loadQueueStatus`, pill classes, button
+  POST handler). Import and pipeline-start controls remain separate.
+- Tests added and passing:
+  - `tests/unit/test_config_queue_import.py` (path resolution, legacy fallback,
+    startup-flag parsing; 8 tests).
+  - `tests/contract/test_queue_import_service.py` (success/partial/failed/skipped,
+    empty file, missing file, unconfigured/relative rejection, concurrency lock +
+    release, durability across instances, fingerprint change, status payload,
+    startup runner incl. concurrent -> None, no-browser/no-pipeline import
+    guarantee; 21 tests).
+  - `tests/integration/test_queue_import_api.py` (POST import success/idempotent
+    durable/partial row errors/missing file 200-failed/unconfigured 400/localpath
+    never accepted/concurrent 409 incl. two-request race; GET status initial +
+    after; startup opt-in/opt-out/missing-file; health component ready/
+    not_configured/invalid; api-root lists new endpoints; 18 tests).
+  - `tests/playwright/test_queue_import_dashboard.py` (card renders
+    configured/not-configured, import button produces durable run in the grid,
+    import never creates submission/system-run rows and keeps job at `evaluated`;
+    4 tests).
+  - Bumped `tests/contract/test_migrations.py` `CURRENT_HEAD` to
+    `0009_queue_import_runs`.
+- Ran full gate on 2026-08-05 (results below).
 
-## Completed work (round 2)
+## Changed files
 
-- Rewrote `submission/status_transitions.py`:
-  - Removed the BFS walk (`_find_transition_path` / `deque`).
-  - Explicit table `POST_SUBMIT_TRANSITIONS` keyed on (current, target)
-    mapping to the exact validated edge sequence; missing key = no change.
-  - `target_status_for_result(result)` now reads the structured
-    `result.ats_reference_id` (no kwarg).
-  - No `try/except ValueError` swallowing — invalid transitions raise and
-    the caller's `session_scope` rolls back result + status together.
-- `core/statuses.py`: `ALLOWED_TRANSITIONS[REVIEW_READY]` now includes
-  `NEEDS_REVIEW` (canonical direct edge); `tests/unit/test_statuses.py`
-  spot-check updated.
-- Structured ATS ref end-to-end:
-  - `submission/models.py`: `SubmissionResult.ats_reference_id: str = ""`;
-    `SubmissionResultState` docstring corrected (proves `submitted`;
-    `applied` additionally requires the structured ref).
-  - `persistence/models.py`: `SubmissionResultRow.ats_reference_id` column.
-  - Migration `0007_submission_results_ats_reference` (adds the column,
-    server_default `''`).
-  - `submission/store.record_result()` no longer takes a kwarg; persists
-    `result.ats_reference_id` and uses it for the transition.
-  - `api/models/submission.py` + `api/routes/submit.py`: submit response
-    returns `ats_reference_id`; snapshot response exposes
-    `latest_submission_ats_reference_id`.
-  - `cli.py`: the redundant manual `update_application_status(SUBMITTED)`
-    block removed (the service now applies the transition from the
-    persisted result; the old block could downgrade an APPLIED result or
-    raise). Reports the ATS reference when present.
-- Reconciliation migration `0008_reconcile_submission_statuses`: one-time,
-    bounded-idempotent SQL repair with safety WHERE guards; never infers
-    `applied` for legacy rows; documented execution/restart model.
-- Round-3 fix (migration `0008` rework): the old repair used separate `IN`
-  queries over every historical result, so an old `outcome_unknown` could
-  override a newer `submitted_confirmed` (and vice versa). The repair now
-  selects the LATEST persisted result per application deterministically
-  (`attempted_at` DESC, then `result_id` DESC as the tie-breaker), using a
-  `ROW_NUMBER() OVER (PARTITION BY application_id ...)` window function in a
-  CTE-prefixed UPDATE (SQLite >= 3.25 compatible, idempotent, exported as
-  `LEGACY_RECONCILIATION_STATEMENTS` for the tests to re-run). Behavior:
-  latest `submitted_confirmed` w/o structured ref on `review_ready` ->
-  `submitted`; latest `outcome_unknown` on `review_ready`/`submitted` ->
-  `needs_review`; every other latest state -> no change; terminals and
-  earlier pipeline statuses untouched; `applied` never inferred for legacy
-  rows (including rows carrying an unverified reference).
-- Contract docs (`docs/generalization/DATA_CONTRACTS.md`): added
-  `review_ready -> needs_review`; rules clarify `submitted_confirmed` proves
-  `submitted` and `applied` requires a persisted structured ATS ref; explicit
-  monotone transitions only.
-- Dashboard (`ui/static/app.js`): new always-visible "Submission Outcome"
-  section (latest submission + application status + ATS reference) rendered
-  even when no persisted snapshot exists — status stays readable after
-  restart on a submitted job.
-- Tests:
-  - `tests/unit/test_status_transitions.py` rewritten (32 tests): explicit
-    table literal, early-state regressions, APPLIED-unreachable-without-ref,
-    ref-persistence across restart, rollback atomicity via failure injection,
-    terminal protection, idempotent replay.
-  - `tests/contract/test_migrations.py`: head bumped to 0008; `ats_reference_id`
-    column present; legacy-DB seeded at 0006 is repaired on upgrade with
-    bounds (terminal never downgraded, earlier never advanced, no fabricated
-    `applied`). Round-3 additions (7 proof tests, seeding at 0007 with
-    multi-result rows): older `outcome_unknown` + newer `submitted_confirmed`
-    -> `submitted`; older confirmed + newer `outcome_unknown` ->
-    `needs_review`; equal `attempted_at` resolves on `result_id` DESC
-    (flipped ids -> flipped outcomes); terminal statuses unchanged; earlier
-    pipeline statuses unchanged; re-running the exact exported reconciliation
-    SQL is a no-op; a legacy confirmed result (with or without an unverified
-    reference) never becomes `applied`.
-  - `tests/playwright/test_submission_status.py` (new, 7 tests): dashboard
-    shows `submitted` / `applied` + ATS ref / `needs_review` / `review_ready`
-    (unaffected); latest-submission pill; status survives page reload and
-    full server restart.
+- `.env.example` (UAA_QUEUE_PATH, UAA_IMPORT_QUEUE_ON_STARTUP)
+- `src/universal_auto_applier/config.py` (queue_path, import_queue_on_startup,
+  loader, jobhunter_queue alias)
+- `src/universal_auto_applier/persistence/models.py` (QueueImportRunRow)
+- `migrations/versions/0009_queue_import_runs.py` (new)
+- `src/universal_auto_applier/services/queue_import_service.py` (new)
+- `src/universal_auto_applier/api/routes/queue_import.py` (new)
+- `src/universal_auto_applier/api/app.py` (router wiring + ordering, lifespan
+  startup import, endpoint list)
+- `src/universal_auto_applier/services/health_service.py` (queue_import
+  component + session_factory kwarg)
+- `src/universal_auto_applier/cli.py` + `__main__.py` (queue-import command)
+- `src/universal_auto_applier/ui/static/index.html` + `app.js` (Queue Import card)
+- `tests/unit/test_config_queue_import.py` (new)
+- `tests/contract/test_queue_import_service.py` (new)
+- `tests/integration/test_queue_import_api.py` (new)
+- `tests/playwright/test_queue_import_dashboard.py` (new)
+- `tests/contract/test_migrations.py` (CURRENT_HEAD bump only)
 
-## Changed files (round 2)
+## Tests and results
 
-- `src/universal_auto_applier/submission/status_transitions.py` (rewrite)
-- `src/universal_auto_applier/core/statuses.py`
-- `src/universal_auto_applier/submission/models.py`
-- `src/universal_auto_applier/submission/store.py`
-- `src/universal_auto_applier/persistence/models.py`
-- `src/universal_auto_applier/api/models/submission.py`
-- `src/universal_auto_applier/api/routes/submit.py`
-- `src/universal_auto_applier/cli.py`
-- `src/universal_auto_applier/ui/static/app.js`
-- `migrations/versions/0007_submission_results_ats_reference.py` (new)
-- `migrations/versions/0008_reconcile_submission_statuses.py` (reworked in
-  round 3 to latest-result-only reconciliation)
-- `docs/generalization/DATA_CONTRACTS.md`
-- `tests/unit/test_status_transitions.py` (rewrite)
-- `tests/unit/test_statuses.py`
-- `tests/contract/test_migrations.py`
-- `tests/playwright/test_submission_status.py` (new)
+Full gate run 2026-08-05 on the WQ-3 branch:
 
-## Tests (round 2)
-
-```text
-python -m pytest tests/unit tests/contract tests/integration   988 passed  (+7 migration proofs)
-python -m pytest tests/playwright                               181 passed
-python -m pytest (full suite)                                  1169 passed, 1 skipped (opt-in live)
-python -m ruff check src tests migrations                        0 errors
-python -m ruff format --check src tests migrations               163 files formatted
-python -m pyright                                                 0 errors
-git diff --check                                                 clean
-```
-
-## CI results (final head `82a08e8aa3b397b996ceb890153124f71d28778b`, PR #5)
-
-```text
-Linux + Python 3.11/3.12/3.13/3.14        completed  success (all 4)
-Windows + Python 3.14 bootstrap gate      completed  success
-```
-
-ALL GATES GREEN — Linux (4 matrix versions) and Windows + Python 3.14 all
-pass on the final head.
-
-History: the first Windows run was cancelled by the workflow's 45-minute
-`timeout-minutes` while re-running the duplicate "direct pytest (full suite)"
-step (the gate intentionally runs the full pytest suite twice, once inside
-`test.ps1 -All -IncludePlaywright` and once directly — ~52 min total on the
-hosted runner). Fix applied on this branch (commit
-`a6dd0b3c77b3fbd5eb79303859016d02b645881c`):
-`.github/workflows/verify-windows-py314.yml` `timeout-minutes` 45 -> 65 with a
-comment explaining why. The re-run completed successfully.
-
-PR: https://github.com/MohamedAzzam4/UniversalAutoApplier/pull/5 (open)
+- `python -m ruff check src tests migrations` -> All checks passed.
+- `python -m ruff format --check src tests migrations` -> 169 files already formatted.
+- `python -m pyright` -> 0 errors, 0 warnings, 0 informations.
+- `python -m pytest tests/unit tests/contract tests/integration -q` -> 1035 passed.
+- `python -m pytest tests/playwright -q` -> 185 passed.
+- `python -m pytest -q` (all markers) -> 1220 passed, 1 skipped (opt-in live browser test, as designed).
+- Concurrency + startup subset repeated 8x -> 7 passed each run (56/56).
+- `git diff --check` clean; untracked debug artifacts not staged.
 
 ## Decisions made
 
-- Replace the BFS lifecycle walk with a hard-coded explicit transition table;
-  earlier pipeline statuses get no automatic advancement from a result.
-- The ATS reference becomes a persisted column, read back on replay; the
-  `ats_reference_id` kwarg on `record_result` was dropped in favor of the
-  field on `SubmissionResult` itself (single source of truth).
-- Transition invariant failures propagate (no best-effort swallow); the
-  caller's `session_scope` rollback covers the result row and the status
-  together — verified by a failure-injection test.
-- Reconciliation lives in migration `0008` (runs exactly once per DB at
-  `alembic upgrade head`/startup; fresh DBs are no-ops; WHERE guards make it
-  idempotent). `applied` is never inferred for legacy rows.
-- `REVIEW_READY -> NEEDS_REVIEW` added to `ALLOWED_TRANSITIONS` so a direct
-  ambiguous-outcome transition is a canonical single edge (not a walk via a
-  phantom state).
-- The CLI's old manual `SUBMITTED` write was removed as redundant/unsafe.
-
-## Known limitation (documented)
-
-- `ats_reference_id` is now a structured, durable field on
-  `SubmissionResult` / `SubmissionResultRow` (migration 0007) and it drives
-  the `submitted -> applied` transition from the persisted row, not from any
-  parsed input.
-- No current generic production executor extracts a reliable ATS application
-  reference. The controlled ``live-submit`` path records confirmation
-  evidence but does not (and should not) parse a reference out of it.
-- Therefore live generic submissions currently stop at `SUBMITTED`; that is
-  the correct, expected terminal state for untrusted/generic platforms today.
-- `APPLIED` becomes reachable only when a trusted structured producer
-  supplies the reference (durable `ats_reference_id` persisted with the
-  result). Until such a producer exists, no generic submission should ever
-  reach `applied`.
-- No page-text / log / evidence parsing should be added as a shortcut to
-  infer either submission success or an ATS reference. That would violate
-  the "safe by default" doctrine and the no-invented-facts marker rules.
+- Configuration: add `UAA_QUEUE_PATH` -> `Settings.queue_path` (primary) and
+  `UAA_IMPORT_QUEUE_ON_STARTUP` -> `import_queue_on_startup` (default false).
+  `UAA_JOBHUNTER_QUEUE` behaves as a fallback to keep the existing health
+  contract and tests intact; `settings.jobhunter_queue` becomes a read-only
+  alias of `queue_path`.
+- Import-run states: `success` (no row errors; empty file is a valid empty
+  queue => success,0), `partial` (row errors with at least one imported),
+  `failed` (row errors with zero imported, or unreadable/missing file),
+  `skipped` (startup enabled but queue path not configured).
+- Persisted row errors store only `{line_number, error}` — never the raw line
+  (avoids storing raw candidate data).
+- POST `/api/queue/import`: 400 when not configured, 409 when a concurrent
+  import is in flight (non-blocking thread lock on the app-scoped service);
+  otherwise 200 with the durable run summary (a missing file is a persisted
+  `failed` run, surfaced in the response and in status).
+- Startup handler runs one import only when `import_queue_on_startup` is true;
+  missing path -> persisted `failed` run; unconfigured -> persisted `skipped`
+  run; neither crashes the server. Latest durable run drives
+  GET `/api/queue/status` and a new `queue_import` health component.
 
 ## Blockers / risks
 
-- PR tooling: the `gh` on PATH is a browser-opener shim and there is no
-  `GITHUB_TOKEN`/gh config; PR creation/update must use the GitHub REST API
-  (token via `git credential-manager` on the `https://github.com/MohamedAzzam4/UniversalAutoApplier.git`
-  the only route — fallback limitation).
+- `gh` on PATH is a browser-opener shim; no `GITHUB_TOKEN`/gh config. PR
+  creation/update must use the GitHub REST API (token via `git
+  credential-manager` on the `.../UniversalAutoApplier.git` remote).
 - Untracked debug artifacts (`tmp_debug_status.py`, `tmp_debug_status/`,
-  `tmp_final_pipeline/`) exist but are excluded from commits.
+  `tmp_final_pipeline/`) must stay out of commits.
+
+## PR status
+
+- PR #6: https://github.com/MohamedAzzam4/UniversalAutoApplier/pull/6
+  - title: `feat(wq-3): durable queue import service, API, startup integration, dashboard`
+  - head `f8ac791cf28d0a1379e6811b68a12786191fd125`, base `3ddc4bec...` (`main`)
+  - state: open, not draft, not merged. No other open PRs (no duplicate).
+  - CI on head: 4 Linux (3.11/3.12/3.13/3.14) + 1 Windows (3.14) — all in_progress at last check.
+  - Do NOT merge; wait for CI + review.
 
 ## Exact next action
 
-1. (round 3 done) Reworked migration `0008` to latest-result-only
-   reconciliation and added the 7 migration proof tests; documented the ATS
-   reference limitation above.
-2. Commit the round-3 changes (files above; NOT the `tmp_debug_*` artifacts).
-3. Push the branch; PR #5 updates automatically.
-4. Wait for Linux + Windows CI on the new final SHA; do not merge.
-5. Report final SHA, migration query strategy, new test names/results, full
-   regression counts, CI URLs, PR mergeability, and confirm PR #5 remains
-   unmerged.
-6. After merge, update `docs/CURRENT_STATE.md` (known-gap item).
+1. Update `docs/CURRENT_STATE.md` — done (2026-08-05).
+2. Checkpoint commit + push — done (`f8ac791`, PR #6).
+3. PR created via GitHub REST API (token via `git credential-manager`) — done;
+   do NOT merge.
+4. Poll CI on the PR head (4 Linux + 1 Windows), then verify all runs pass.
+   Command:
+
+   ```text
+   # after CI:
+   git fetch origin
+   git rev-parse HEAD   # must equal f8ac791 (or newer milestone)
+   git rev-parse origin/checkpoint/wq-3-uaa-production-queue-import
+   ```
+
+5. Commit the ACTIVE_WORKPACKAGE.md handoff update (this file) as a
+   documentation-only milestone commit on the same branch and push, so the
+   PR reflects the final state.
+6. Final WQ-3 report with branch/base/ final SHAs, changed files, behavior,
+   schema, tests, repeated-test evidence, CI URLs, PR URL/state, limitations,
+   and explicit confirmation that no browser/submission path runs during
+   import.
 
 ## Session protocol reminder
 
 At session start: `git fetch origin`, verify repo/branch/base SHA, inspect
-`git status`, read the handoff pack, stop if local changes could be
-overwritten. During work: update this file after every major milestone;
-checkpoint before ~60-70% context, before pausing/handoff/switching AI;
-never rely on chat history as project memory.
+`git status`, read the handoff pack, stop if local changes could be overwritten.
+During work: update this file after every major milestone; checkpoint before
+~60-70% context and before pausing/handoff/switching AI; never rely on chat
+history as project memory.
 
 ## Rules
 
-- Unknown platforms never auto-submit. Untrusted adapters (`is_trusted=False`)
-  never submit through adapter `submit_or_pause`.
-- A `review_ready` job (generic or ATS) may be submitted manually via the
-  controlled `live-submit` CLI / submission API only when
-  `UAA_ENABLE_REAL_SUBMISSION=true`, the snapshot is explicitly approved,
-  high-risk fields are confirmed, and no intervention/stale/duplicate gate
-  blocks it.
-- Only explicit post-submit edges are ever applied automatically; no graph
-  walking; terminal never downgraded; `applied` requires a persisted
-  structured ATS reference.
-- Never parse human logs or page text to determine submission success or an
-  ATS reference.
+- Unknown platforms never auto-submit. Untrusted adapters never submit through
+  adapter `submit_or_pause`.
+- No real submission happens from WQ-3 code: import only writes to the database
+  through the contract importer; it never launches a browser or starts a
+  pipeline.
 - Keep the handoff files updated when this state changes.

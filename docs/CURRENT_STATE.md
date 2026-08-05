@@ -4,9 +4,15 @@ Authoritative snapshot of `UniversalAutoApplier` as of the project rebaseline.
 If this document contradicts any older planning doc, this document wins for
 "what is implemented"; the planning doc keeps its architectural authority.
 
-- Reference commit: `f7c49f7ad520b9765c2221b506960cd8b8e518bc` (`main`)
-- Coverage: all roadmap phases 0-8 and the controlled final submission
-  pipeline are implemented and merged to `main`.
+- Reference commit: `3ddc4becdab1dac9cc8b867c82c190fc42178f51` (`main`)
+- Coverage: all roadmap phases 0-8, the controlled final submission
+  pipeline, and the WQ-1 post-submit status transitions are merged to `main`.
+- Branch work: WQ-2 (JobHunter queue export, lives in the JobHunter repo,
+  merged at JobHunter main `0e8ba2f`) and WQ-3 (durable production queue
+  import, API, startup import, dashboard Queue Import card) are implemented
+  on their branches. WQ-3 is complete on
+  `checkpoint/wq-3-uaa-production-queue-import` and awaits review/merge. Real
+  external browser orchestration is still later work.
 
 ## What is implemented
 
@@ -14,25 +20,27 @@ If this document contradicts any older planning doc, this document wins for
 | --- | --- | --- |
 | Core contracts | `core/models.py`, `core/statuses.py`, `core/identity.py`, `core/question_models.py` | `ApplicationJob`, `AdapterResult`, status enums, canonical URL identity. |
 | Application queue | `application_queue/importer.py` | JobHunter `application_queue.jsonl` -> SQLite, idempotent upsert. |
-| Persistence | SQLAlchemy 2 + Alembic, 6 migrations | tables: jobs, attempts, phase_results, interventions, answer_memories, artifacts, system_runs, submission tables. |
+| Persistence | SQLAlchemy 2 + Alembic, 9 migrations | tables: jobs, attempts, phase_results, interventions, answer_memories, artifacts, system_runs, submission tables, queue_import_runs (WQ-3). |
 | API + dashboard | `api/`, `ui/static/*` | FastAPI localhost API, HTML/CSS/vanilla JS dashboard, submit view. |
-| Health | `services/health_service.py`, `api/routes/health.py` | per-capability report (`api`, `store`, `worker`, `browser`, `jobhunter_queue`, `siemens_adapter`). |
+| Queue import (WQ-3) | `services/queue_import_service.py`, `api/routes/queue_import.py`, `cli.py`, `ui/static/*` | durable opt-in queue import: named service, run history in `queue_import_runs` (migration 0009), `POST/GET /api/queue/{import,status}`, `queue-import` CLI, dashboard Queue Import card. Import never starts a browser or pipeline. |
+| Health | `services/health_service.py`, `api/routes/health.py` | per-capability report (`api`, `store`, `worker`, `browser`, `jobhunter_queue`, `queue_import`, `siemens_adapter`). |
 | Adapters | `adapters/*` | Siemens adapter (trusted), Greenhouse, Lever, Workday, SmartRecruiters, LinkedIn Easy Apply, Generic fallback, `_ATSBase` shared base. Registry deterministic order. |
 | Navigator | `navigator/page_observer.py`, `clickable_classifier.py`, `safe_explorer.py`, `apply_path_finder.py` | DOM-based observation, strict dangerous-submit blocking. |
 | Form engine | `form_engine/schema_extractor.py`, `field_mapper.py`, `fill_engine.py`, `live_executor.py` | extraction, mapping, fill, live execution. |
 | Interventions | `interventions/store.py`, `answer_memory.py`, `review.py`, fill/navigation bridges | intervention records, answer memory, review-before-submit gate. |
 | LLM helpers | `llm/` (answer_validator, qa_service, question_classifier, question_resolver, truth_ledger) | grounded Google AI (Gemma) answer validation and question resolution; no inventing facts. |
 | Browser | `browser/live_runner.py`, `live_models.py` | live browser dry-run with Playwright, evidence, traces; never clicks final submit. |
-| CLI | `cli.py`, `__main__.py` | `list-jobs`, `browser-session`, `live-dry-run`, `live-submit`. |
+| CLI | `cli.py`, `__main__.py` | `list-jobs`, `queue-import`, `browser-session`, `live-dry-run`, `live-submit`. |
 | Submission | `submission/coordinator.py`, `execution_service.py`, `models.py`, `store.py`, `api/routes/submit.py` | approval + snapshot + gated submit; `submitted_confirmed`, `outcome_unknown`, `already_submitted` result states. |
 | Orchestration | `services/pipeline_orchestrator.py`, `api/routes/pipeline.py` | safe pipeline routing, review-only default. |
 | CI | `verify-windows-py314.yml`, `verify-linux.yml` | Windows+Python 3.14 primary; Linux matrix 3.11-3.14. |
 
 ## Status
 
-`main` is at `f7c49f7ad520b9765c2221b506960cd8b8e518bc`. Merge history note:
-commit `2cf3f18` introduced the controlled-submission content directly onto
-`main` (a local squash onto main) rather than through a reviewed PR. PR #3
+`main` is at `3ddc4becdab1dac9cc8b867c82c190fc42178f51` (WQ-1 post-submit
+status transitions merged via reviewed PR). Merge history note: commit
+`2cf3f18` introduced the controlled-submission content directly onto `main`
+(a local squash onto main) rather than through a reviewed PR. PR #3
 (`controlled-final-submission`, head `f5b2055`) was then merged as `f7c49f7`
 carrying the same tree — an empty duplicate commit. Harmless: the tree is
 correct and clean; history must NOT be rewritten. From now on, every change
@@ -44,12 +52,17 @@ Linux  runner: 30105080305  (main)  -> success
 Windows runner: 30105128952  (main)  -> success
 ```
 
+WQ-3 (queue import) is fully implemented and gate-clean on
+`checkpoint/wq-3-uaa-production-queue-import` (base `3ddc4bec...`), awaiting
+review/merge. JobHunter WQ-2 (atomic `application_queue.jsonl` export) is
+merged at JobHunter main `0e8ba2f`.
+
 ## Test counts (reference run)
 
 ```text
-950 unit/contract/integration  passed
-174  playwright                passed
-1124 total                      passed, 1 skipped (live)
+1035 unit/contract/integration  passed  (WQ-3 branch, 2026-08-05)
+185  playwright                passed
+1220 total                      passed, 1 skipped (live)
 ```
 
 ## Submission capability (accurate contract)
@@ -74,13 +87,15 @@ Windows runner: 30105128952  (main)  -> success
 
 ## Known gaps / limitations
 
-- **Post-submit status transition (confirmed defect, see WQ-1):** the
-  submission result (`submitted_confirmed`, `outcome_unknown`) is
-  recorded in the submission tables, but `ApplicationJob.status` is not
-  transitioned to `SUBMITTED` / `NEEDS_REVIEW` by the submit route or the
-  execution service. The dashboard queue/history therefore does not
-  immediately show the effective post-submit state. Duplicate prevention
-  already blocks resubmission via the gates above.
+- **Post-submit status transition (WQ-1):** implemented and merged at
+  `3ddc4be`. `ApplicationJob.status` now transitions to
+  `submitted`/`applied`/`needs_review` from the persisted submission result;
+  the dashboard reflects the effective post-submit state. Duplicate
+  prevention blocks resubmission via the gates.
+- **Queue import (WQ-3) is implemented on a branch, not yet on `main`.**
+  Durable opt-in import, `POST/GET /api/queue/{import,status}`, CLI, and
+  dashboard card are complete and gate-clean on
+  `checkpoint/wq-3-uaa-production-queue-import`; it awaits review/merge.
 - Live re-check of login state is user-required; UAA never bypasses login,
   CAPTCHA, SSO, or payment walls.
 - Test suite never touches real ATS sites in default runs.
@@ -92,13 +107,14 @@ in production; none of them are unimplemented core phases. See
 `docs/NEXT_WORKPACKAGES.md` for the corresponding workpackages.
 
 1. **JobHunter export is not auto-invoked by `run_all`** — the queue must be
-   produced, then imported; the wired trigger does not exist yet (WQ-2/WQ-3).
-2. **UAA `import_queue_file` is not wired into production startup or the
-   API.** It exists as a standalone CLI path; production startup/API have no
-   automatic ingest trigger. (WQ-2)
+   produced, then imported; the wired trigger does not exist yet (WQ-2).
+2. **UAA queue import requires explicit configuration.** `UAA_QUEUE_PATH` +
+   opt-in `UAA_IMPORT_QUEUE_ON_STARTUP` (or the API/CLI) are implemented
+   (WQ-3); wiring `run_all` to produce + import automatically is not yet done.
 3. **Dashboard `/api/pipeline/start` is synchronous, fixture/planning-only.**
    It does not run the live-dry-run / live-submit execution paths; those
-   remain separate CLI-driven flows. (WQ-3)
+   remain separate CLI-driven flows. Queue import (WQ-3) explicitly does NOT
+   start the pipeline.
 4. **Cross-repository concurrency is not wired.** JobHunter scanning /
    evaluating / tailoring and UAA applying cannot yet run concurrently with
    controlled handoff between the two processes. (WQ-6)

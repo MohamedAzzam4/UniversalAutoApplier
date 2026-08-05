@@ -11,6 +11,7 @@ helper) chooses the host and port.
 
 from __future__ import annotations
 
+import logging
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -26,6 +27,7 @@ from universal_auto_applier.api.routes.interventions import router as interventi
 from universal_auto_applier.api.routes.logs import init_log_buffer, router as logs_router
 from universal_auto_applier.api.routes.pipeline import router as pipeline_router
 from universal_auto_applier.api.routes.queue import router as queue_router
+from universal_auto_applier.api.routes.queue_import import router as queue_import_router
 from universal_auto_applier.api.routes.retry import router as retry_router
 from universal_auto_applier.api.routes.review import router as review_router
 from universal_auto_applier.api.routes.status import router as status_router
@@ -38,6 +40,8 @@ from universal_auto_applier.persistence.db import (
 )
 
 STATIC_DIR = Path(__file__).resolve().parent.parent / "ui" / "static"
+
+logger = logging.getLogger("universal_auto_applier.api.app")
 
 
 @asynccontextmanager
@@ -68,6 +72,21 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     if not getattr(app.state, "review_states", None):
         app.state.review_states = {}
     init_log_buffer(app)
+
+    # Optional, opt-in startup queue import. When UAA_IMPORT_QUEUE_ON_STARTUP
+    # is false (the default) nothing is imported. When enabled, one import
+    # runs against the configured UAA_QUEUE_PATH; every outcome is persisted
+    # durably and failures are surfaced through /api/queue/status and health
+    # without crashing the server.
+    if settings.import_queue_on_startup:
+        from universal_auto_applier.services.queue_import_service import run_startup_import
+
+        app.state.startup_import_summary = run_startup_import(settings, app.state.session_factory)
+        if app.state.startup_import_summary is not None:
+            logger.info(
+                "startup queue import: %s",
+                app.state.startup_import_summary.get("state"),
+            )
 
     try:
         yield
@@ -109,6 +128,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     app.include_router(health_router, prefix="/api")
     app.include_router(status_router, prefix="/api")
+    # queue_import must register BEFORE the dynamic /api/queue/{application_id}
+    # route so the fixed /api/queue/import and /api/queue/status paths win.
+    app.include_router(queue_import_router, prefix="/api")
     app.include_router(queue_router, prefix="/api")
     app.include_router(interventions_router, prefix="/api")
     app.include_router(review_router, prefix="/api")
@@ -137,6 +159,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 "/api/health/detail",
                 "/api/status",
                 "/api/queue",
+                "/api/queue/status",
+                "/api/queue/import",
                 "/api/interventions",
                 "/api/review/{id}/submit-check",
                 "/api/logs",

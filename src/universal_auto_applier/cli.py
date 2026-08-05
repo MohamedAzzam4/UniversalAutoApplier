@@ -30,6 +30,20 @@ def _build_parser() -> argparse.ArgumentParser:
 
     subparsers.add_parser("list-jobs", help="List imported jobs and application IDs.")
 
+    queue_import = subparsers.add_parser(
+        "queue-import",
+        help=(
+            "Import the configured JobHunter application queue "
+            "(UAA_QUEUE_PATH) through the named import service. "
+            "Does not apply or submit anything."
+        ),
+    )
+    queue_import.add_argument(
+        "--path",
+        type=Path,
+        help="Optional operator-supplied absolute queue path overriding the configured one.",
+    )
+
     session = subparsers.add_parser(
         "browser-session",
         help="Open UAA's persistent browser profile for manual login/setup.",
@@ -455,12 +469,58 @@ def _live_submit(settings: Settings, args: argparse.Namespace) -> int:
     return 3
 
 
+def _queue_import(settings: Settings, args: argparse.Namespace) -> int:
+    """Import the configured queue through the named import service (WQ-3).
+
+    Prints counts and structured row errors. This command never launches a
+    browser and never starts the pipeline.
+    """
+    from universal_auto_applier.services.queue_import_service import (
+        QueueImportConcurrentError,
+        QueueImportConfigurationError,
+        QueueImportService,
+    )
+
+    engine, session_factory = _open_store(settings)
+    try:
+        service = QueueImportService(settings, session_factory)
+        try:
+            summary = service.run(path=args.path, trigger="cli")
+        except QueueImportConfigurationError as exc:
+            print(f"error: {exc}", file=sys.stderr)
+            return 2
+        except QueueImportConcurrentError as exc:
+            print(f"error: {exc}", file=sys.stderr)
+            return 2
+    finally:
+        engine.dispose()
+
+    print(f"state: {summary.state}")
+    print(f"run_id: {summary.run_id}")
+    print(f"source: {summary.source_path}")
+    print(f"fingerprint: {summary.source_fingerprint}")
+    print(
+        f"total: {summary.total_lines}  imported: {summary.imported}  "
+        f"skipped: {summary.skipped}  errors: {summary.error_count}"
+    )
+    if summary.failure_reason:
+        print(f"reason: {summary.failure_reason}")
+    for row_error in summary.row_errors:
+        print(f"row {row_error.get('line_number')}: {row_error.get('error')}", file=sys.stderr)
+
+    if summary.state == "failed":
+        return 2
+    return 0
+
+
 def run_command(argv: list[str], settings: Settings) -> int:
     """Run a non-server CLI command and return its process exit code."""
     parser = _build_parser()
     args = parser.parse_args(argv)
     if args.command == "list-jobs":
         return _list_jobs(settings)
+    if args.command == "queue-import":
+        return _queue_import(settings, args)
     if args.command == "browser-session":
         return _browser_session(settings, args)
     if args.command == "live-dry-run":

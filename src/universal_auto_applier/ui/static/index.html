@@ -63,6 +63,22 @@
         </div>
 
         <div class="uaa-card">
+          <h2>Queue Import</h2>
+          <div id="queue-import-status" class="uaa-status-grid">
+            <p class="uaa-empty">Loading queue status...</p>
+          </div>
+          <div class="uaa-queue-controls">
+            <button id="queue-import-run" class="uaa-btn uaa-btn-success" disabled>Import Queue</button>
+            <span id="queue-import-result" class="uaa-stat-label"></span>
+          </div>
+          <p class="uaa-safety-note">
+            Imports the configured JobHunter queue into local history only. It
+            does <strong>not</strong> apply or submit applications and does not
+            start the pipeline.
+          </p>
+        </div>
+
+        <div class="uaa-card">
           <h2>System Health</h2>
           <ul id="component-list" class="uaa-component-list">
             <li>Loading...</li>

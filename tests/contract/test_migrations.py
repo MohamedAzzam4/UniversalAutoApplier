@@ -23,7 +23,7 @@ from universal_auto_applier.persistence.migrations import (
 )
 
 # The current head revision. Update this when adding a new migration.
-CURRENT_HEAD = "0008_reconcile_submission_statuses"
+CURRENT_HEAD = "0009_queue_import_runs"
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 MIGRATION_0008_PATH = (

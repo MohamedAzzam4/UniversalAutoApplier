@@ -43,7 +43,7 @@ def main(argv: list[str] | None = None) -> int:
     _configure_logging(verbose)
 
     settings: Settings = load_settings()
-    if argv and argv[0] in {"list-jobs", "browser-session", "live-dry-run"}:
+    if argv and argv[0] in {"list-jobs", "browser-session", "live-dry-run", "queue-import"}:
         from universal_auto_applier.cli import run_command
 
         return run_command(argv, settings)

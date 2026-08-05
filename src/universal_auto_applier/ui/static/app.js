@@ -66,6 +66,10 @@
     const map = {
       idle: "uaa-pill-idle",
       ready: "uaa-pill-ready",
+      success: "uaa-pill-ready",
+      partial: "uaa-pill-running",
+      failed: "uaa-pill-unavailable",
+      skipped: "uaa-pill-not_configured",
       unavailable: "uaa-pill-unavailable",
       not_configured: "uaa-pill-not_configured",
       invalid: "uaa-pill-invalid",
@@ -122,7 +126,112 @@
     } catch (err) {
       console.error("[UAA] status load failed", err);
     }
+
+    loadQueueStatus();
   }
+
+  // ---- Queue Import (WQ-3) ----
+  async function loadQueueStatus() {
+    try {
+      const status = await fetchJSON("/api/queue/status");
+      const container = document.getElementById("queue-import-status");
+      const runBtn = document.getElementById("queue-import-run");
+      const resultEl = document.getElementById("queue-import-result");
+      if (!container) return;
+
+      // Configured/not-configured state
+      const cfgPill = status.configured ? "uaa-pill-ready" : "uaa-pill-not_configured";
+      const cfgLabel = status.configured
+        ? esc(status.configured_path)
+        : "Not configured — set UAA_QUEUE_PATH";
+      let html =
+        '<div class="uaa-stat">' +
+        '<span class="uaa-stat-label">Configuration</span>' +
+        '<span class="uaa-pill ' + cfgPill + '">' +
+        (status.configured ? "configured" : "not_configured") +
+        "</span></div>" +
+        '<div class="uaa-stat"><span class="uaa-stat-label">Queue Path</span><span>' +
+        cfgLabel +
+        "</span></div>" +
+        '<div class="uaa-stat"><span class="uaa-stat-label">Startup Import</span>' +
+        '<span class="uaa-pill ' + (status.import_on_startup ? "uaa-pill-running" : "uaa-pill-idle") + '">' +
+        (status.import_on_startup ? "enabled" : "false") +
+        "</span></div>";
+
+      // Latest durable import run
+      const run = status.latest_run;
+      if (run) {
+        const errs = run.row_errors && run.row_errors.length > 0
+          ? '<div class="uaa-queue-errors">' +
+            run.row_errors.map(function (e) {
+              return "<div>row " + e.line_number + ": " + esc(e.error) + "</div>";
+            }).join("") +
+            "</div>"
+          : "";
+        html +=
+          '<div class="uaa-stat"><span class="uaa-stat-label">Last Import</span>' +
+          '<span class="' + pillClassFor(run.state) + '">' + esc(run.state) + "</span></div>" +
+          '<div class="uaa-stat"><span class="uaa-stat-label">Imported</span><span>' +
+          run.imported +
+          "</span></div>" +
+          '<div class="uaa-stat"><span class="uaa-stat-label">Skipped</span><span>' +
+          run.skipped +
+          "</span></div>" +
+          '<div class="uaa-stat"><span class="uaa-stat-label">Errors</span><span>' +
+          run.error_count +
+          "</span></div>" +
+          '<div class="uaa-stat"><span class="uaa-stat-label">Completed</span><span>' +
+          fmtDate(run.completed_at) +
+          "</span></div>" +
+          (run.failure_reason
+            ? '<div class="uaa-queue-errors"><strong>Failure:</strong> ' + esc(run.failure_reason) + "</div>"
+            : "");
+        if (errs) html += errs;
+      } else {
+        html += '<div class="uaa-empty" style="grid-column: 1 / -1;">No imports recorded yet.</div>';
+      }
+
+      // Job summary after import
+      const summary = status.queue_job_summary || { total: 0, by_status: {} };
+      html +=
+        '<div class="uaa-stat"><span class="uaa-stat-label">Jobs in History</span><span>' +
+        summary.total +
+        "</span></div>";
+
+      container.innerHTML = html;
+
+      if (runBtn) runBtn.disabled = !status.configured;
+      if (resultEl) resultEl.textContent = "";
+    } catch (err) {
+      console.error("[UAA] queue status load failed", err);
+    }
+  }
+
+  document.getElementById("queue-import-run")?.addEventListener("click", async () => {
+    const btn = document.getElementById("queue-import-run");
+    const resultEl = document.getElementById("queue-import-result");
+    if (btn) {
+      btn.disabled = true;
+      btn.textContent = "Importing...";
+    }
+    try {
+      const resp = await postJSON("/api/queue/import", {});
+      if (resultEl) {
+        resultEl.textContent = "Import " + resp.run.state + ": " +
+          resp.run.imported + " imported, " + resp.run.error_count + " errors.";
+      }
+      loadQueueStatus();
+      loadStatus();
+    } catch (err) {
+      if (resultEl) resultEl.textContent = "Import failed: " + err.message;
+      console.error("[UAA] queue import failed", err);
+    } finally {
+      if (btn) {
+        btn.textContent = "Import Queue";
+        btn.disabled = false;
+      }
+    }
+  });
 
   // ---- Pipeline start ----
   document.getElementById("pipeline-start")?.addEventListener("click", async () => {
