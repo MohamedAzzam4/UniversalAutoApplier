@@ -1,10 +1,10 @@
 # Active Workpackage
 
 - **WP ID:** WQ-3 — UAA production queue import, API, startup integration, and dashboard visibility.
-- **Status:** in progress — implementation complete; gate green; docs updated; checkpoint commit pending.
+- **Status:** in progress — implementation complete; gate green; checkpoint committed + pushed; PR #6 open; CI running.
 - **Branch:** `checkpoint/wq-3-uaa-production-queue-import`
 - **Base SHA:** `3ddc4becdab1dac9cc8b867c82c190fc42178f51` (`origin/main`)
-- **Last completed/checkpoint SHA:** pending first checkpoint commit (implementation + tests done; commit before continuing).
+- **Last completed/checkpoint SHA:** `f8ac791cf28d0a1379e6811b68a12786191fd125` (pushed to origin; PR #6 head)
 - **Branch-head verification (must be run dynamically; do not trust an embedded SHA):**
 
   ```text
@@ -181,45 +181,38 @@ Full gate run 2026-08-05 on the WQ-3 branch:
 - Untracked debug artifacts (`tmp_debug_status.py`, `tmp_debug_status/`,
   `tmp_final_pipeline/`) must stay out of commits.
 
+## PR status
+
+- PR #6: https://github.com/MohamedAzzam4/UniversalAutoApplier/pull/6
+  - title: `feat(wq-3): durable queue import service, API, startup integration, dashboard`
+  - head `f8ac791cf28d0a1379e6811b68a12786191fd125`, base `3ddc4bec...` (`main`)
+  - state: open, not draft, not merged. No other open PRs (no duplicate).
+  - CI on head: 4 Linux (3.11/3.12/3.13/3.14) + 1 Windows (3.14) — all in_progress at last check.
+  - Do NOT merge; wait for CI + review.
+
 ## Exact next action
 
-1. Update `docs/CURRENT_STATE.md` (WQ-1 transitions merged, JobHunter WQ-2
-   merged, WQ-3 implemented; real browser orchestration still later).
-2. Checkpoint commit of the implemented+tested WQ-3 milestone on this branch;
-   push to origin. Command:
+1. Update `docs/CURRENT_STATE.md` — done (2026-08-05).
+2. Checkpoint commit + push — done (`f8ac791`, PR #6).
+3. PR created via GitHub REST API (token via `git credential-manager`) — done;
+   do NOT merge.
+4. Poll CI on the PR head (4 Linux + 1 Windows), then verify all runs pass.
+   Command:
 
    ```text
-   git status --short
-   git diff --check
-   git add .env.example docs/handoffs/ACTIVE_WORKPACKAGE.md \
-     src/universal_auto_applier/__main__.py src/universal_auto_applier/api/app.py \
-     src/universal_auto_applier/cli.py src/universal_auto_applier/config.py \
-     src/universal_auto_applier/persistence/models.py \
-     src/universal_auto_applier/services/health_service.py \
-     src/universal_auto_applier/ui/static/app.js \
-     src/universal_auto_applier/ui/static/index.html \
-     tests/contract/test_migrations.py \
-     migrations/versions/0009_queue_import_runs.py \
-     src/universal_auto_applier/api/routes/queue_import.py \
-     src/universal_auto_applier/services/queue_import_service.py \
-     tests/contract/test_queue_import_service.py \
-     tests/integration/test_queue_import_api.py \
-     tests/playwright/test_queue_import_dashboard.py \
-     tests/unit/test_config_queue_import.py
-   git commit -m "feat(wq-3): durable queue import service, API, CLI, dashboard"
-   git push -u origin checkpoint/wq-3-uaa-production-queue-import
+   # after CI:
+   git fetch origin
+   git rev-parse HEAD   # must equal f8ac791 (or newer milestone)
+   git rev-parse origin/checkpoint/wq-3-uaa-production-queue-import
    ```
 
-3. Confirm the pushed head (``git rev-parse HEAD`` vs
-   ``git rev-parse origin/checkpoint/wq-3-uaa-production-queue-import``).
-4. Create the PR via GitHub REST API (token via `git credential-manager` on the
-   `.../UniversalAutoApplier.git` remote; `gh` is a browser-opener shim). See
-   blocking note below. Do NOT merge.
-5. Wait for Linux + Windows CI to pass on the PR head; collect run URLs.
-6. Keep this file updated at each milestone; final WQ-3 report with branch/base/
-   final SHAs, changed files, behavior, schema, tests, repeated-test evidence,
-   CI URLs, PR URL/state, limitations, and explicit confirmation that no
-   browser/submission path runs during import.
+5. Commit the ACTIVE_WORKPACKAGE.md handoff update (this file) as a
+   documentation-only milestone commit on the same branch and push, so the
+   PR reflects the final state.
+6. Final WQ-3 report with branch/base/ final SHAs, changed files, behavior,
+   schema, tests, repeated-test evidence, CI URLs, PR URL/state, limitations,
+   and explicit confirmation that no browser/submission path runs during
+   import.
 
 ## Session protocol reminder
 
