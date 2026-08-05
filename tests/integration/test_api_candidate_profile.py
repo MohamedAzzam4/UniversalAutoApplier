@@ -226,7 +226,7 @@ class TestAPIPipelineStartLoadsCandidateProfile:
             )
 
             with session_scope(session_factory) as session:
-                pending = list_pending_interventions(session, application_id)
+                _ = list_pending_interventions(session, application_id)
 
             # Without a profile, the pipeline may or may not create
             # interventions depending on whether the live browser can
