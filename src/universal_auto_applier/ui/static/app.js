@@ -233,40 +233,85 @@
     }
   });
 
-  // ---- Pipeline start ----
+  // ---- Pipeline controls ----
+  async function loadPipelineStatus() {
+    try {
+      const data = await fetchJSON("/api/pipeline/status");
+      const phaseEl = document.getElementById("pipeline-phase");
+      const actionEl = document.getElementById("pipeline-last-action");
+      const errorEl = document.getElementById("pipeline-last-error");
+      const progressEl = document.getElementById("pipeline-progress");
+      const startBtn = document.getElementById("pipeline-start");
+      const pauseBtn = document.getElementById("pipeline-pause");
+      const resumeBtn = document.getElementById("pipeline-resume");
+      const cancelBtn = document.getElementById("pipeline-cancel");
+      const runStatusEl = document.getElementById("run-status");
+
+      if (phaseEl) phaseEl.textContent = data.current_phase ? "Phase: " + data.current_phase : "";
+      if (actionEl) actionEl.textContent = data.last_action ? "Action: " + data.last_action : "";
+      if (errorEl) errorEl.textContent = data.last_error ? "Error: " + data.last_error : "";
+      if (progressEl) {
+        const completed = data.jobs_completed || 0;
+        const failed = data.jobs_failed || 0;
+        const total = data.jobs_total || 0;
+        progressEl.textContent = total > 0 ? `Progress: ${completed + failed}/${total} (${completed} done, ${failed} failed)` : "";
+      }
+      if (runStatusEl) {
+        runStatusEl.textContent = data.status;
+        runStatusEl.className = pillClassFor(data.status);
+      }
+
+      const isActive = data.status === "running" || data.status === "pausing";
+      const isPaused = data.status === "paused";
+      const isCancelling = data.status === "cancelling";
+      const isTerminal = ["idle", "completed", "cancelled", "failed"].includes(data.status);
+
+      if (startBtn) startBtn.disabled = !isTerminal;
+      if (pauseBtn) pauseBtn.disabled = !isActive;
+      if (resumeBtn) resumeBtn.disabled = !isPaused;
+      if (cancelBtn) cancelBtn.disabled = isTerminal;
+    } catch (err) {
+      console.error("[UAA] pipeline status failed", err);
+    }
+  }
+
   document.getElementById("pipeline-start")?.addEventListener("click", async () => {
     const btn = document.getElementById("pipeline-start");
-    if (btn) {
-      btn.disabled = true;
-      btn.textContent = "Running...";
-    }
+    if (btn) btn.disabled = true;
     try {
-      const resp = await postJSON("/api/pipeline/start", {
-        fixture_html: null,
-        max_jobs: 10,
-      });
-      loadStatus();
-      if (btn) {
-        btn.disabled = false;
-        btn.textContent = "Start Dry-Run";
-      }
-      alert(
-        "Pipeline " +
-          resp.status +
-          ". Processed: " +
-          resp.jobs_processed +
-          ", Succeeded: " +
-          resp.jobs_succeeded +
-          ", Failed: " +
-          resp.jobs_failed +
-          ". No real submissions occurred."
-      );
+      await postJSON("/api/pipeline/start", { fixture_html: null, max_jobs: 10 });
+      loadPipelineStatus();
     } catch (err) {
-      if (btn) {
-        btn.disabled = false;
-        btn.textContent = "Start Dry-Run";
-      }
       alert("Pipeline start failed: " + err.message);
+      if (btn) btn.disabled = false;
+    }
+  });
+
+  document.getElementById("pipeline-pause")?.addEventListener("click", async () => {
+    try {
+      await postJSON("/api/pipeline/pause", {});
+      loadPipelineStatus();
+    } catch (err) {
+      alert("Pause failed: " + err.message);
+    }
+  });
+
+  document.getElementById("pipeline-resume")?.addEventListener("click", async () => {
+    try {
+      await postJSON("/api/pipeline/resume", {});
+      loadPipelineStatus();
+    } catch (err) {
+      alert("Resume failed: " + err.message);
+    }
+  });
+
+  document.getElementById("pipeline-cancel")?.addEventListener("click", async () => {
+    if (!confirm("Cancel the pipeline? The current job will finish safely.")) return;
+    try {
+      await postJSON("/api/pipeline/cancel", {});
+      loadPipelineStatus();
+    } catch (err) {
+      alert("Cancel failed: " + err.message);
     }
   });
 
@@ -1073,7 +1118,11 @@
   // ---- Polling ----
   function startPolling() {
     loadStatus();
-    pollTimer = setInterval(loadStatus, POLL_INTERVAL_MS);
+    loadPipelineStatus();
+    pollTimer = setInterval(() => {
+      loadStatus();
+      loadPipelineStatus();
+    }, POLL_INTERVAL_MS);
   }
 
   function stopPolling() {
