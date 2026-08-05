@@ -75,6 +75,12 @@ class Settings(BaseModel):
     # Loaded by candidate_profile_loader.profile_from_config when the
     # per-job metadata does not contain a profile snapshot.
     candidate_profile: Path | None = Field(default=None)
+    # WQ-4: minimum wait (ms) between pipeline jobs. Mirrors a service
+    # provider's polite pacing knob and, importantly, gives the dashboard a
+    # deterministic window in which pause/cancel take effect at a job
+    # boundary. 0 means no wait (jobs run back-to-back; pause/cancel still
+    # take effect between jobs).
+    pipeline_job_pulse_ms: int = Field(default=0, ge=0, le=60_000)
 
     model_config = {"frozen": True, "extra": "ignore"}
 
@@ -192,4 +198,5 @@ def load_settings(env: dict[str, str] | None = None) -> Settings:
         tailor_workers=_parse_int("UAA_TAILOR_WORKERS", 1),
         apply_workers=_parse_int("UAA_APPLY_WORKERS", 1),
         candidate_profile=_get_path("UAA_CANDIDATE_PROFILE"),
+        pipeline_job_pulse_ms=_parse_int("UAA_PIPELINE_JOB_PULSE_MS", 0, 0, 60_000),
     )

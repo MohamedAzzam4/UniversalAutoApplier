@@ -100,6 +100,9 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     try:
         yield
     finally:
+        worker = getattr(app.state, "pipeline_worker", None)
+        if worker is not None and hasattr(worker, "shutdown"):
+            worker.shutdown()
         if _owns_engine and engine is not None:
             engine.dispose()
 

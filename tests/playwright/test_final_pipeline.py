@@ -148,6 +148,23 @@ def _read_fixture_html(filename: str) -> str:
     return (FIXTURE_DIR / filename).read_text(encoding="utf-8")
 
 
+def _wait_pipeline_terminal(client: httpx.Client, timeout: float = 60.0) -> dict:
+    """Poll GET /api/pipeline/status until the worker run reaches a
+    terminal state. WQ-4 contract: POST /api/pipeline/start returns
+    immediately with a durable ``running`` state (the pipeline executes
+    in a worker subprocess), so callers poll for the outcome."""
+    deadline = time.time() + timeout
+    last: dict = {}
+    while time.time() < deadline:
+        resp = client.get("/api/pipeline/status")
+        assert resp.status_code == 200
+        last = resp.json()
+        if last["status"] in ("completed", "cancelled", "failed", "idle"):
+            return last
+        time.sleep(0.2)
+    raise AssertionError(f"Pipeline did not reach a terminal state in {timeout}s: {last}")
+
+
 # ---------------------------------------------------------------------------
 # The authoritative pipeline regression test
 # ---------------------------------------------------------------------------
@@ -193,9 +210,13 @@ class TestFinalCompletePipeline:
             )
             assert resp.status_code == 200
             pipe1 = resp.json()
+            assert pipe1["status"] == "running"
+            assert pipe1["run_id"]
+
+            pipe1 = _wait_pipeline_terminal(client)
             assert pipe1["status"] == "completed"
-            assert pipe1["jobs_processed"] == 1
-            assert pipe1["jobs_succeeded"] == 1
+            assert pipe1["jobs_total"] == 1
+            assert pipe1["jobs_completed"] == 1
 
             # Intervention created
             resp = client.get(
@@ -266,8 +287,11 @@ class TestFinalCompletePipeline:
             )
             assert resp.status_code == 200
             pipe2 = resp.json()
+            assert pipe2["status"] == "running"
+
+            pipe2 = _wait_pipeline_terminal(client)
             assert pipe2["status"] == "completed"
-            assert pipe2["jobs_succeeded"] == 1
+            assert pipe2["jobs_completed"] == 1
 
             # No pending interventions
             resp = client.get(

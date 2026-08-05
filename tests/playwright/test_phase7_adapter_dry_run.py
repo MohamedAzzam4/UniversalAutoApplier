@@ -67,6 +67,50 @@ def _read_platform_fixture(name: str) -> str:
     return (FIXTURES_DIR / name).read_text(encoding="utf-8")
 
 
+def _post_start(page, fixture_html: str) -> dict:
+    """POST a fixture to /api/pipeline/start and return the response JSON.
+
+    WQ-4 contract: start returns immediately with a durable ``running``
+    state; the pipeline executes in a worker subprocess. Callers poll
+    ``/api/pipeline/status`` via :func:`_wait_for_run_terminal`.
+    """
+    response_json = page.evaluate(
+        """
+        async (fixtureHtml) => {
+            const resp = await fetch('/api/pipeline/start', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({fixture_html: fixtureHtml, max_jobs: 10})
+            });
+            return await resp.json();
+        }
+        """,
+        fixture_html,
+    )
+    assert response_json["status"] == "running", (
+        f"Unexpected pipeline status: {response_json.get('status')}"
+    )
+    assert "No final submissions" in response_json["message"], (
+        f"Unexpected safety message: {response_json.get('message')}"
+    )
+    return response_json
+
+
+def _wait_for_run_terminal(page, timeout: float = 60.0) -> dict:
+    """Poll GET /api/pipeline/status until the worker run reaches a
+    terminal state. Returns the terminal status body."""
+    deadline = time.monotonic() + timeout
+    last: dict = {}
+    while time.monotonic() < deadline:
+        last = page.evaluate(
+            "async () => { const r = await fetch('/api/pipeline/status'); return await r.json(); }"
+        )
+        if last["status"] in ("completed", "cancelled", "failed"):
+            return last
+        page.wait_for_timeout(250)
+    raise AssertionError(f"Pipeline did not reach a terminal state in {timeout}s: {last}")
+
+
 # Map platform -> fixture filename prefix. Platform.LINKEDIN_EASY_APPLY's
 # value is "linkedin_easy_apply", but the fixture files use "linkedin_"
 # as the prefix. This map avoids the mismatch.
@@ -275,26 +319,9 @@ def test_adapter_dry_run_never_submits(
     fixture_name = f"{prefix}_apply.html"
     fixture_html = _read_platform_fixture(fixture_name)
 
-    response_json = page.evaluate(
-        """
-        async (fixtureHtml) => {
-            const resp = await fetch('/api/pipeline/start', {
-                method: 'POST',
-                headers: {'Content-Type': 'application/json'},
-                body: JSON.stringify({fixture_html: fixtureHtml, max_jobs: 10})
-            });
-            return await resp.json();
-        }
-        """,
-        fixture_html,
-    )
-
-    assert response_json["status"] in ("completed", "error"), (
-        f"Unexpected pipeline status: {response_json['status']}"
-    )
-    assert (
-        "No real submissions" in response_json["message"] or "error" in response_json["message"]
-    ), f"Unexpected message: {response_json['message']}"
+    _post_start(page, fixture_html)
+    terminal = _wait_for_run_terminal(page)
+    assert terminal["status"] == "completed", f"run did not finish: {terminal}"
 
     with session_scope(app.state.session_factory) as session:
         updated = get_application_job(session, application_id)
@@ -367,20 +394,9 @@ def test_adapter_login_fixture_stops_pipeline(
     fixture_name = f"{prefix}_login.html"
     fixture_html = _read_platform_fixture(fixture_name)
 
-    response_json = page.evaluate(
-        """
-        async (fixtureHtml) => {
-            const resp = await fetch('/api/pipeline/start', {
-                method: 'POST',
-                headers: {'Content-Type': 'application/json'},
-                body: JSON.stringify({fixture_html: fixtureHtml, max_jobs: 10})
-            });
-            return await resp.json();
-        }
-        """,
-        fixture_html,
-    )
-    assert response_json["status"] in ("completed", "error")
+    _post_start(page, fixture_html)
+    terminal = _wait_for_run_terminal(page)
+    assert terminal["status"] == "completed", f"run did not finish: {terminal}"
 
     with session_scope(app.state.session_factory) as session:
         from universal_auto_applier.interventions.store import list_pending_interventions

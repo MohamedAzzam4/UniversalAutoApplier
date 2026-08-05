@@ -286,6 +286,19 @@ class PipelineOrchestrator:
                 # Re-raise any exception that occurred in the worker.
                 future.result()
 
+    def process_job(self, job: ApplicationJob, fixture_html: str | None = None) -> None:
+        """Process a single job (public per-job entry point).
+
+        WQ-4: the background worker calls this for each job in fixture mode
+        so it can honor pause/cancel at job boundaries instead of submitting
+        the whole job list to :meth:`run` at once.
+
+        ``fixture_html`` drives the generic dry-run path (observe -> explore
+        -> extract -> fill -> interventions -> review). The generic path
+        never submits, so this method is submit-safe.
+        """
+        self._process_job(job, fixture_html)
+
     def _process_job(self, job: ApplicationJob, fixture_html: str | None) -> None:
         """Process a single job through the pipeline."""
         self.state.current_job_id = job.application_id

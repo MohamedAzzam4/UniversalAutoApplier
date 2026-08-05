@@ -61,19 +61,21 @@ def get_status(request: Request) -> PipelineStatus:
 
     settings = app.state.settings
 
-    # Check for active pipeline state.
-    pipeline_state = getattr(app.state, "pipeline_state", None)
+    # Read pipeline run state from the durable worker (WQ-4). When idle or
+    # the worker is not registered, fall back to the idle defaults.
     run_status = "idle"
     current_phase = ""
     active_job_id = None
     last_action = ""
     last_error = ""
-    if pipeline_state is not None:
-        run_status = pipeline_state.status
-        current_phase = pipeline_state.current_phase
-        active_job_id = pipeline_state.current_job_id
-        last_action = pipeline_state.last_action
-        last_error = pipeline_state.last_error
+    worker = getattr(app.state, "pipeline_worker", None)
+    if worker is not None:
+        run_state = worker.get_state_dict()
+        run_status = run_state.get("status", "idle")
+        current_phase = run_state.get("current_phase", "")
+        active_job_id = run_state.get("current_job_id")
+        last_action = run_state.get("last_action", "")
+        last_error = run_state.get("last_error", "")
 
     return PipelineStatus(
         run_status=run_status,

@@ -614,7 +614,11 @@ class TestPipelineStartAPI:
         from fastapi.testclient import TestClient
 
         from universal_auto_applier.api.app import create_app
+        from universal_auto_applier.persistence.db import session_scope
         from universal_auto_applier.persistence.models import Base
+        from universal_auto_applier.persistence.pipeline_run_repository import (
+            create_pipeline_run,
+        )
 
         settings = Settings(
             host="127.0.0.1",
@@ -626,12 +630,12 @@ class TestPipelineStartAPI:
         app = create_app(settings=settings)
         with TestClient(app) as client:
             Base.metadata.create_all(app.state.engine)
-            # Simulate a running pipeline via the worker service.
-            worker = app.state.pipeline_worker
-            worker._state.status = "running"
+            # Simulate an active durable run (as if a worker were running).
+            with session_scope(app.state.session_factory) as session:
+                create_pipeline_run(session, run_id="active-run-1", status="running")
             response = client.post("/api/pipeline/start", json={"max_jobs": 1})
         assert response.status_code == 409
-        assert "already" in response.json()["detail"].lower()
+        assert "already active" in response.json()["detail"].lower()
 
     def test_dashboard_shows_pipeline_state(self, tmp_path: Path) -> None:
         from fastapi.testclient import TestClient
@@ -652,7 +656,9 @@ class TestPipelineStartAPI:
             client.post("/api/pipeline/start", json={"max_jobs": 1})
             status_resp = client.get("/api/status")
         body = status_resp.json()
-        assert body["run_status"] in ("completed", "idle")
+        # WQ-4: a real worker subprocess may still be starting/finishing, so
+        # the durable run status is one of running/completed/idle.
+        assert body["run_status"] in ("running", "completed", "idle")
         assert "submit_mode" in body
 
     def test_cli_callable_entrypoint(self, settings, session_factory, tmp_path: Path) -> None:
