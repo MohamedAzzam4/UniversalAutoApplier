@@ -327,6 +327,41 @@ class QueueImportRunRow(Base):
     completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
 
+class PipelineRunRow(Base):
+    """One durable pipeline run (WQ-4 background browser pipeline).
+
+    The authoritative, restart-safe snapshot of a pipeline run. The runtime
+    ``PipelineWorkerService`` persists every mutation of a run into this table
+    and reads status back from it, so an API restart keeps the run id, status,
+    progress counts, current job, error history, timestamps, and cancellation
+    reason visible. A worker subprocess performs the actual browser work and
+    writes progress into the same row.
+
+    Status values: idle, running, pausing, paused, cancelling, cancelled,
+    completed, failed.
+    """
+
+    __tablename__ = "pipeline_runs"
+
+    run_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    # idle | running | pausing | paused | cancelling | cancelled | completed | failed
+    status: Mapped[str] = mapped_column(String(32), index=True)
+    mode: Mapped[str] = mapped_column(String(64), default="sequential_dry_run")
+    current_job_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    current_phase: Mapped[str] = mapped_column(String(64), default="")
+    last_action: Mapped[str] = mapped_column(Text, default="")
+    last_error: Mapped[str] = mapped_column(Text, default="")
+    cancel_reason: Mapped[str] = mapped_column(Text, default="")
+    jobs_total: Mapped[int] = mapped_column(Integer, default=0)
+    jobs_completed: Mapped[int] = mapped_column(Integer, default=0)
+    jobs_failed: Mapped[int] = mapped_column(Integer, default=0)
+    jobs_skipped: Mapped[int] = mapped_column(Integer, default=0)
+    # Structured per-job errors: {"timestamp", "application_id", "error", "phase"}.
+    errors_json: Mapped[list[dict[str, Any]]] = mapped_column(JSON, default=list)
+    started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
 __all__ = [
     "Base",
     "ApplicationJobRow",
@@ -340,4 +375,5 @@ __all__ = [
     "SubmissionClaimRow",
     "SubmissionResultRow",
     "QueueImportRunRow",
+    "PipelineRunRow",
 ]

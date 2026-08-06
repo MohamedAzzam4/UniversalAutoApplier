@@ -50,11 +50,17 @@
           </div>
           <div class="uaa-pipeline-controls">
             <button id="pipeline-start" class="uaa-btn uaa-btn-success">Start Dry-Run</button>
+            <button id="pipeline-pause" class="uaa-btn" disabled>Pause</button>
+            <button id="pipeline-resume" class="uaa-btn uaa-btn-success" disabled>Resume</button>
+            <button id="pipeline-cancel" class="uaa-btn uaa-btn-danger" disabled>Cancel</button>
             <span id="pipeline-phase" class="uaa-stat-label"></span>
             <span id="pipeline-last-action" class="uaa-stat-label"></span>
             <span id="pipeline-last-error" class="uaa-stat-label" style="color: var(--uaa-danger);"></span>
           </div>
-          <p class="uaa-safety-note">Starting the pipeline runs in dry-run/review mode. No real submissions occur.</p>
+          <div class="uaa-pipeline-progress" style="margin-top: 0.5rem;">
+            <span id="pipeline-progress" class="uaa-stat-label"></span>
+          </div>
+          <p class="uaa-safety-note">Background dry-run pipeline. No final submissions occur from this pipeline.</p>
         </div>
 
         <div class="uaa-card">

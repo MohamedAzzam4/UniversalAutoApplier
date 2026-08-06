@@ -563,7 +563,14 @@ class TestDashboardStartSafety:
         tmp_path: Path,
     ) -> None:
         """POST /api/pipeline/start with a platform fixture must not
-        result in SUBMITTED or APPLIED status."""
+        result in SUBMITTED or APPLIED status.
+
+        The run executes in a worker subprocess (WQ-4); the test polls the
+        durable GET /api/pipeline/status until the run is terminal, then
+        verifies the job reached review state without submitting.
+        """
+        import time
+
         from fastapi.testclient import TestClient
 
         from universal_auto_applier.api.app import create_app
@@ -579,6 +586,7 @@ class TestDashboardStartSafety:
             data_dir=tmp_path / "uaa_data",
             browser_headless=True,
             submit_mode="review",
+            pipeline_job_pulse_ms=200,
         )
         local_settings.data_dir.mkdir(parents=True, exist_ok=True)
 
@@ -603,8 +611,19 @@ class TestDashboardStartSafety:
             )
             assert response.status_code == 200
             body = response.json()
-            assert body["status"] in ("completed", "error")
-            assert "No real submissions" in body["message"] or "error" in body["message"]
+            assert body["status"] == "running"
+            assert body["run_id"]
+
+            deadline = time.monotonic() + 30
+            final: dict = {}
+            while time.monotonic() < deadline:
+                final = client.get("/api/pipeline/status").json()
+                if final["status"] in ("completed", "cancelled", "failed"):
+                    break
+                time.sleep(0.2)
+            assert final["status"] == "completed", f"run did not finish: {final}"
+            assert final["run_id"] == body["run_id"]
+            assert final["jobs_completed"] == 1
 
             with session_scope(session_factory) as session:
                 updated = get_application_job(session, job.application_id)
@@ -612,7 +631,11 @@ class TestDashboardStartSafety:
             assert updated.status not in (
                 ApplicationStatus.SUBMITTED,
                 ApplicationStatus.APPLIED,
-            )
+            ), f"Job became {updated.status} — dashboard start must not submit!"
+            assert updated.status in (
+                ApplicationStatus.REVIEW_READY,
+                ApplicationStatus.NEEDS_USER_INPUT,
+            ), f"Job ended as {updated.status} — expected a review state"
 
 
 # ---------------------------------------------------------------------------

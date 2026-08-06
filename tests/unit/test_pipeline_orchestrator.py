@@ -532,7 +532,7 @@ class TestTrustedAdapterSubmitSafety:
 
 
 class TestPipelineStartAPI:
-    """Tests for the POST /api/pipeline/start endpoint."""
+    """Tests for the POST /api/pipeline/start endpoint (WQ-4 background worker)."""
 
     def test_start_endpoint_exists(self, tmp_path: Path) -> None:
         from fastapi.testclient import TestClient
@@ -553,10 +553,13 @@ class TestPipelineStartAPI:
             response = client.post("/api/pipeline/start", json={"max_jobs": 1})
         assert response.status_code == 200
         body = response.json()
-        assert body["status"] in ("completed", "idle")
-        assert "No real submissions" in body["message"]
+        # WQ-4: start is non-blocking, returns "running" immediately.
+        assert body["status"] in ("running", "completed")
+        assert body["run_id"] != ""
 
     def test_start_does_not_submit(self, tmp_path: Path) -> None:
+        import time
+
         from fastapi.testclient import TestClient
 
         from universal_auto_applier.api.app import create_app
@@ -572,10 +575,15 @@ class TestPipelineStartAPI:
         app = create_app(settings=settings)
         with TestClient(app) as client:
             Base.metadata.create_all(app.state.engine)
-            response = client.post("/api/pipeline/start", json={"max_jobs": 1})
-        body = response.json()
-        # No jobs processed = no submissions possible.
-        assert body["jobs_processed"] == 0
+            client.post("/api/pipeline/start", json={"max_jobs": 1})
+            # Wait for the background worker to finish (no jobs = fast).
+            for _ in range(20):
+                status = client.get("/api/pipeline/status").json()
+                if status["status"] in ("completed", "cancelled", "failed"):
+                    break
+                time.sleep(0.5)
+            # No jobs processed = no submissions possible.
+            assert status["jobs_completed"] == 0
 
     def test_start_updates_pipeline_state(self, tmp_path: Path) -> None:
         from fastapi.testclient import TestClient
@@ -598,15 +606,19 @@ class TestPipelineStartAPI:
             status_resp = client.get("/api/pipeline/status")
         assert status_resp.status_code == 200
         status = status_resp.json()
-        assert status["status"] in ("completed", "idle")
+        # WQ-4: status is "running" or "completed" (non-blocking).
+        assert status["status"] in ("running", "completed", "idle")
         assert status["run_id"] is not None
 
     def test_second_start_while_running_rejected(self, tmp_path: Path) -> None:
         from fastapi.testclient import TestClient
 
         from universal_auto_applier.api.app import create_app
+        from universal_auto_applier.persistence.db import session_scope
         from universal_auto_applier.persistence.models import Base
-        from universal_auto_applier.services.pipeline_orchestrator import PipelineState
+        from universal_auto_applier.persistence.pipeline_run_repository import (
+            create_pipeline_run,
+        )
 
         settings = Settings(
             host="127.0.0.1",
@@ -618,11 +630,12 @@ class TestPipelineStartAPI:
         app = create_app(settings=settings)
         with TestClient(app) as client:
             Base.metadata.create_all(app.state.engine)
-            # Simulate a running pipeline.
-            app.state.pipeline_state = PipelineState(status="running")
+            # Simulate an active durable run (as if a worker were running).
+            with session_scope(app.state.session_factory) as session:
+                create_pipeline_run(session, run_id="active-run-1", status="running")
             response = client.post("/api/pipeline/start", json={"max_jobs": 1})
         assert response.status_code == 409
-        assert "already running" in response.json()["detail"].lower()
+        assert "already active" in response.json()["detail"].lower()
 
     def test_dashboard_shows_pipeline_state(self, tmp_path: Path) -> None:
         from fastapi.testclient import TestClient
@@ -643,7 +656,9 @@ class TestPipelineStartAPI:
             client.post("/api/pipeline/start", json={"max_jobs": 1})
             status_resp = client.get("/api/status")
         body = status_resp.json()
-        assert body["run_status"] in ("completed", "idle")
+        # WQ-4: a real worker subprocess may still be starting/finishing, so
+        # the durable run status is one of running/completed/idle.
+        assert body["run_status"] in ("running", "completed", "idle")
         assert "submit_mode" in body
 
     def test_cli_callable_entrypoint(self, settings, session_factory, tmp_path: Path) -> None:

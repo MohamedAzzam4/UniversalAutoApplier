@@ -71,6 +71,15 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
 
     if not getattr(app.state, "review_states", None):
         app.state.review_states = {}
+
+    # Initialize the background pipeline worker service (WQ-4).
+    from universal_auto_applier.services.pipeline_worker_service import (
+        PipelineWorkerService,
+    )
+
+    if not getattr(app.state, "pipeline_worker", None):
+        app.state.pipeline_worker = PipelineWorkerService(settings, app.state.session_factory)
+
     init_log_buffer(app)
 
     # Optional, opt-in startup queue import. When UAA_IMPORT_QUEUE_ON_STARTUP
@@ -91,6 +100,9 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     try:
         yield
     finally:
+        worker = getattr(app.state, "pipeline_worker", None)
+        if worker is not None and hasattr(worker, "shutdown"):
+            worker.shutdown()
         if _owns_engine and engine is not None:
             engine.dispose()
 

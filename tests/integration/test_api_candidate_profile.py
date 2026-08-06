@@ -2,19 +2,27 @@
 profile and does NOT create first_name/last_name/email interventions
 when the profile exists.
 
-This test uses the real FastAPI TestClient (not a mock) and proves:
-1. The API endpoint resolves the candidate profile from the job's
-   metadata (written by JobHunter's exporter).
-2. When the profile has first_name/last_name/email, those fields are
-   filled by the fill engine and do NOT become interventions.
-3. The job reaches review_ready (or needs_user_input for file fields,
-   which is correct), never submitted.
-4. The candidate profile data appears in the pipeline logs.
+This test uses the real FastAPI TestClient and the durable WQ-4 worker
+subprocess in deterministic fixture mode. Every assertion is meaningful:
+
+1. The API endpoint resolves the candidate profile from the job's metadata.
+2. With a profile, name/email fields are filled and do NOT become
+   interventions (checked via the structured ``llm_metadata.field_label``,
+   the authoritative field identity — never parsed question text).
+3. Without a profile, name/email fields DO become interventions, proving the
+   profile loader is actually used (no silent empty-profile bypass).
+4. The run never produces SUBMITTED / APPLIED.
+5. Run state is durable: counters, run_id, and terminal status are surfaced
+   through GET /api/pipeline/status.
+
+Must not require a browser or any network: fixture mode only.
 """
 
 from __future__ import annotations
 
+import time
 from pathlib import Path
+from typing import Any
 
 from fastapi.testclient import TestClient
 
@@ -23,6 +31,7 @@ from universal_auto_applier.config import Settings
 from universal_auto_applier.core.identity import compute_application_id
 from universal_auto_applier.core.models import ApplicationJob
 from universal_auto_applier.core.statuses import ApplicationStatus, Platform
+from universal_auto_applier.interventions.store import list_pending_interventions
 from universal_auto_applier.persistence.db import session_scope
 from universal_auto_applier.persistence.job_repository import (
     get_application_job,
@@ -32,22 +41,41 @@ from universal_auto_applier.persistence.models import Base
 
 FIXTURES_DIR = Path(__file__).parent.parent / "fixtures" / "platforms"
 
+_PROFILE_FIELDS = {"first name", "last name", "email address"}
+
 
 def _read_fixture(name: str) -> str:
     return (FIXTURES_DIR / name).read_text(encoding="utf-8")
 
 
-def _seed_job_with_profile(tmp_path: Path) -> str:
-    """Seed a job with a real candidate profile snapshot (as JobHunter
-    would export it) and return its application_id."""
-    cv = tmp_path / "cv.pdf"
-    cover = tmp_path / "cover.pdf"
+def _make_app(tmp_path: Path, suffix: str = "") -> tuple[Any, TestClient]:
+    """Build an app with a clean temp data dir; enter TestClient context."""
+    settings = Settings(
+        host="127.0.0.1",
+        port=8001,
+        data_dir=tmp_path / f"uaa_data{suffix}",
+        browser_headless=True,
+        submit_mode="review",
+        pipeline_job_pulse_ms=200,
+    )
+    settings.data_dir.mkdir(parents=True, exist_ok=True)
+    app = create_app(settings=settings)
+    client = TestClient(app)
+    client.__enter__()
+    Base.metadata.create_all(app.state.engine)
+    return app, settings, client
+
+
+def _seed_job_with_profile(tmp_path: Path, external_id: str) -> str:
+    """Seed a job carrying a full candidate profile snapshot; return app id."""
+    cv = tmp_path / f"{external_id}-cv.pdf"
+    cover = tmp_path / f"{external_id}-cover.pdf"
     cv.write_bytes(b"%PDF-1.4 fake cv")
     cover.write_bytes(b"%PDF-1.4 fake cover")
 
-    url = "https://boards.greenhouse.io/example/jobs/api-proof-001"
+    url = f"https://boards.greenhouse.io/example/jobs/{external_id}"
     application_id = compute_application_id(
-        platform="greenhouse", external_job_id="api-proof-001", url=url
+        platform=Platform.GREENHOUSE.value, external_job_id=external_id, url=url
     )
     job = ApplicationJob(
         application_id=application_id,
@@ -61,7 +89,7 @@ def _seed_job_with_profile(tmp_path: Path) -> str:
         cv_pdf=str(cv),
         cover_letter_pdf=str(cover),
         status=ApplicationStatus.QUEUED,
-        external_job_id="api-proof-001",
+        external_job_id=external_id,
         metadata={
             "candidate_profile": {
                 "first_name": "Mohamed",
@@ -69,7 +97,6 @@ def _seed_job_with_profile(tmp_path: Path) -> str:
                 "full_name": "Mohamed Azzam",
                 "email": "mohamed@example.com",
                 "phone": "+49 152 5617 2336",
-                "linkedin_url": "https://linkedin.com/in/mohamed",
                 "city": "Erlangen",
                 "country": "Germany",
             }
@@ -78,37 +105,62 @@ def _seed_job_with_profile(tmp_path: Path) -> str:
     return application_id, job
 
 
+def _seed_job_without_profile(tmp_path: Path) -> str:
+    cv = tmp_path / "no-profile-cv.pdf"
+    cover = tmp_path / "no-profile-cover.pdf"
+    cv.write_bytes(b"%PDF-1.4 fake cv")
+    cover.write_bytes(b"%PDF-1.4 fake cover")
+
+    url = "https://boards.greenhouse.io/example/jobs/api-proof-002"
+    application_id = compute_application_id(
+        platform="greenhouse", external_job_id="api-proof-002", url=url
+    )
+    job = ApplicationJob(
+        application_id=application_id,
+        platform=Platform.GREENHOUSE,
+        source="linkedin",
+        company="No Profile Corp",
+        title="Software Engineer",
+        url=url,
+        score=4.5,
+        verdict="apply",
+        cv_pdf=str(cv),
+        cover_letter_pdf=str(cover),
+        status=ApplicationStatus.QUEUED,
+        external_job_id="api-proof-002",
+        metadata={},  # NO candidate_profile snapshot
+    )
+    return application_id, job
+
+
+def _wait_for_terminal(client: TestClient, timeout: float = 30.0) -> dict[str, Any]:
+    """Poll GET /api/pipeline/status until the run reaches a terminal state."""
+    deadline = time.monotonic() + timeout
+    last: dict[str, Any] = {}
+    while time.monotonic() < deadline:
+        last = client.get("/api/pipeline/status").json()
+        if last["status"] in ("completed", "cancelled", "failed"):
+            return last
+        time.sleep(0.2)
+    raise RuntimeError(f"Pipeline did not reach terminal state in {timeout}s: {last}")
+
+
 class TestAPIPipelineStartLoadsCandidateProfile:
     """Prove POST /api/pipeline/start loads the candidate profile from
-    job metadata and does not create name/email interventions."""
+    job metadata and honors/misses profile fields accordingly."""
 
     def test_api_start_with_profile_does_not_create_name_email_interventions(
         self, tmp_path: Path
     ) -> None:
-        """When a job has a candidate_profile snapshot, the API pipeline
-        must NOT create interventions for first_name, last_name, or email."""
-        application_id, job = _seed_job_with_profile(tmp_path)
+        """With a profile snapshot, name/email fields are filled and do NOT
+        become interventions."""
+        application_id, job = _seed_job_with_profile(tmp_path, "api-proof-001")
 
-        settings = Settings(
-            host="127.0.0.1",
-            port=8001,
-            data_dir=tmp_path / "uaa_data",
-            browser_headless=True,
-            submit_mode="review",
-        )
-        settings.data_dir.mkdir(parents=True, exist_ok=True)
-        app = create_app(settings=settings)
-
-        with TestClient(app) as client:
-            Base.metadata.create_all(app.state.engine)
-            session_factory = app.state.session_factory
-
-            # Seed the job.
-            with session_scope(session_factory) as session:
+        app, settings, client = _make_app(tmp_path, "-prof")
+        try:
+            with session_scope(app.state.session_factory) as session:
                 upsert_application_job(session, job)
 
-            # POST /api/pipeline/start with the greenhouse apply fixture
-            # (which has first_name, last_name, email fields).
             fixture_html = _read_fixture("greenhouse_apply.html")
             response = client.post(
                 "/api/pipeline/start",
@@ -116,97 +168,52 @@ class TestAPIPipelineStartLoadsCandidateProfile:
             )
             assert response.status_code == 200
             body = response.json()
-            assert body["status"] in ("completed", "error")
-            assert "No real submissions" in body["message"]
+            assert body["status"] == "running"
+            assert body["mode"] == "fixture_dry_run"
+            assert body["run_id"]
 
-            # Check the job's final status.
-            with session_scope(session_factory) as session:
+            final = _wait_for_terminal(client)
+            assert final["status"] == "completed"
+            assert final["run_id"] == body["run_id"]
+
+            with session_scope(app.state.session_factory) as session:
                 updated = get_application_job(session, application_id)
             assert updated is not None
-            # Must NOT be submitted or stuck in_progress.
-            assert updated.status != ApplicationStatus.SUBMITTED
-            assert updated.status != ApplicationStatus.APPLIED
-            assert updated.status != ApplicationStatus.IN_PROGRESS
+            # Never submitted, never stuck.
+            assert updated.status not in (
+                ApplicationStatus.SUBMITTED,
+                ApplicationStatus.APPLIED,
+            )
+            # The profile fills first/last/email, but the required resume
+            # file upload still needs confirmation -> needs_user_input.
             assert updated.status in (
                 ApplicationStatus.REVIEW_READY,
                 ApplicationStatus.NEEDS_USER_INPUT,
             )
 
-            # Check interventions: first_name/last_name/email must NOT
-            # be interventions when the profile has them.
-            from universal_auto_applier.interventions.store import (
-                list_pending_interventions,
-            )
-
-            with session_scope(session_factory) as session:
+            with session_scope(app.state.session_factory) as session:
                 pending = list_pending_interventions(session, application_id)
 
-            # The profile has first_name="Mohamed", last_name="Azzam",
-            # email="mohamed@example.com". None of these should be
-            # interventions. File fields (resume, cover_letter) may
-            # still be interventions because they require confirmation.
-            for iv in pending:
-                q_lower = iv.question.lower()
-                # Assert name/email fields are NOT in the intervention questions.
-                assert "first name" not in q_lower, (
-                    f"first_name should not be an intervention when profile has it: {iv.question}"
-                )
-                assert "last name" not in q_lower, (
-                    f"last_name should not be an intervention when profile has it: {iv.question}"
-                )
-                # "email" as a standalone word is OK in other contexts,
-                # but "email address" or "email" field should not be an
-                # intervention. We check for the common patterns.
-                assert "email address" not in q_lower, (
-                    f"email should not be an intervention when profile has it: {iv.question}"
-                )
+            field_labels = {
+                (iv.llm_metadata or {}).get("field_label", "").lower() for iv in pending
+            }
+            assert not (field_labels & _PROFILE_FIELDS), (
+                f"name/email fields must not be interventions when the profile "
+                f"has them; got labels: {field_labels}"
+            )
+        finally:
+            client.__exit__(None, None, None)
 
     def test_api_start_without_profile_creates_name_email_interventions(
         self, tmp_path: Path
     ) -> None:
-        """When a job has NO candidate_profile snapshot, the API pipeline
-        MUST create interventions for first_name/last_name/email (proving
-        the profile loader is actually being used, not bypassed)."""
-        cv = tmp_path / "cv.pdf"
-        cover = tmp_path / "cover.pdf"
-        cv.write_bytes(b"%PDF-1.4 fake cv")
-        cover.write_bytes(b"%PDF-1.4 fake cover")
+        """With NO profile snapshot, name/email fields DO become
+        interventions — proving the loader is not bypassed."""
+        application_id, job = _seed_job_without_profile(tmp_path)
 
-        url = "https://boards.greenhouse.io/example/jobs/api-proof-002"
-        application_id = compute_application_id(
-            platform="greenhouse", external_job_id="api-proof-002", url=url
-        )
-        job = ApplicationJob(
-            application_id=application_id,
-            platform=Platform.GREENHOUSE,
-            source="linkedin",
-            company="No Profile Corp",
-            title="Software Engineer",
-            url=url,
-            score=4.5,
-            verdict="apply",
-            cv_pdf=str(cv),
-            cover_letter_pdf=str(cover),
-            status=ApplicationStatus.QUEUED,
-            external_job_id="api-proof-002",
-            metadata={},  # NO candidate_profile snapshot
-        )
-
-        settings = Settings(
-            host="127.0.0.1",
-            port=8001,
-            data_dir=tmp_path / "uaa_data2",
-            browser_headless=True,
-            submit_mode="review",
-        )
-        settings.data_dir.mkdir(parents=True, exist_ok=True)
-        app = create_app(settings=settings)
-
-        with TestClient(app) as client:
-            Base.metadata.create_all(app.state.engine)
-            session_factory = app.state.session_factory
-
-            with session_scope(session_factory) as session:
+        app, settings, client = _make_app(tmp_path, suffix="noprof")
+        try:
+            with session_scope(app.state.session_factory) as session:
                 upsert_application_job(session, job)
 
             fixture_html = _read_fixture("greenhouse_apply.html")
@@ -216,39 +223,38 @@ class TestAPIPipelineStartLoadsCandidateProfile:
             )
             assert response.status_code == 200
 
-            from universal_auto_applier.interventions.store import (
-                list_pending_interventions,
-            )
+            final = _wait_for_terminal(client)
+            assert final["status"] == "completed"
 
-            with session_scope(session_factory) as session:
+            with session_scope(app.state.session_factory) as session:
+                updated = get_application_job(session, application_id)
+            assert updated is not None
+            assert updated.status == ApplicationStatus.NEEDS_USER_INPUT
+
+            with session_scope(app.state.session_factory) as session:
                 pending = list_pending_interventions(session, application_id)
 
-            # Without a profile, at least one of name/email should be
-            # an intervention (the fill engine can't map them).
-            assert len(pending) > 0, (
-                "Expected interventions for name/email when no candidate profile is provided"
+            field_labels = {
+                (iv.llm_metadata or {}).get("field_label", "").lower() for iv in pending
+            }
+            assert field_labels & _PROFILE_FIELDS, (
+                f"expected name/email interventions without a profile; got {field_labels}"
             )
+            # Prove each such intervention carries its structured field.
+            for iv in pending:
+                label = (iv.llm_metadata or {}).get("field_label")
+                if label and label.lower() in _PROFILE_FIELDS:
+                    assert iv.llm_metadata.get("field_type"), f"field_type missing for {label}"
+        finally:
+            client.__exit__(None, None, None)
 
     def test_api_start_never_submits(self, tmp_path: Path) -> None:
-        """POST /api/pipeline/start must never result in submission,
-        regardless of candidate profile presence."""
-        application_id, job = _seed_job_with_profile(tmp_path)
+        """Regardless of profile presence, the pipeline never submits."""
+        application_id, job = _seed_job_with_profile(tmp_path, "api-proof-003")
 
-        settings = Settings(
-            host="127.0.0.1",
-            port=8001,
-            data_dir=tmp_path / "uaa_data3",
-            browser_headless=True,
-            submit_mode="review",
-        )
-        settings.data_dir.mkdir(parents=True, exist_ok=True)
-        app = create_app(settings=settings)
-
-        with TestClient(app) as client:
-            Base.metadata.create_all(app.state.engine)
-            session_factory = app.state.session_factory
-
-            with session_scope(session_factory) as session:
+        app, settings, client = _make_app(tmp_path, suffix="nosub")
+        try:
+            with session_scope(app.state.session_factory) as session:
                 upsert_application_job(session, job)
 
             fixture_html = _read_fixture("greenhouse_apply.html")
@@ -257,10 +263,16 @@ class TestAPIPipelineStartLoadsCandidateProfile:
                 json={"fixture_html": fixture_html, "max_jobs": 10},
             )
 
-            with session_scope(session_factory) as session:
+            final = _wait_for_terminal(client)
+            assert final["status"] == "completed"
+            assert final["jobs_completed"] == 1
+
+            with session_scope(app.state.session_factory) as session:
                 updated = get_application_job(session, application_id)
             assert updated is not None
             assert updated.status not in (
                 ApplicationStatus.SUBMITTED,
                 ApplicationStatus.APPLIED,
             )
+        finally:
+            client.__exit__(None, None, None)
