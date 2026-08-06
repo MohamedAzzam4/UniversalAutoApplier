@@ -338,13 +338,13 @@ class PipelineRunRow(Base):
     writes progress into the same row.
 
     Status values: idle, running, pausing, paused, cancelling, cancelled,
-    completed, failed.
+    completed, failed, recovered.
     """
 
     __tablename__ = "pipeline_runs"
 
     run_id: Mapped[str] = mapped_column(String(64), primary_key=True)
-    # idle | running | pausing | paused | cancelling | cancelled | completed | failed
+    # idle | running | pausing | paused | cancelling | cancelled | completed | failed | recovered
     status: Mapped[str] = mapped_column(String(32), index=True)
     mode: Mapped[str] = mapped_column(String(64), default="sequential_dry_run")
     current_job_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
@@ -360,6 +360,14 @@ class PipelineRunRow(Base):
     errors_json: Mapped[list[dict[str, Any]]] = mapped_column(JSON, default=list)
     started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
     finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    # WQ-5 worker liveness: who owns this run and how recently it proved it
+    # is alive. Used by startup recovery to distinguish a healthy worker from a
+    # stale run (missing/dead pid AND expired/missing heartbeat).
+    worker_pid: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    worker_started_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    heartbeat_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
 
 __all__ = [

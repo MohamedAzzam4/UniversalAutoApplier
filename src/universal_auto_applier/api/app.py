@@ -80,6 +80,31 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     if not getattr(app.state, "pipeline_worker", None):
         app.state.pipeline_worker = PipelineWorkerService(settings, app.state.session_factory)
 
+    # WQ-5: recover stale pipeline runs left by a previous process. Runs once,
+    # after migrations, before any pipeline action is accepted. Only runs
+    # whose worker pid is missing/dead AND whose heartbeat expired are
+    # recovered; live workers and fresh heartbeats are never touched.
+    from universal_auto_applier.services.pipeline_recovery_service import (
+        recover_stale_pipeline_runs,
+    )
+
+    if not getattr(app.state, "pipeline_recovery_summary", None):
+        try:
+            app.state.pipeline_recovery_summary = recover_stale_pipeline_runs(
+                app.state.session_factory,
+                settings,
+            )
+            recovered = app.state.pipeline_recovery_summary.get("recovered", [])
+            if recovered:
+                logger.warning(
+                    "startup recovery: %d stale pipeline run(s) recovered: %s",
+                    len(recovered),
+                    [run_id[:8] for run_id in recovered],
+                )
+        except Exception:  # noqa: BLE001 - recovery must never block startup
+            logger.exception("startup stale-run recovery failed")
+            app.state.pipeline_recovery_summary = {"recovered": [], "healthy_kept": []}
+
     init_log_buffer(app)
 
     # Optional, opt-in startup queue import. When UAA_IMPORT_QUEUE_ON_STARTUP
