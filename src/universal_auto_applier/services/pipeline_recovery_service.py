@@ -75,11 +75,18 @@ def _pid_is_alive(pid: int) -> bool:
 
 
 def _pid_is_alive_windows(pid: int) -> bool:
-    """Windows liveness probe via OpenProcess (query-only access)."""
+    """Windows liveness probe via OpenProcess (query-only access).
+
+    ``ctypes.windll`` only exists on Windows; resolve it dynamically so the
+    module type-checks on every platform.
+    """
     import ctypes
 
+    windll: Any = getattr(ctypes, "windll", None)
+    if windll is None:
+        return False
     PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
-    kernel32 = ctypes.windll.kernel32
+    kernel32 = windll.kernel32
     handle = kernel32.OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, False, pid)
     if not handle:
         return False
