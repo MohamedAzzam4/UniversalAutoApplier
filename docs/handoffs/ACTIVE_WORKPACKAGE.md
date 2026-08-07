@@ -1,10 +1,11 @@
 # Active Workpackage
 
 - **WP ID:** WQ-5 — restart recovery and stale `in_progress` recovery (durable worker liveness + startup stale-run recovery).
-- **Status:** IN PROGRESS — implementation complete, full local gate green (ruff/pyright/unit+contract+integration 1051 / playwright 185). Not yet committed; commit/push/PR/CI pending.
+- **Status:** IN PROGRESS — test coverage completed for durable heartbeat & dashboard recovery rendering. PR #8 head updating.
 - **Branch:** `checkpoint/wq-5-stale-run-recovery`
 - **Base SHA:** `736242b5ed06ccfdf9f94a2061e4a6ce00031aca` (`origin/main`, WQ-4 merge commit)
-- **Last completed/checkpoint SHA:** none yet — implementation is uncommitted in the working tree (this file cannot contain the SHA of the commit that modifies it; the first WQ-5 commit will be made on a substantive milestone, not as a status-only commit).
+- **PR:** https://github.com/MohamedAzzam4/UniversalAutoApplier/pull/8 (open, not draft, not merged)
+- **Last completed/checkpoint SHA:** `4cedb40cf23a6a131034f950c0258275dfc2d27f` (PR head, pushed to origin). The final handoff-edit is uncommitted (would otherwise re-trigger CI; resolve the head dynamically).
 - **Branch-head verification (must be run dynamically; do not trust an embedded SHA):**
 
   ```text
@@ -187,26 +188,38 @@ duplicate starts with 409). Nothing auto-submits or auto-retries.
 
 ## Blockers / risks
 
-- None. Next: commit WQ-5 files only (exclude the unstaged WQ-4 handoff edit
-  and `tmp_*` artifacts), push `checkpoint/wq-5-stale-run-recovery`, open a
-  PR vs `main` via REST (no merge), wait for all 5 CI jobs (Linux 3.11/3.12/
-  3.13/3.14 + Windows 3.14), then final READY/NOT READY report.
+- None. CI verified all 5 jobs on PR head `4cedb40`. Awaiting PR #8 review/merge; no merge or push to `main` without the reviewed PR (exactly once).
 - `gh` on PATH is a browser-opener shim; use the GitHub REST API (token via
   `git credential-manager` on the `.../UniversalAutoApplier.git` remote).
+- Untracked debug artifacts (`tmp_debug_status.py`, `tmp_debug_status/`,
+  `tmp_final_pipeline/`) stay out of commits.
+
+## CI results (2026-08-06, PR #8 head `4cedb40`)
+
+- verify-linux (4 jobs: Python 3.11, 3.12, 3.13, 3.14) → success
+  https://github.com/MohamedAzzam4/UniversalAutoApplier/actions/runs/31067711762
+- verify-windows-py314 (Windows + Python 3.14) → success
+  https://github.com/MohamedAzzam4/UniversalAutoApplier/actions/runs/31067711731
+- First Linux attempt failed on pyright (`ctypes.windll` unknown on Linux);
+  fixed in `4cedb40` (`getattr(ctypes, "windll", None)` + `Any`), verified
+  locally with `pyright --pythonplatform Linux`.
 
 ## Exact next action
 
-1. `git status --short`; stage only WQ-5 files; commit
-   (`feat(wq-5): stale pipeline-run recovery`).
-2. Push `checkpoint/wq-5-stale-run-recovery`; verify
-   `git rev-parse HEAD` == `git rev-parse origin/<branch>`.
-3. Open PR vs `main` via REST (no merge); dispatch Windows CI if the
-   workflow is not triggered automatically.
-4. Poll all 5 CI jobs to green; update this file with results; final report
-   with branch/base/head SHAs, changed-file list, test counts, CI URLs,
-   safety evidence, READY/NOT READY.
-5. After merge: update `docs/CURRENT_STATE.md` (main advanced) and audit
-   `docs/NEXT_WORKPACKAGES.md` for follow-ups.
+1. Await PR #8 review. If changes requested: make them on the WQ-5 branch,
+   re-run the full local gate, push; update the PR body handoff section.
+2. After merge: update `docs/CURRENT_STATE.md` (main advanced) and audit
+   `docs/NEXT_WORKPACKAGES.md` for follow-ups (WQ-6+ are still backlog).
+3. Before any subsequent handoff/review run, resolve the head dynamically and
+   compare to origin:
+
+   ```text
+   git fetch origin
+   git rev-parse HEAD
+   git rev-parse origin/checkpoint/wq-5-stale-run-recovery
+   ```
+
+   The two values must match. Re-verify the base reference (`736242b5`).
 
 ## Rules
 

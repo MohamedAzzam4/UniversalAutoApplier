@@ -277,6 +277,52 @@ class TestPauseAndResume:
             client.post("/api/pipeline/cancel")
             _wait_for_terminal(client)
 
+    def test_paused_worker_updates_durable_heartbeat(self, tmp_path: Path) -> None:
+        """The worker subprocess continuously updates heartbeat_at on the DB row
+        while paused, proving the worker stays alive and owns the run without
+        triggering false recovery or losing its pid."""
+        job1 = _make_job(
+            tmp_path, "hb-pause-1", url="https://boards.greenhouse.io/example/jobs/hb-pause-1"
+        )
+        job2 = _make_job(
+            tmp_path, "hb-pause-2", url="https://boards.greenhouse.io/example/jobs/hb-pause-2"
+        )
+        with _running_app(tmp_path, [job1, job2]) as (client, app, settings):
+            client.post(
+                "/api/pipeline/start",
+                json={"fixture_html": GREENHOUSE_APPLY_HTML, "max_jobs": 2},
+            )
+            _wait_until(client, lambda s: s["status"] == "running" and s["jobs_completed"] >= 1)
+            resp = client.post("/api/pipeline/pause")
+            assert resp.status_code == 200
+
+            paused_status = _wait_until(client, lambda s: s["status"] == "paused")
+            assert paused_status["status"] == "paused"
+
+            with session_scope(app.state.session_factory) as session:
+                run_row = get_latest_pipeline_run(session)
+                assert run_row is not None
+                initial_heartbeat = run_row.heartbeat_at
+                worker_pid = run_row.worker_pid
+                assert worker_pid is not None
+                assert run_row.status == "paused"
+
+            time.sleep(0.6)
+
+            with session_scope(app.state.session_factory) as session:
+                updated_row = get_latest_pipeline_run(session)
+                assert updated_row is not None
+                assert updated_row.status == "paused"
+                assert updated_row.worker_pid == worker_pid
+                assert updated_row.heartbeat_at is not None
+                assert initial_heartbeat is not None
+                assert updated_row.heartbeat_at > initial_heartbeat
+
+            cancel_resp = client.post("/api/pipeline/cancel")
+            assert cancel_resp.status_code == 200
+            final = _wait_for_terminal(client, timeout=30)
+            assert final["status"] == "cancelled"
+
 
 class TestCancel:
     def test_cancel_stops_before_next_job_and_exits(self, tmp_path: Path) -> None:
