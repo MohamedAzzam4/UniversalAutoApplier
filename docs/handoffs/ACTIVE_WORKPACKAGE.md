@@ -1,11 +1,11 @@
 # Active Workpackage
 
 - **WP ID:** WQ-5 — restart recovery and stale `in_progress` recovery (durable worker liveness + startup stale-run recovery).
-- **Status:** IN PROGRESS — test coverage completed for durable heartbeat & dashboard recovery rendering. PR #8 head updating.
+- **Status:** IN PROGRESS — acceptance-proof pass strengthened (durable heartbeat subprocess-exit + dashboard `uaa-pill-recovered` positive proof). PR #8 head updating.
 - **Branch:** `checkpoint/wq-5-stale-run-recovery`
 - **Base SHA:** `736242b5ed06ccfdf9f94a2061e4a6ce00031aca` (`origin/main`, WQ-4 merge commit)
 - **PR:** https://github.com/MohamedAzzam4/UniversalAutoApplier/pull/8 (open, not draft, not merged)
-- **Last completed/checkpoint SHA:** `4cedb40cf23a6a131034f950c0258275dfc2d27f` (PR head, pushed to origin). The final handoff-edit is uncommitted (would otherwise re-trigger CI; resolve the head dynamically).
+- **Last completed/checkpoint SHA:** `4cedb40cf23a6a131034f950c0258275dfc2d27f` (implementation + first test commit `cdec5e6`). The acceptance-proof strengthening commit is on top of `cdec5e6`; resolve the head dynamically.
 - **Branch-head verification (must be run dynamically; do not trust an embedded SHA):**
 
   ```text
@@ -15,7 +15,7 @@
   ```
 
   The two resolved values must match before handoff/review.
-- **Last updated:** 2026-08-06
+- **Last updated:** 2026-08-08
 
 ## Objective
 
@@ -134,6 +134,22 @@ duplicate starts with 409). Nothing auto-submits or auto-retries.
 - Existing WQ-4 restart test keeps passing unchanged (a freshly-killed
   worker's run still holds a fresh heartbeat -> kept; cancel then works —
   the intended hysteresis).
+- **Acceptance-proof strengthening (2026-08-08)** —
+  `tests/integration/test_pipeline_worker.py::TestPauseAndResume::test_paused_worker_updates_durable_heartbeat`
+  now also (a) asserts the run does not become `recovered` during the
+  healthy pause (both before and after the wait), (b) explicitly waits for
+  the worker subprocess to exit after cancel
+  (`worker._proc.wait(timeout=10)` + `poll() is not None`), making the
+  no-ResourceWarning proof visible (the global
+  `filterwarnings = ["error::ResourceWarning"]` config fails the test if
+  the worker leaks). The test still does not fake the heartbeat: every
+  `heartbeat_at` advance is performed by the worker subprocess.
+  `tests/playwright/test_pipeline_recovery_dashboard.py::test_dashboard_visibly_renders_recovered_run_and_guidance`
+  now also asserts `uaa-pill-recovered` IS present on `#run-status`
+  (positive proof the run is styled as recovered, not merely "not
+  running"), alongside the existing `uaa-pill-running` absence check and
+  the controls-state check. Both tests keep their prior assertions (no
+  weakening).
 
 ## Changed files (uncommitted)
 
@@ -154,16 +170,23 @@ duplicate starts with 409). Nothing auto-submits or auto-retries.
   (`recovered` pill + isTerminal)
 - `tests/contract/test_migrations.py` (CURRENT_HEAD)
 - `tests/integration/test_pipeline_recovery.py` (new)
+- `tests/integration/test_pipeline_worker.py`
+  (`test_paused_worker_updates_durable_heartbeat` strengthened: subprocess
+  exit + no-recovery assertions)
+- `tests/playwright/test_pipeline_recovery_dashboard.py`
+  (`test_dashboard_visibly_renders_recovered_run_and_guidance` strengthened:
+  positive `uaa-pill-recovered` class assertion + clearer error messages)
 
-## Tests and results (2026-08-06, working tree)
+## Tests and results (2026-08-08, working tree on top of `cdec5e6`)
 
 - `python -m ruff check src tests migrations` -> All checks passed.
-- `python -m ruff format --check src tests migrations` -> 175 files already formatted.
+- `python -m ruff format --check src tests migrations` -> 176 files already formatted.
 - `python -m pyright` -> 0 errors, 0 warnings, 0 informations.
-- `python -m pytest tests/integration/test_pipeline_recovery.py tests/contract/test_migrations.py tests/unit/test_statuses.py -q` -> 26 passed.
-- `python -m pytest tests/unit tests/contract tests/integration -q` -> 1051 passed (incl. the WQ-4 pipeline worker suite unchanged).
-- `python -m pytest tests/playwright -q -m "not live"` -> 185 passed.
-- `git diff --check` clean; tmp debug artifacts untouched/unstaged.
+- `python -m pyright --pythonplatform Linux` -> 0 errors, 0 warnings, 0 informations.
+- `python -m pytest tests/unit tests/contract tests/integration -q` -> 1052 passed.
+- `python -m pytest tests/playwright -q -m "not live"` -> 186 passed.
+- `git diff --check` clean; untracked debug artifacts (`tmp_final_pipeline/`)
+  untouched/unstaged.
 
 ## Decisions made
 
@@ -188,13 +211,16 @@ duplicate starts with 409). Nothing auto-submits or auto-retries.
 
 ## Blockers / risks
 
-- None. CI verified all 5 jobs on PR head `4cedb40`. Awaiting PR #8 review/merge; no merge or push to `main` without the reviewed PR (exactly once).
+- None. CI verified all 5 jobs on PR head `cdec5e6` (the first test commit).
+  The acceptance-proof strengthening commit is on top of `cdec5e6`; CI will
+  re-run on push. Awaiting PR #8 review/merge; no merge or push to `main`
+  without the reviewed PR (exactly once).
 - `gh` on PATH is a browser-opener shim; use the GitHub REST API (token via
   `git credential-manager` on the `.../UniversalAutoApplier.git` remote).
 - Untracked debug artifacts (`tmp_debug_status.py`, `tmp_debug_status/`,
   `tmp_final_pipeline/`) stay out of commits.
 
-## CI results (2026-08-06, PR #8 head `4cedb40`)
+## CI results (2026-08-06, PR #8 head `4cedb40` — implementation only)
 
 - verify-linux (4 jobs: Python 3.11, 3.12, 3.13, 3.14) → success
   https://github.com/MohamedAzzam4/UniversalAutoApplier/actions/runs/31067711762
@@ -203,6 +229,17 @@ duplicate starts with 409). Nothing auto-submits or auto-retries.
 - First Linux attempt failed on pyright (`ctypes.windll` unknown on Linux);
   fixed in `4cedb40` (`getattr(ctypes, "windll", None)` + `Any`), verified
   locally with `pyright --pythonplatform Linux`.
+
+## CI results (2026-08-07, PR #8 head `cdec5e6` — first test commit)
+
+- verify-linux (4 jobs: Python 3.11, 3.12, 3.13, 3.14) → success
+  https://github.com/MohamedAzzam4/UniversalAutoApplier/actions/runs/31209265720
+- verify-windows-py314 (Windows + Python 3.14) → success
+  https://github.com/MohamedAzzam4/UniversalAutoApplier/actions/runs/31209265724
+
+## CI results (2026-08-08, PR #8 head after acceptance-proof strengthening)
+
+- Pending push; will be re-verified after the new commit lands on the branch.
 
 ## Exact next action
 

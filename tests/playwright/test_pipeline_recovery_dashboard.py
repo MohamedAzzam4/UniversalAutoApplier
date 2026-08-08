@@ -64,8 +64,23 @@ def _free_port() -> int:
 
 
 def test_dashboard_visibly_renders_recovered_run_and_guidance(tmp_path: Path, page: Page) -> None:
-    """Prove to the user that a recovered stale run renders visibly as 'recovered',
-    displays the recovery guidance/reason, and is not styled as active/running."""
+    """Dashboard user-perspective proof (WQ-5 acceptance).
+
+    Seeds a proven-stale active run (dead worker pid + expired heartbeat) and
+    an IN_PROGRESS job, starts the application (uvicorn server thread) so
+    WQ-5 startup recovery actually runs, then opens the dashboard as a user
+    via Playwright and proves:
+
+    1. The pipeline status visibly renders ``recovered``.
+    2. The recovered/interrupted reason or safe review guidance is visible.
+    3. The display is NOT styled as active/running — the ``uaa-pill-recovered``
+       class is present (not just ``uaa-pill-running`` absent) and the
+       pipeline controls reflect a terminal run (start enabled, others
+       disabled).
+
+    Only local fixture data is used; no public web, real ATS, or real
+    submission is involved.
+    """
     data_dir = tmp_path / "uaa_recovered_dashboard"
     data_dir.mkdir(parents=True, exist_ok=True)
     db_path = data_dir / "uaa.sqlite"
@@ -152,29 +167,43 @@ def test_dashboard_visibly_renders_recovered_run_and_guidance(tmp_path: Path, pa
         page.set_viewport_size({"width": 1440, "height": 900})
         page.goto(server_url)
 
-        # 1. Pipeline status visibly renders "recovered"
+        # 1. Pipeline status visibly renders "recovered".
         page.wait_for_selector("#run-status", timeout=10_000)
-        run_status_text = page.locator("#run-status").inner_text()
-        assert "recovered" in run_status_text.lower()
+        run_status_el = page.locator("#run-status")
+        run_status_text = run_status_el.inner_text()
+        assert "recovered" in run_status_text.lower(), (
+            f"expected #run-status to render 'recovered', got {run_status_text!r}"
+        )
 
-        # 2. Display is NOT styled as active/running
-        run_status_class = page.locator("#run-status").get_attribute("class") or ""
-        assert "uaa-pill-running" not in run_status_class
+        # 2. Display is NOT styled as active/running: the recovered pill class
+        #    is present (positive proof), the running pill class is absent
+        #    (negative proof). Both together prove the run is styled as
+        #    recovered, not merely "not running".
+        run_status_class = run_status_el.get_attribute("class") or ""
+        assert "uaa-pill-recovered" in run_status_class, (
+            f"expected #run-status to carry uaa-pill-recovered, got class={run_status_class!r}"
+        )
+        assert "uaa-pill-running" not in run_status_class, (
+            f"#run-status must not be styled as running, got class={run_status_class!r}"
+        )
 
-        # Controls verify non-active state: start enabled, pause/resume/cancel disabled
+        # Controls verify non-active state: start enabled (recovered is
+        # terminal so a fresh start is allowed), pause/resume/cancel disabled.
         assert page.locator("#pipeline-start").is_enabled()
         assert page.locator("#pipeline-pause").is_disabled()
         assert page.locator("#pipeline-resume").is_disabled()
         assert page.locator("#pipeline-cancel").is_disabled()
 
-        # 3. Interrupted reason or safe review guidance is visible
+        # 3. Interrupted reason or safe review guidance is visible. The
+        #    recovery service writes a durable reason into last_error that
+        #    contains "interrupted" and "review".
         page.wait_for_selector("#pipeline-last-error", timeout=5_000)
         last_error_text = page.locator("#pipeline-last-error").inner_text()
         assert (
             "interrupted" in last_error_text.lower()
             or "review" in last_error_text.lower()
             or "recovered" in last_error_text.lower()
-        )
+        ), f"expected recovery guidance in #pipeline-last-error, got {last_error_text!r}"
     finally:
         server.should_exit = True
         thread.join(timeout=5.0)
