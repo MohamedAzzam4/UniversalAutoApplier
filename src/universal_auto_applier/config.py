@@ -81,6 +81,13 @@ class Settings(BaseModel):
     # boundary. 0 means no wait (jobs run back-to-back; pause/cancel still
     # take effect between jobs).
     pipeline_job_pulse_ms: int = Field(default=0, ge=0, le=60_000)
+    # WQ-5: how old a worker's heartbeat may be before its run is considered
+    # stale at startup recovery. The worker refreshes heartbeat_at
+    # continuously (including while paused/waiting); a run whose pid is
+    # missing/dead AND whose heartbeat is older than this window is recovered
+    # into a terminal state. Healthy fresh-heartbeat workers are never
+    # touched.
+    pipeline_heartbeat_timeout_ms: int = Field(default=30_000, ge=1_000, le=3_600_000)
 
     model_config = {"frozen": True, "extra": "ignore"}
 
@@ -199,4 +206,7 @@ def load_settings(env: dict[str, str] | None = None) -> Settings:
         apply_workers=_parse_int("UAA_APPLY_WORKERS", 1),
         candidate_profile=_get_path("UAA_CANDIDATE_PROFILE"),
         pipeline_job_pulse_ms=_parse_int("UAA_PIPELINE_JOB_PULSE_MS", 0, 0, 60_000),
+        pipeline_heartbeat_timeout_ms=_parse_int(
+            "UAA_PIPELINE_HEARTBEAT_TIMEOUT_MS", 30_000, 1_000, 3_600_000
+        ),
     )

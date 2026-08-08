@@ -277,6 +277,84 @@ class TestPauseAndResume:
             client.post("/api/pipeline/cancel")
             _wait_for_terminal(client)
 
+    def test_paused_worker_updates_durable_heartbeat(self, tmp_path: Path) -> None:
+        """Durable heartbeat proof (WQ-5 acceptance).
+
+        The real WQ-4 subprocess worker (fixture mode, local data only) owns
+        the run while paused: it continuously refreshes ``heartbeat_at`` from
+        inside its paused polling loop, keeps its durable ``worker_pid``, and
+        never becomes ``recovered``. After cancel the worker subprocess exits
+        cleanly (no ResourceWarning — enforced by the global
+        ``filterwarnings = ["error::ResourceWarning"]``).
+
+        Nothing in this test fakes the heartbeat by writing the DB row
+        directly: every ``heartbeat_at`` advance is performed by the worker
+        subprocess via ``_touch_heartbeat``.
+        """
+        job1 = _make_job(
+            tmp_path, "hb-pause-1", url="https://boards.greenhouse.io/example/jobs/hb-pause-1"
+        )
+        job2 = _make_job(
+            tmp_path, "hb-pause-2", url="https://boards.greenhouse.io/example/jobs/hb-pause-2"
+        )
+        with _running_app(tmp_path, [job1, job2]) as (client, app, settings):
+            client.post(
+                "/api/pipeline/start",
+                json={"fixture_html": GREENHOUSE_APPLY_HTML, "max_jobs": 2},
+            )
+            _wait_until(client, lambda s: s["status"] == "running" and s["jobs_completed"] >= 1)
+            resp = client.post("/api/pipeline/pause")
+            assert resp.status_code == 200
+
+            paused_status = _wait_until(client, lambda s: s["status"] == "paused")
+            assert paused_status["status"] == "paused"
+
+            with session_scope(app.state.session_factory) as session:
+                run_row = get_latest_pipeline_run(session)
+                assert run_row is not None
+                initial_heartbeat = run_row.heartbeat_at
+                worker_pid = run_row.worker_pid
+                assert worker_pid is not None
+                assert run_row.status == "paused"
+                # A healthy paused run must not look recovered: recovery only
+                # touches proven-stale rows (dead pid AND expired heartbeat).
+                assert run_row.status != "recovered"
+
+            # Wait long enough for the paused worker polling loop
+            # (_PAUSE_POLL_SECONDS = 0.2) to run several more iterations,
+            # each of which calls _touch_heartbeat.
+            time.sleep(0.6)
+
+            with session_scope(app.state.session_factory) as session:
+                updated_row = get_latest_pipeline_run(session)
+                assert updated_row is not None
+                # Status remains paused — the run is NOT recovered while the
+                # worker is alive and heartbeating.
+                assert updated_row.status == "paused"
+                assert updated_row.status != "recovered"
+                # Durable worker PID remains present and unchanged.
+                assert updated_row.worker_pid is not None
+                assert updated_row.worker_pid == worker_pid
+                # Heartbeat advanced from the worker subprocess, not from us.
+                assert updated_row.heartbeat_at is not None
+                assert initial_heartbeat is not None
+                assert updated_row.heartbeat_at > initial_heartbeat
+
+            # Cancel cleanly and verify the worker subprocess exits. The global
+            # ``filterwarnings = ["error::ResourceWarning"]`` config makes any
+            # ResourceWarning a test failure; explicitly waiting for the
+            # subprocess to exit ensures its resources (browser, pipes, engine)
+            # are released before the test ends.
+            cancel_resp = client.post("/api/pipeline/cancel")
+            assert cancel_resp.status_code == 200
+            final = _wait_for_terminal(client, timeout=30)
+            assert final["status"] == "cancelled"
+
+            worker = app.state.pipeline_worker
+            assert worker._proc is not None  # noqa: SLF001 - test-only introspection
+            worker._proc.wait(timeout=10)  # noqa: SLF001
+            assert worker._proc.poll() is not None  # noqa: SLF001
+
 
 class TestCancel:
     def test_cancel_stops_before_next_job_and_exits(self, tmp_path: Path) -> None:

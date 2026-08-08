@@ -31,6 +31,7 @@ import subprocess
 import sys
 import threading
 import uuid
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -145,6 +146,20 @@ class PipelineWorkerService:
                         last_error=str(exc),
                     )
                 raise RuntimeError(f"Failed to launch pipeline worker: {exc}") from exc
+
+            # WQ-5 liveness: record the worker's pid and start time on the
+            # run row so startup recovery can distinguish a run owned by a
+            # live process from a stale one. The worker refreshes heartbeat_at
+            # continuously (including while paused/waiting).
+            now = datetime.now(UTC)
+            with session_scope(self._session_factory) as session:
+                update_pipeline_run(
+                    session,
+                    run_id,
+                    worker_pid=self._proc.pid,
+                    worker_started_at=now,
+                    heartbeat_at=now,
+                )
 
             self._drain_output()
             self._run_id = run_id

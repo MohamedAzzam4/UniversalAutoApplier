@@ -148,6 +148,10 @@ class PipelineWorkerRunner:
             logger.error("run row %s not found", self.run_id)
             return 2
 
+        # WQ-5 liveness: the worker first heartbeat stamps that it is alive
+        # and owns the run, before any control-signal handling.
+        self._touch_heartbeat()
+
         # Control signals can race with worker startup: the server may have
         # cancelled or paused this run before the worker's first read of the
         # run row. Honour those states here instead of refusing to start.
@@ -237,6 +241,7 @@ class PipelineWorkerRunner:
         Returns False when the run must stop (cancelled).
         """
         for _ in range(max(1, pulse_ticks)):
+            self._touch_heartbeat()
             status, cancel_reason = self._read_status()
             if status == "cancelling":
                 self._finish_cancelled(cancel_reason)
@@ -258,6 +263,7 @@ class PipelineWorkerRunner:
         """
         self._update(status="paused", last_action="Paused between jobs")
         while True:
+            self._touch_heartbeat()
             status, cancel_reason = self._read_status()
             if status == "running":
                 self._update(status="running", last_action="Resumed from pause")
@@ -281,6 +287,7 @@ class PipelineWorkerRunner:
     def _process_job(self, job: ApplicationJob, fixture_html: str | None) -> None:
         """Process one job and persist counters/errors on the run row."""
         application_id = job.application_id
+        self._touch_heartbeat()
         self._update(
             current_job_id=application_id,
             current_phase="starting",
@@ -391,6 +398,14 @@ class PipelineWorkerRunner:
         """Apply changes to the run row."""
         with session_scope(self.session_factory) as session:
             update_pipeline_run(session, self.run_id, **changes)
+
+    def _touch_heartbeat(self) -> None:
+        """Stamp the run's heartbeat so recovery never mistakes us for stale.
+
+        Called continuously while the worker is active — including while
+        paused/waiting — so a live worker always owns its run.
+        """
+        self._update(heartbeat_at=datetime.now(UTC))
 
     def _bump(self, *, jobs_completed: int = 0, jobs_failed: int = 0) -> None:
         """Increment run counters atomically."""

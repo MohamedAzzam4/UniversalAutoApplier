@@ -65,6 +65,7 @@ ALLOWED_TRANSITIONS: dict[ApplicationStatus, frozenset[ApplicationStatus]] = {
             ApplicationStatus.NEEDS_USER_INPUT,
             ApplicationStatus.REVIEW_READY,
             ApplicationStatus.FAILED,
+            ApplicationStatus.NEEDS_REVIEW,
         }
     ),
     ApplicationStatus.NEEDS_USER_INPUT: frozenset(
@@ -169,6 +170,10 @@ class InterventionKind(StrEnum):
     MISSING_DOCUMENT = "missing_document"
     VALIDATION_ERROR = "validation_error"
     MANUAL_UPLOAD_REQUIRED = "manual_upload_required"
+    # WQ-5: a worker-owned job was interrupted (stale run recovered on
+    # restart). The intervention explains the interruption and the next safe
+    # action; nothing is auto-resubmitted.
+    RECOVERY = "recovery"
 
 
 class InterventionStatus(StrEnum):
