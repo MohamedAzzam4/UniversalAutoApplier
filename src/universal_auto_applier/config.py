@@ -89,6 +89,35 @@ class Settings(BaseModel):
     # touched.
     pipeline_heartbeat_timeout_ms: int = Field(default=30_000, ge=1_000, le=3_600_000)
 
+    # WQ-6: cross-repository orchestration settings.
+    # Path to the JobHunter repository root (the directory containing
+    # run_export_queue.py / run_all.py). UAA launches JobHunter as an
+    # external subprocess from this directory; it never imports JobHunter
+    # Python modules.
+    jobhunter_repo: Path | None = Field(default=None)
+    # Python executable used to run JobHunter. Defaults to None, which means
+    # "use sys.executable". Set explicitly when JobHunter runs in its own
+    # virtualenv (recommended).
+    jobhunter_python: str | None = Field(default=None)
+    # Entry point script name inside the JobHunter repo. The default
+    # ``run_export_queue.py`` is the documented public entry point that
+    # writes application_queue.jsonl atomically.
+    jobhunter_entry_point: str = Field(default="run_export_queue.py")
+    # Queue output path passed to JobHunter via --output. Must be absolute.
+    # When None, the orchestrator uses settings.queue_path (which must be set).
+    jobhunter_queue_output: Path | None = Field(default=None)
+    # Default orchestration mode: sequential (JobHunter fully completes
+    # before UAA imports+pipeline) or parallel (UAA pipeline starts for
+    # already-queued jobs while JobHunter runs concurrently).
+    orchestration_mode: ExecutionMode = Field(default="sequential")
+    # Grace period (seconds) for graceful termination of the JobHunter child
+    # before forced termination (SIGKILL/TerminateProcess) is used.
+    orchestration_cancel_grace_seconds: int = Field(default=5, ge=1, le=60)
+    # Maximum bytes of JobHunter stdout/stderr captured into the durable
+    # orchestration run row. The capture is bounded to prevent unbounded
+    # memory growth; secrets are filtered by the service before persistence.
+    orchestration_capture_max_bytes: int = Field(default=8192, ge=256, le=65_536)
+
     model_config = {"frozen": True, "extra": "ignore"}
 
     @property
@@ -208,5 +237,20 @@ def load_settings(env: dict[str, str] | None = None) -> Settings:
         pipeline_job_pulse_ms=_parse_int("UAA_PIPELINE_JOB_PULSE_MS", 0, 0, 60_000),
         pipeline_heartbeat_timeout_ms=_parse_int(
             "UAA_PIPELINE_HEARTBEAT_TIMEOUT_MS", 30_000, 1_000, 3_600_000
+        ),
+        jobhunter_repo=_get_path("UAA_JOBHUNTER_REPO"),
+        jobhunter_python=source.get("UAA_JOBHUNTER_PYTHON", "").strip() or None,
+        jobhunter_entry_point=source.get("UAA_JOBHUNTER_ENTRY_POINT", "run_export_queue.py").strip()
+        or "run_export_queue.py",
+        jobhunter_queue_output=_get_path("UAA_JOBHUNTER_QUEUE_OUTPUT"),
+        orchestration_mode=source.get(  # type: ignore[arg-type]
+            "UAA_ORCHESTRATION_MODE", "sequential"
+        ).strip()
+        or "sequential",
+        orchestration_cancel_grace_seconds=_parse_int(
+            "UAA_ORCHESTRATION_CANCEL_GRACE_SECONDS", 5, 1, 60
+        ),
+        orchestration_capture_max_bytes=_parse_int(
+            "UAA_ORCHESTRATION_CAPTURE_MAX_BYTES", 8192, 256, 65_536
         ),
     )

@@ -370,6 +370,55 @@ class PipelineRunRow(Base):
     heartbeat_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
 
+class OrchestrationRunRow(Base):
+    """One durable cross-repository orchestration run (WQ-6).
+
+    Persists the full lifecycle of a JobHunter-export -> UAA-import ->
+    UAA-pipeline run so it survives API/server restart. Only one active
+    orchestration run may exist at a time (enforced by the service layer).
+    The row never stores secrets; the JobHunter subprocess stdout/stderr is
+    captured with bounded storage and filtered by the service before being
+    written here.
+    """
+
+    __tablename__ = "orchestration_runs"
+
+    run_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    # sequential | parallel
+    mode: Mapped[str] = mapped_column(String(16), index=True)
+    # idle | running | jobhunter_running | importing | pipeline_running
+    # | completed | failed | cancelled
+    status: Mapped[str] = mapped_column(String(32), index=True)
+    current_phase: Mapped[str] = mapped_column(String(64), default="")
+    last_action: Mapped[str] = mapped_column(Text, default="")
+    last_error: Mapped[str] = mapped_column(Text, default="")
+    cancel_reason: Mapped[str] = mapped_column(Text, default="")
+    # JobHunter child process liveness
+    jobhunter_pid: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    jobhunter_started_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    jobhunter_finished_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    jobhunter_exit_code: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    # Bounded stdout/stderr capture (secrets filtered by the service)
+    jobhunter_stdout: Mapped[str] = mapped_column(Text, default="")
+    jobhunter_stderr: Mapped[str] = mapped_column(Text, default="")
+    # Queue import result
+    queue_import_run_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    queue_import_state: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    queue_imported: Mapped[int | None] = mapped_column(Integer, nullable=True, default=0)
+    queue_skipped: Mapped[int | None] = mapped_column(Integer, nullable=True, default=0)
+    # UAA pipeline run link
+    pipeline_run_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    pipeline_state: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    # Bounded structured errors
+    errors_json: Mapped[list[dict[str, Any]]] = mapped_column(JSON, default=list)
+    started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
 __all__ = [
     "Base",
     "ApplicationJobRow",
@@ -384,4 +433,5 @@ __all__ = [
     "SubmissionResultRow",
     "QueueImportRunRow",
     "PipelineRunRow",
+    "OrchestrationRunRow",
 ]

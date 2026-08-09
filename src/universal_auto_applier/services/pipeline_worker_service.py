@@ -63,6 +63,7 @@ class PipelineWorkerService:
         self._lock = threading.Lock()
         self._proc: subprocess.Popen[str] | None = None
         self._run_id: str | None = None
+        self._drain_threads: list[threading.Thread] = []
 
     # ------------------------------------------------------------------
     # State access
@@ -97,6 +98,22 @@ class PipelineWorkerService:
                 )
 
             fixture_file = self._prepare_fixture(fixture_html)
+
+            # Wait for any previous worker subprocess to fully exit before
+            # replacing _proc. This prevents the old Popen handle from being
+            # GC'd while its child is still running (ResourceWarning). The
+            # drain threads have already read the output; we only need to
+            # set returncode via wait().
+            prev_proc = self._proc
+            if prev_proc is not None and prev_proc.returncode is None:
+                try:
+                    prev_proc.wait(timeout=5)
+                except subprocess.TimeoutExpired:
+                    prev_proc.terminate()
+                    prev_proc.wait(timeout=5)
+                except OSError:
+                    pass
+
             run_id = str(uuid.uuid4())
             mode = "fixture_dry_run" if fixture_html else "sequential_dry_run"
             with session_scope(self._session_factory) as session:
@@ -263,6 +280,12 @@ class PipelineWorkerService:
                 proc.wait(timeout=5)
             except OSError:
                 logger.warning("[pipeline] error terminating worker subprocess")
+        # Wait for the drain threads to finish. After the process exits,
+        # the pipes reach EOF and the drain threads exit on their own.
+        for thread in self._drain_threads:
+            if thread.is_alive():
+                thread.join(timeout=5)
+        self._drain_threads.clear()
 
     # ------------------------------------------------------------------
     # Helpers
@@ -302,6 +325,7 @@ class PipelineWorkerService:
                 name=f"pipeline-worker-drain-{id(stream)}",
             )
             thread.start()
+            self._drain_threads.append(thread)
 
     def _drain_stream(self, stream: Any, level: Any) -> None:
         """Read one subprocess stream line by line into the logger."""

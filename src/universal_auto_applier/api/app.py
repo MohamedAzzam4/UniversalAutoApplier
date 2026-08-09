@@ -25,6 +25,7 @@ from universal_auto_applier import __version__
 from universal_auto_applier.api.routes.health import router as health_router
 from universal_auto_applier.api.routes.interventions import router as interventions_router
 from universal_auto_applier.api.routes.logs import init_log_buffer, router as logs_router
+from universal_auto_applier.api.routes.orchestration import router as orchestration_router
 from universal_auto_applier.api.routes.pipeline import router as pipeline_router
 from universal_auto_applier.api.routes.queue import router as queue_router
 from universal_auto_applier.api.routes.queue_import import router as queue_import_router
@@ -105,6 +106,34 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
             logger.exception("startup stale-run recovery failed")
             app.state.pipeline_recovery_summary = {"recovered": [], "healthy_kept": []}
 
+    # WQ-6: initialize the queue-import service and the cross-repository
+    # orchestration service. Orchestration recovery runs once after pipeline
+    # recovery: orphaned active orchestration runs (from a previous process)
+    # are marked failed so a fresh start is allowed. Nothing is auto-retried.
+    from universal_auto_applier.services.queue_import_service import QueueImportService
+
+    if not getattr(app.state, "queue_import_service", None):
+        app.state.queue_import_service = QueueImportService(settings, app.state.session_factory)
+
+    if not getattr(app.state, "orchestration_service", None):
+        from universal_auto_applier.services.orchestration_service import (
+            OrchestrationService,
+        )
+
+        app.state.orchestration_service = OrchestrationService(
+            settings=settings,
+            session_factory=app.state.session_factory,
+            pipeline_worker=app.state.pipeline_worker,
+            queue_import_service=app.state.queue_import_service,
+        )
+        try:
+            app.state.orchestration_recovery_summary = (
+                app.state.orchestration_service.recover_on_startup()
+            )
+        except Exception:  # noqa: BLE001 - recovery must never block startup
+            logger.exception("startup orchestration recovery failed")
+            app.state.orchestration_recovery_summary = {"recovered": []}
+
     init_log_buffer(app)
 
     # Optional, opt-in startup queue import. When UAA_IMPORT_QUEUE_ON_STARTUP
@@ -128,6 +157,9 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         worker = getattr(app.state, "pipeline_worker", None)
         if worker is not None and hasattr(worker, "shutdown"):
             worker.shutdown()
+        orch = getattr(app.state, "orchestration_service", None)
+        if orch is not None and hasattr(orch, "shutdown"):
+            orch.shutdown()
         if _owns_engine and engine is not None:
             engine.dispose()
 
@@ -175,6 +207,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(retry_router, prefix="/api")
     app.include_router(pipeline_router, prefix="/api")
     app.include_router(submit_router, prefix="/api")
+    app.include_router(orchestration_router, prefix="/api")
 
     # Serve the dashboard static assets.
     if STATIC_DIR.exists():
@@ -202,6 +235,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 "/api/review/{id}/submit-check",
                 "/api/logs",
                 "/api/errors",
+                "/api/orchestration/start",
+                "/api/orchestration/cancel",
+                "/api/orchestration/status",
             ],
         }
 
