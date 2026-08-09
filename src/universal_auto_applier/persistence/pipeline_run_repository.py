@@ -17,7 +17,10 @@ from sqlalchemy.orm import Session
 from universal_auto_applier.persistence.models import PipelineRunRow
 
 ACTIVE_STATUSES = ("running", "pausing", "paused", "cancelling")
-TERMINAL_STATUSES = ("cancelled", "completed", "failed")
+# WQ-5: "recovered" is a terminal outcome written by stale-run recovery on
+# startup. It leaves the run out of ACTIVE_STATUSES so a fresh start is
+# allowed afterwards while a healthy active run still blocks with 409.
+TERMINAL_STATUSES = ("cancelled", "completed", "failed", "recovered")
 
 
 def create_pipeline_run(
@@ -70,6 +73,19 @@ def get_active_pipeline_run(session: Session) -> PipelineRunRow | None:
         .limit(1)
     )
     return session.scalars(stmt).first()
+
+
+def list_active_pipeline_runs(session: Session) -> list[PipelineRunRow]:
+    """Return every run still in progress, oldest first.
+
+    Used by startup stale-run recovery (WQ-5) to scan all unfinished runs.
+    """
+    stmt = (
+        select(PipelineRunRow)
+        .where(PipelineRunRow.status.in_(ACTIVE_STATUSES))
+        .order_by(PipelineRunRow.started_at.asc())
+    )
+    return list(session.scalars(stmt))
 
 
 def get_latest_pipeline_run(session: Session) -> PipelineRunRow | None:
@@ -167,6 +183,7 @@ __all__ = [
     "get_pipeline_run",
     "list_pipeline_runs",
     "get_active_pipeline_run",
+    "list_active_pipeline_runs",
     "get_latest_pipeline_run",
     "update_pipeline_run",
     "mark_pipeline_run_terminal",

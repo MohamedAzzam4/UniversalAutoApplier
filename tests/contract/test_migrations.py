@@ -23,7 +23,7 @@ from universal_auto_applier.persistence.migrations import (
 )
 
 # The current head revision. Update this when adding a new migration.
-CURRENT_HEAD = "0010_pipeline_runs"
+CURRENT_HEAD = "0011_pipeline_worker_liveness"
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 MIGRATION_0008_PATH = (

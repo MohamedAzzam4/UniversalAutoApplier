@@ -75,6 +75,7 @@
       invalid: "uaa-pill-invalid",
       running: "uaa-pill-running",
       paused: "uaa-pill-paused",
+      recovered: "uaa-pill-recovered",
     };
     return "uaa-pill " + (map[state] || "uaa-pill-unknown");
   }
@@ -264,7 +265,9 @@
       const isActive = data.status === "running" || data.status === "pausing";
       const isPaused = data.status === "paused";
       const isCancelling = data.status === "cancelling";
-      const isTerminal = ["idle", "completed", "cancelled", "failed"].includes(data.status);
+      const isTerminal = ["idle", "completed", "cancelled", "failed", "recovered"].includes(
+        data.status,
+      );
 
       if (startBtn) startBtn.disabled = !isTerminal;
       if (pauseBtn) pauseBtn.disabled = !isActive;
