@@ -893,15 +893,22 @@ class OrchestrationService:
 
         Updates ``pipeline_state`` (the second-pass / sequential pipeline)
         on the orchestration run row.
+
+        If the pipeline reaches ``failed`` or the polling timeout expires,
+        the orchestration run is marked ``failed`` with a durable error.
+        Cancellation is handled by the caller (cancel_requested) and
+        produces ``cancelled``, not ``failed``.
         """
         import time
 
         deadline = time.monotonic() + timeout
+        final_status: str | None = None
         while time.monotonic() < deadline:
             if self._cancel_requested.is_set():
                 return
             state = self._pipeline_worker.get_state_dict()
             status = state.get("status", "idle")
+            final_status = status
             with session_scope(self._session_factory) as session:
                 update_orchestration_run(
                     session,
@@ -910,23 +917,53 @@ class OrchestrationService:
                     last_action=f"Pipeline: {status}",
                 )
             if status in ("idle", "completed", "cancelled", "failed", "recovered"):
-                return
+                break
             time.sleep(0.5)
+
+        # If cancellation was requested, the caller handles terminal state.
+        if self._cancel_requested.is_set():
+            return
+
+        # Pipeline failed → orchestration failed.
+        if final_status == "failed":
+            self._mark_failed(
+                run_id,
+                "Pipeline failed during orchestration. "
+                "Imported jobs remain safely eligible for manual retry.",
+            )
+            return
+
+        # Polling timeout → orchestration failed.
+        if final_status not in ("idle", "completed", "cancelled", "recovered"):
+            self._mark_failed(
+                run_id,
+                f"Pipeline did not reach a terminal state within {timeout}s. "
+                "The orchestration run is marked failed. "
+                "Imported jobs remain safely eligible for manual retry.",
+            )
+            return
 
     def _wait_for_pipeline_initial(self, run_id: str, timeout: float = 300.0) -> None:
         """Poll the pipeline worker until it reaches a terminal state.
 
         Updates ``pipeline_state_initial`` (the first-pass / initial pipeline)
         on the orchestration run row.
+
+        If the pipeline reaches ``failed`` or the polling timeout expires,
+        the orchestration run is marked ``failed`` with a durable error.
+        Cancellation is handled by the caller (cancel_requested) and
+        produces ``cancelled``, not ``failed``.
         """
         import time
 
         deadline = time.monotonic() + timeout
+        final_status: str | None = None
         while time.monotonic() < deadline:
             if self._cancel_requested.is_set():
                 return
             state = self._pipeline_worker.get_state_dict()
             status = state.get("status", "idle")
+            final_status = status
             with session_scope(self._session_factory) as session:
                 update_orchestration_run(
                     session,
@@ -935,8 +972,28 @@ class OrchestrationService:
                     last_action=f"Initial pipeline: {status}",
                 )
             if status in ("idle", "completed", "cancelled", "failed", "recovered"):
-                return
+                break
             time.sleep(0.5)
+
+        if self._cancel_requested.is_set():
+            return
+
+        if final_status == "failed":
+            self._mark_failed(
+                run_id,
+                "Initial pipeline failed during orchestration. "
+                "Imported jobs remain safely eligible for manual retry.",
+            )
+            return
+
+        if final_status not in ("idle", "completed", "cancelled", "recovered"):
+            self._mark_failed(
+                run_id,
+                f"Initial pipeline did not reach a terminal state within {timeout}s. "
+                "The orchestration run is marked failed. "
+                "Imported jobs remain safely eligible for manual retry.",
+            )
+            return
 
     def _set_phase(self, run_id: str, phase: str, action: str) -> None:
         """Update the current phase and last action on the run row."""
@@ -971,7 +1028,12 @@ class OrchestrationService:
             )
 
     def _validate_config(self, mode: str) -> None:
-        """Validate that all required configuration is present."""
+        """Validate that all required configuration is present and consistent.
+
+        Raises:
+            OrchestrationConfigurationError: if config is incomplete or the
+            UAA queue path disagrees with JobHunter's configured output path.
+        """
         if self._settings.jobhunter_repo is None:
             raise OrchestrationConfigurationError(
                 "JobHunter repo path is not configured (set UAA_JOBHUNTER_REPO)"
@@ -982,8 +1044,54 @@ class OrchestrationService:
         script = repo / self._settings.jobhunter_entry_point
         if not script.exists():
             raise OrchestrationConfigurationError(f"JobHunter entry point not found: {script}")
-        # _resolve_queue_output raises if no path is configured.
-        self._resolve_queue_output()
+        # Resolve the queue path and validate it against JobHunter's config.
+        queue_path = self._resolve_queue_output()
+
+        # If the user provided an explicit UAA_JOBHUNTER_QUEUE_OUTPUT override,
+        # validate that it matches the path JobHunter will actually write to.
+        # JobHunter's run_all.py reads from config/profile.yml ->
+        # queue_export.output_path (default: data/application_queue.jsonl).
+        if self._settings.jobhunter_queue_output is not None:
+            jh_configured = self._read_jobhunter_queue_config(repo)
+            if jh_configured is not None:
+                # Resolve the JH-configured path relative to the JH repo root.
+                jh_resolved = (
+                    (repo / jh_configured).resolve()
+                    if not Path(jh_configured).is_absolute()
+                    else Path(jh_configured)
+                )
+                uaa_resolved = Path(queue_path).resolve()
+                if jh_resolved != uaa_resolved:
+                    raise OrchestrationConfigurationError(
+                        f"UAA queue output path ({uaa_resolved}) does not match "
+                        f"JobHunter's configured output path ({jh_resolved} from "
+                        f"config/profile.yml -> queue_export.output_path). "
+                        f"Set UAA_JOBHUNTER_QUEUE_OUTPUT to match, or remove the "
+                        f"override to use JobHunter's default."
+                    )
+
+    @staticmethod
+    def _read_jobhunter_queue_config(repo: Path) -> str | None:
+        """Read JobHunter's configured queue output path from config/profile.yml.
+
+        Returns the path string (may be relative), or None if the config
+        file is missing or the key is absent. Never raises — missing config
+        means JobHunter will use its default (data/application_queue.jsonl).
+        """
+        import yaml
+
+        profile_path = repo / "config" / "profile.yml"
+        if not profile_path.exists():
+            return None
+        try:
+            with profile_path.open("r", encoding="utf-8") as f:
+                profile: dict[str, Any] = yaml.safe_load(f) or {}
+        except Exception:  # noqa: BLE001
+            return None
+        configured: Any = profile.get("queue_export", {}).get("output_path")
+        if configured is None:
+            return None
+        return str(configured)
 
     def _resolve_queue_output(self) -> Path:
         """Resolve the queue output path.
