@@ -91,7 +91,7 @@ class Settings(BaseModel):
 
     # WQ-6: cross-repository orchestration settings.
     # Path to the JobHunter repository root (the directory containing
-    # run_export_queue.py / run_all.py). UAA launches JobHunter as an
+    # run_all.py / run_export_queue.py). UAA launches JobHunter as an
     # external subprocess from this directory; it never imports JobHunter
     # Python modules.
     jobhunter_repo: Path | None = Field(default=None)
@@ -99,12 +99,17 @@ class Settings(BaseModel):
     # "use sys.executable". Set explicitly when JobHunter runs in its own
     # virtualenv (recommended).
     jobhunter_python: str | None = Field(default=None)
-    # Entry point script name inside the JobHunter repo. The default
-    # ``run_export_queue.py`` is the documented public entry point that
-    # writes application_queue.jsonl atomically.
-    jobhunter_entry_point: str = Field(default="run_export_queue.py")
-    # Queue output path passed to JobHunter via --output. Must be absolute.
-    # When None, the orchestrator uses settings.queue_path (which must be set).
+    # Entry point script name inside the JobHunter repo. The production
+    # default is ``run_all.py`` — the documented full-workflow entry point
+    # that performs scan → evaluate/tailor → atomic queue export. For
+    # testing, this can be set to a fake producer script.
+    jobhunter_entry_point: str = Field(default="run_all.py")
+    # Queue output path where JobHunter writes application_queue.jsonl.
+    # ``run_all.py`` does NOT accept --output; it writes to the path
+    # configured in JobHunter's config/profile.yml → queue_export.output_path
+    # (default: data/application_queue.jsonl relative to the JobHunter repo).
+    # UAA reads the queue from this absolute path after JobHunter exits.
+    # When None, defaults to <jobhunter_repo>/data/application_queue.jsonl.
     jobhunter_queue_output: Path | None = Field(default=None)
     # Default orchestration mode: sequential (JobHunter fully completes
     # before UAA imports+pipeline) or parallel (UAA pipeline starts for
@@ -117,6 +122,11 @@ class Settings(BaseModel):
     # orchestration run row. The capture is bounded to prevent unbounded
     # memory growth; secrets are filtered by the service before persistence.
     orchestration_capture_max_bytes: int = Field(default=8192, ge=256, le=65_536)
+    # Timeout (seconds) for the JobHunter subprocess. If the process does not
+    # exit within this period, it is terminated gracefully, then force-killed
+    # after the grace period, and the orchestration run is marked failed.
+    # 0 means no timeout (wait indefinitely).
+    jobhunter_timeout_seconds: int = Field(default=0, ge=0, le=3_600)
 
     model_config = {"frozen": True, "extra": "ignore"}
 
@@ -240,8 +250,8 @@ def load_settings(env: dict[str, str] | None = None) -> Settings:
         ),
         jobhunter_repo=_get_path("UAA_JOBHUNTER_REPO"),
         jobhunter_python=source.get("UAA_JOBHUNTER_PYTHON", "").strip() or None,
-        jobhunter_entry_point=source.get("UAA_JOBHUNTER_ENTRY_POINT", "run_export_queue.py").strip()
-        or "run_export_queue.py",
+        jobhunter_entry_point=source.get("UAA_JOBHUNTER_ENTRY_POINT", "run_all.py").strip()
+        or "run_all.py",
         jobhunter_queue_output=_get_path("UAA_JOBHUNTER_QUEUE_OUTPUT"),
         orchestration_mode=source.get(  # type: ignore[arg-type]
             "UAA_ORCHESTRATION_MODE", "sequential"
@@ -253,4 +263,5 @@ def load_settings(env: dict[str, str] | None = None) -> Settings:
         orchestration_capture_max_bytes=_parse_int(
             "UAA_ORCHESTRATION_CAPTURE_MAX_BYTES", 8192, 256, 65_536
         ),
+        jobhunter_timeout_seconds=_parse_int("UAA_JOBHUNTER_TIMEOUT_SECONDS", 0, 0, 3_600),
     )

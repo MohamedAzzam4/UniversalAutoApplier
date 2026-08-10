@@ -74,6 +74,10 @@ def _pid_is_alive(pid: int) -> bool:
     return True
 
 
+# Public alias for cross-module use (e.g. orchestration recovery).
+pid_is_alive = _pid_is_alive
+
+
 def _pid_is_alive_windows(pid: int) -> bool:
     """Windows liveness probe via OpenProcess (query-only access).
 
@@ -212,4 +216,4 @@ def recover_stale_pipeline_runs(session_factory: Any, settings: Settings) -> dic
     }
 
 
-__all__ = ["recover_stale_pipeline_runs", "run_is_stale"]
+__all__ = ["recover_stale_pipeline_runs", "run_is_stale", "pid_is_alive", "_pid_is_alive"]

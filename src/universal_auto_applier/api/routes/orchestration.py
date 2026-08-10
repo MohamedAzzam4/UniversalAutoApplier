@@ -133,6 +133,8 @@ def get_orchestration_status(request: Request) -> dict[str, Any]:
             "queue_import_state": None,
             "queue_imported": 0,
             "queue_skipped": 0,
+            "pipeline_run_id_initial": None,
+            "pipeline_state_initial": None,
             "pipeline_run_id": None,
             "pipeline_state": None,
             "errors": [],

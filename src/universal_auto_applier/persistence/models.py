@@ -410,7 +410,13 @@ class OrchestrationRunRow(Base):
     queue_import_state: Mapped[str | None] = mapped_column(String(16), nullable=True)
     queue_imported: Mapped[int | None] = mapped_column(Integer, nullable=True, default=0)
     queue_skipped: Mapped[int | None] = mapped_column(Integer, nullable=True, default=0)
-    # UAA pipeline run link
+    # UAA pipeline run links. In sequential mode, only pipeline_run_id is
+    # used. In parallel mode, pipeline_run_id_initial is the first pass
+    # (existing jobs) and pipeline_run_id is the second pass (newly imported
+    # jobs). pipeline_state / pipeline_state_initial track their respective
+    # terminal states.
+    pipeline_run_id_initial: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    pipeline_state_initial: Mapped[str | None] = mapped_column(String(32), nullable=True)
     pipeline_run_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
     pipeline_state: Mapped[str | None] = mapped_column(String(32), nullable=True)
     # Bounded structured errors

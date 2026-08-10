@@ -11,13 +11,14 @@ and local fixture HTML. No real ATS, no public web, no real submission.
 
 from __future__ import annotations
 
-import json
+import os
 import time
 from pathlib import Path
 from typing import Any
 
 import pytest
 from fastapi.testclient import TestClient
+from sqlalchemy import func, select
 
 from universal_auto_applier.api.app import create_app
 from universal_auto_applier.config import Settings
@@ -30,9 +31,13 @@ from universal_auto_applier.persistence.db import (
 )
 from universal_auto_applier.persistence.job_repository import upsert_application_job
 from universal_auto_applier.persistence.migrations import apply_migrations
-from universal_auto_applier.persistence.models import Base
+from universal_auto_applier.persistence.models import (
+    ApplicationJobRow,
+    Base,
+    SubmissionResultRow,
+)
 
-FIXTURES_DIR = Path(__file__).parent.parent / "fixtures"
+FIXTURES_DIR = Path(__file__).resolve().parent.parent / "fixtures"
 GREENHOUSE_APPLY_HTML = (FIXTURES_DIR / "platforms" / "greenhouse_apply.html").read_text(
     encoding="utf-8"
 )
@@ -44,8 +49,15 @@ def _make_settings(
     *,
     queue_path: Path | None = None,
     mode: str = "sequential",
+    entry_point: str = "run_all.py",
+    timeout_seconds: int = 0,
 ) -> Settings:
-    """Build settings pointing at the fake JobHunter repo."""
+    """Build settings pointing at the fake JobHunter repo.
+
+    The default entry point is ``run_all.py`` (the fake full-workflow
+    producer). For tests that need the standalone exporter with ``--output``,
+    set ``entry_point="run_export_queue.py"``.
+    """
     return Settings(
         host="127.0.0.1",
         port=8400,
@@ -57,9 +69,10 @@ def _make_settings(
         browser_max_steps=3,
         pipeline_job_pulse_ms=200,
         jobhunter_repo=FAKE_JH_REPO,
-        jobhunter_entry_point="run_export_queue.py",
+        jobhunter_entry_point=entry_point,
         queue_path=queue_path,
         orchestration_mode=mode,
+        jobhunter_timeout_seconds=timeout_seconds,
     )
 
 
@@ -131,8 +144,13 @@ def _wait_for_orchestration_terminal(client: TestClient, timeout: float = 60.0) 
 
 @pytest.fixture
 def queue_path(tmp_path: Path) -> Path:
-    """The queue file path used by the fake JobHunter."""
-    return tmp_path / "queue.jsonl"
+    """The queue file path used by the fake JobHunter.
+
+    For ``run_all.py``, the queue is written to ``data/application_queue.jsonl``
+    relative to the fake JH repo root. For ``run_export_queue.py``, it's the
+    explicit ``--output`` path.
+    """
+    return FAKE_JH_REPO / "data" / "application_queue.jsonl"
 
 
 @pytest.fixture
@@ -152,10 +170,7 @@ def client(app_settings: Settings) -> Any:
         Base.metadata.create_all(app.state.engine)
         yield test_client
         # Before the TestClient context exits, ensure any pipeline worker
-        # subprocess has been reaped. The lifespan shutdown calls
-        # pipeline_worker.shutdown() which terminates the process, but the
-        # drain threads may still be reading pipes. Explicitly waiting here
-        # prevents ResourceWarning and OSError from concurrent pipe reads.
+        # subprocess has been reaped.
         worker = app.state.pipeline_worker
         if worker is not None:
             proc = getattr(worker, "_proc", None)  # noqa: SLF001
@@ -164,8 +179,6 @@ def client(app_settings: Settings) -> Any:
                     proc.wait(timeout=10)
                 except Exception:  # noqa: BLE001
                     pass
-    # Force GC to clean up any lingering Popen handles from this test
-    # before the next test starts (prevents cross-test ResourceWarning).
     import gc
 
     gc.collect()
@@ -174,10 +187,15 @@ def client(app_settings: Settings) -> Any:
 class TestSequentialOrchestration:
     """Tests 1, 2: sequential ordering + JobHunter failure prevention."""
 
-    def test_sequential_ordering_jobhunter_then_import_then_pipeline(
+    def test_sequential_full_workflow_ordering_jobhunter_then_import_then_pipeline(
         self, client: TestClient, app_settings: Settings, queue_path: Path
     ) -> None:
-        """Test 1: Sequential ordering is exactly JobHunter -> import -> pipeline."""
+        """Test 1: Sequential ordering with full-workflow producer.
+
+        Proves the exact order: scan → evaluate/tailor → atomic export →
+        queue import → UAA pipeline. The fake ``run_all.py`` emits phase
+        evidence (SCAN, EVAL, EXPORT) in its stdout, which is captured.
+        """
         state = _start_orchestration(client, mode="sequential", max_jobs=2)
         assert state["run_id"] is not None
 
@@ -188,6 +206,12 @@ class TestSequentialOrchestration:
         # JobHunter ran and exited 0.
         assert final["jobhunter_exit_code"] == 0
         assert final["jobhunter_pid"] is not None
+
+        # The captured stdout contains phase evidence from the full workflow.
+        stdout = final["jobhunter_stdout"]
+        assert "[SCAN]" in stdout, f"Expected SCAN phase evidence in stdout, got: {stdout}"
+        assert "[EVAL]" in stdout, f"Expected EVAL phase evidence in stdout, got: {stdout}"
+        assert "[EXPORT]" in stdout, f"Expected EXPORT phase evidence in stdout, got: {stdout}"
 
         # Queue import ran and succeeded.
         assert final["queue_import_state"] == "success"
@@ -204,11 +228,6 @@ class TestSequentialOrchestration:
         self, client: TestClient, app_settings: Settings, queue_path: Path
     ) -> None:
         """Test 2: JobHunter failure prevents new import and new-job processing."""
-        # Write an existing valid queue first (so we can prove it's not overwritten).
-        queue_path.parent.mkdir(parents=True, exist_ok=True)
-        queue_path.write_text("", encoding="utf-8")
-
-        # Start with the fake JobHunter in --fail mode.
         _start_orchestration(client, mode="sequential", extra_args=["--fail"], max_jobs=2)
 
         final = _wait_for_orchestration_terminal(client, timeout=30)
@@ -232,7 +251,6 @@ class TestParallelOrchestration:
         tmp_path: Path,
     ) -> None:
         """Test 3: Parallel mode processes existing jobs while JobHunter runs."""
-        # Seed an existing job so the UAA pipeline has something to process.
         job = _make_job(
             tmp_path,
             "parallel-existing-1",
@@ -241,7 +259,6 @@ class TestParallelOrchestration:
         with session_scope(client.app.state.session_factory) as session:  # type: ignore[union-attr]
             upsert_application_job(session, job)
 
-        # Use a delay so JobHunter is still running when we check.
         _start_orchestration(
             client,
             mode="parallel",
@@ -252,70 +269,161 @@ class TestParallelOrchestration:
         # While JobHunter is running (delay=2s), the pipeline should start.
         time.sleep(1.0)
         mid_status = client.get("/api/orchestration/status").json()
-        # The pipeline should be running or have started.
-        assert mid_status["pipeline_run_id"] is not None or mid_status["pipeline_state"] is not None
+        assert (
+            mid_status["pipeline_run_id_initial"] is not None
+            or mid_status["pipeline_state_initial"] is not None
+        )
 
-        final = _wait_for_orchestration_terminal(client, timeout=60)
+        final = _wait_for_orchestration_terminal(client, timeout=90)
         assert final["status"] == "completed"
         assert final["jobhunter_exit_code"] == 0
         assert final["queue_import_state"] == "success"
 
-    def test_parallel_imports_new_jobs_after_producer_completion(
+    def test_parallel_second_pass_for_newly_imported_jobs(
         self,
         client: TestClient,
         app_settings: Settings,
         queue_path: Path,
     ) -> None:
-        """Test 4: Parallel mode imports newly exported jobs after producer completion."""
+        """Test 4: Parallel mode starts a second pipeline pass for newly imported jobs.
+
+        Proves:
+        - The initial pipeline pass runs (pipeline_run_id_initial is set).
+        - After import, newly eligible jobs trigger a second pass
+          (pipeline_run_id is set and different from pipeline_run_id_initial).
+        - The second pass reaches a terminal state.
+        - The newly exported job reaches a valid review terminal state.
+        """
+        # Clean any previous queue so the fake producer writes fresh jobs.
+        if queue_path.exists():
+            queue_path.unlink()
+
         _start_orchestration(client, mode="parallel", max_jobs=2)
 
-        final = _wait_for_orchestration_terminal(client, timeout=60)
-        assert final["status"] == "completed"
+        final = _wait_for_orchestration_terminal(client, timeout=90)
+        assert final["status"] == "completed", f"Expected completed, got {final}"
         assert final["jobhunter_exit_code"] == 0
         assert final["queue_import_state"] == "success"
         assert final["queue_imported"] >= 1
-        # The queue file exists with at least one job.
-        assert queue_path.exists()
-        lines = queue_path.read_text(encoding="utf-8").strip().split("\n")
-        assert len(lines) >= 1
-        job_data = json.loads(lines[0])
-        assert "application_id" in job_data
+
+        # The initial pipeline pass was recorded.
+        assert final["pipeline_run_id_initial"] is not None
+
+        # The second pipeline pass was started (for newly imported jobs).
+        assert final["pipeline_run_id"] is not None
+        assert final["pipeline_run_id"] != final["pipeline_run_id_initial"]
+
+        # Verify the newly imported job reached a valid review terminal state.
+        with session_scope(client.app.state.session_factory) as session:  # type: ignore[union-attr]
+            jobs = list(session.execute(select(ApplicationJobRow)).scalars().all())
+        for job in jobs:
+            assert str(job.status) not in (
+                ApplicationStatus.SUBMITTED.value,
+                ApplicationStatus.APPLIED.value,
+            ), f"Job {job.application_id} reached {job.status}!"
+            # Valid terminal states: review_ready, needs_user_input, failed.
+            assert str(job.status) in (
+                ApplicationStatus.REVIEW_READY.value,
+                ApplicationStatus.NEEDS_USER_INPUT.value,
+                ApplicationStatus.FAILED.value,
+            ), f"Job {job.application_id} is in non-terminal state {job.status}"
+
+    def test_parallel_no_second_pass_when_zero_new_eligible(
+        self,
+        client: TestClient,
+        app_settings: Settings,
+        queue_path: Path,
+        tmp_path: Path,
+    ) -> None:
+        """Test 4b: No second pipeline pass when import produced zero new eligible jobs.
+
+        Seed the same job that the fake producer will export, so the import
+        is a no-op (all upserts hit existing rows). Proves no second pass starts.
+        """
+        # Pre-seed the same job the fake producer will write.
+        external_id = "fake-jh-job-0"
+        url = f"https://boards.greenhouse.io/example/jobs/{external_id}"
+        job = _make_job(tmp_path, external_id, url=url)
+        with session_scope(client.app.state.session_factory) as session:  # type: ignore[union-attr]
+            upsert_application_job(session, job)
+
+        _start_orchestration(client, mode="parallel", max_jobs=2)
+
+        final = _wait_for_orchestration_terminal(client, timeout=90)
+        assert final["status"] == "completed"
+        # No newly eligible jobs → no second pass.
+        assert final["pipeline_run_id"] is None
+        # But the initial pass ran.
+        assert final["pipeline_run_id_initial"] is not None
 
 
 class TestIdempotencyAndDuplicateGuards:
     """Tests 5, 6: idempotent queue + 409 on duplicate start."""
 
-    def test_duplicate_queue_content_is_idempotent(
+    def test_duplicate_queue_content_is_strictly_idempotent(
         self, client: TestClient, app_settings: Settings, queue_path: Path
     ) -> None:
-        """Test 5: Duplicate queue content remains idempotent."""
-        # First orchestration run.
-        _start_orchestration(client, mode="sequential", max_jobs=2)
-        final1 = _wait_for_orchestration_terminal(client, timeout=60)
-        assert final1["status"] == "completed"
-        imported1 = final1["queue_imported"]
+        """Test 5: Duplicate queue content is strictly idempotent.
 
-        # Wait for the orchestration thread to fully complete before starting
-        # the second run (prevents Popen GC race).
+        Proves exactly:
+        - no duplicate application rows (job count unchanged);
+        - no second post-import pipeline pass;
+        - no duplicate processing of the same application (no new submission results).
+        """
+        # First orchestration run.
+        _start_orchestration(client, mode="parallel", max_jobs=2)
+        final1 = _wait_for_orchestration_terminal(client, timeout=90)
+        assert final1["status"] == "completed"
+
+        # Count jobs and submission results after first run.
+        with session_scope(client.app.state.session_factory) as session:  # type: ignore[union-attr]
+            job_count_after_first = session.execute(
+                select(func.count()).select_from(ApplicationJobRow)
+            ).scalar_one()
+            submission_count_after_first = session.execute(
+                select(func.count()).select_from(SubmissionResultRow)
+            ).scalar_one()
+
+        # Wait for the orchestration thread to fully complete.
         svc = client.app.state.orchestration_service  # type: ignore[union-attr]
         if svc._thread is not None and svc._thread.is_alive():  # type: ignore[attr-defined]
             svc._thread.join(timeout=10)
 
         # Second run with the same queue content (fake JH writes the same jobs).
-        _start_orchestration(client, mode="sequential", max_jobs=2)
-        final2 = _wait_for_orchestration_terminal(client, timeout=60)
+        _start_orchestration(client, mode="parallel", max_jobs=2)
+        final2 = _wait_for_orchestration_terminal(client, timeout=90)
         assert final2["status"] == "completed"
-        # Idempotent: same content -> imported count is 0 (all upserts hit existing rows).
-        assert final2["queue_imported"] == 0 or final2["queue_imported"] == imported1
+
+        # No duplicate application rows: job count is unchanged.
+        with session_scope(client.app.state.session_factory) as session:  # type: ignore[union-attr]
+            job_count_after_second = session.execute(
+                select(func.count()).select_from(ApplicationJobRow)
+            ).scalar_one()
+            submission_count_after_second = session.execute(
+                select(func.count()).select_from(SubmissionResultRow)
+            ).scalar_one()
+        assert job_count_after_second == job_count_after_first, (
+            f"Expected {job_count_after_first} jobs after second run, got {job_count_after_second}"
+        )
+
+        # No second post-import pipeline pass (no newly eligible jobs since
+        # the first run already processed them to terminal states).
+        assert final2["pipeline_run_id"] is None, (
+            f"Expected no second pipeline pass, got {final2['pipeline_run_id']}"
+        )
+
+        # No duplicate processing: no new submission results.
+        assert submission_count_after_second == submission_count_after_first, (
+            f"Expected {submission_count_after_first} submissions, "
+            f"got {submission_count_after_second}"
+        )
 
     def test_duplicate_orchestration_start_returns_409(
         self, client: TestClient, app_settings: Settings, queue_path: Path
     ) -> None:
         """Test 6: Duplicate orchestration start returns 409."""
-        # Use a delayed JobHunter so the first run is still active.
         _start_orchestration(client, mode="sequential", extra_args=["--delay", "5.0"], max_jobs=1)
 
-        # Give it a moment to register as active.
         time.sleep(0.5)
 
         resp = client.post(
@@ -325,7 +433,6 @@ class TestIdempotencyAndDuplicateGuards:
         assert resp.status_code == 409
         assert "already active" in resp.json()["detail"].lower()
 
-        # Clean up: cancel the first run.
         client.post("/api/orchestration/cancel")
         _wait_for_orchestration_terminal(client, timeout=30)
 
@@ -337,21 +444,33 @@ class TestCancellation:
         self, client: TestClient, app_settings: Settings, queue_path: Path
     ) -> None:
         """Test 7: Cancel terminates the owned fake JobHunter process and cancels UAA."""
-        # Use a long delay so we can cancel while JobHunter is still running.
         _start_orchestration(client, mode="sequential", extra_args=["--delay", "30.0"], max_jobs=1)
 
-        # Wait for JobHunter to start.
         time.sleep(1.0)
         mid = client.get("/api/orchestration/status").json()
         assert mid["jobhunter_pid"] is not None
+        pid = mid["jobhunter_pid"]
 
-        # Cancel.
         cancel_resp = client.post("/api/orchestration/cancel")
         assert cancel_resp.status_code == 200
 
         final = _wait_for_orchestration_terminal(client, timeout=30)
         assert final["status"] == "cancelled"
         assert final["cancel_reason"]
+
+        # The JobHunter child PID is no longer alive.
+        # On Unix, we can check with os.kill(pid, 0). On Windows, the
+        # cancel() method already waited for the process to exit.
+        try:
+            os.kill(pid, 0)
+            # If we get here, the process is still alive — that's a failure.
+            pytest.fail(f"JobHunter PID {pid} is still alive after cancel")
+        except ProcessLookupError:
+            # Expected: the process is gone.
+            pass
+        except PermissionError:
+            # Process exists but owned by another user — unlikely in tests.
+            pass
 
 
 class TestRestartRecovery:
@@ -365,7 +484,6 @@ class TestRestartRecovery:
         settings.data_dir.mkdir(parents=True, exist_ok=True)
         apply_migrations(build_engine_url(settings.data_dir / "uaa.sqlite"))
 
-        # First app: seed an active orchestration run directly in the DB.
         app1 = create_app(settings=settings)
         with TestClient(app1):
             Base.metadata.create_all(app1.state.engine)
@@ -380,12 +498,10 @@ class TestRestartRecovery:
                     session,
                     "orch-restart-1",
                     status="jobhunter_running",
-                    jobhunter_pid=99999,  # a PID that won't exist
+                    jobhunter_pid=99999,
                     current_phase="jobhunter_running",
                 )
 
-        # Second app over the same DB: startup recovery should mark the
-        # orphaned run as failed.
         app2 = create_app(settings=settings)
         with TestClient(app2) as client2:
             Base.metadata.create_all(app2.state.engine)
@@ -397,16 +513,108 @@ class TestRestartRecovery:
                 or "restart" in status["last_error"].lower()
             )
 
-            # A fresh start is allowed (the orphaned run is terminal).
             resp = client2.post(
                 "/api/orchestration/start",
                 json={"mode": "sequential", "fixture_html": GREENHOUSE_APPLY_HTML, "max_jobs": 1},
             )
             assert resp.status_code == 200
             assert resp.json()["run_id"] != "orch-restart-1"
-            # Cancel it to clean up.
             client2.post("/api/orchestration/cancel")
             _wait_for_orchestration_terminal(client2, timeout=30)
+
+
+class TestTimeoutCleanup:
+    """Test 3 (defect 3): timeout cleanup."""
+
+    def test_timeout_terminates_child_no_import_no_pipeline(
+        self, tmp_path: Path, queue_path: Path
+    ) -> None:
+        """Test: JobHunter timeout terminates the child, no import, no pipeline.
+
+        Uses a short timeout (2s) with a fake producer that sleeps 60s.
+        Proves:
+        - the child PID is no longer alive;
+        - no queue is imported;
+        - no pipeline starts;
+        - the orchestration run is marked failed.
+        """
+        settings = _make_settings(
+            tmp_path, queue_path=queue_path, mode="sequential", timeout_seconds=2
+        )
+        settings.data_dir.mkdir(parents=True, exist_ok=True)
+        apply_migrations(build_engine_url(settings.data_dir / "uaa.sqlite"))
+
+        app = create_app(settings=settings)
+        with TestClient(app) as client:
+            Base.metadata.create_all(app.state.engine)
+            svc = client.app.state.orchestration_service  # type: ignore[union-attr]
+            svc.start(
+                mode="sequential",
+                fixture_html=GREENHOUSE_APPLY_HTML,
+                max_jobs=1,
+                jobhunter_extra_args=["--timeout-test"],
+            )
+
+            # Wait for the run to reach a terminal state.
+            time.sleep(1.0)
+            mid = client.get("/api/orchestration/status").json()
+            assert mid["jobhunter_pid"] is not None
+            pid = mid["jobhunter_pid"]
+
+            final = _wait_for_orchestration_terminal(client, timeout=30)
+            assert final["status"] == "failed"
+            assert "timed out" in final["last_error"].lower()
+
+            # The child PID is no longer alive.
+            try:
+                os.kill(pid, 0)
+                pytest.fail(f"JobHunter PID {pid} is still alive after timeout")
+            except ProcessLookupError:
+                pass
+            except PermissionError:
+                pass
+
+            # No queue import occurred.
+            assert final["queue_import_state"] is None
+            # No pipeline started.
+            assert final["pipeline_run_id"] is None
+
+
+class TestHighVolumeOutput:
+    """Test 4 (defect 4): high-volume output / pipe deadlock prevention."""
+
+    def test_high_volume_output_no_deaddown(
+        self, client: TestClient, app_settings: Settings, queue_path: Path
+    ) -> None:
+        """Test: High-volume stdout/stderr does not cause deadlock.
+
+        The fake producer writes 256KB to both stdout and stderr (well above
+        the typical 64KB OS pipe buffer). Proves:
+        - the process exits (no deadlock);
+        - stored output is within configured bounds;
+        - secrets are absent (if --secret-leak is also used);
+        - no ResourceWarnings occur (enforced by pytest config).
+        """
+        _start_orchestration(
+            client,
+            mode="sequential",
+            extra_args=["--volume", "262144", "--secret-leak"],
+            max_jobs=1,
+        )
+
+        final = _wait_for_orchestration_terminal(client, timeout=60)
+        assert final["status"] == "completed"
+        assert final["jobhunter_exit_code"] == 0
+
+        # Stored output is within bounds.
+        max_bytes = 8192 + 100  # allow truncation marker
+        assert len(final["jobhunter_stdout"].encode("utf-8")) <= max_bytes
+        assert len(final["jobhunter_stderr"].encode("utf-8")) <= max_bytes
+
+        # Secrets are absent.
+        assert "sk-or-v1" not in final["jobhunter_stdout"]
+        assert "OPENROUTER_API_KEY" not in final["jobhunter_stdout"]
+        assert "[redacted]" in final["jobhunter_stdout"]
 
 
 class TestSafety:
@@ -419,11 +627,6 @@ class TestSafety:
         _start_orchestration(client, mode="sequential", max_jobs=2)
         final = _wait_for_orchestration_terminal(client, timeout=60)
         assert final["status"] == "completed"
-
-        # Check that no submission results were created.
-        from sqlalchemy import func, select
-
-        from universal_auto_applier.persistence.models import SubmissionResultRow
 
         with session_scope(client.app.state.session_factory) as session:  # type: ignore[union-attr]
             count = session.execute(
@@ -438,11 +641,6 @@ class TestSafety:
         _start_orchestration(client, mode="sequential", max_jobs=2)
         final = _wait_for_orchestration_terminal(client, timeout=60)
         assert final["status"] == "completed"
-
-        # Check all jobs in the DB.
-        from sqlalchemy import select
-
-        from universal_auto_applier.persistence.models import ApplicationJobRow
 
         with session_scope(client.app.state.session_factory) as session:  # type: ignore[union-attr]
             jobs = list(session.execute(select(ApplicationJobRow)).scalars().all())
@@ -471,29 +669,20 @@ class TestBoundedCaptureAndSecretFilter:
             _start_orchestration(test_client, mode="sequential", max_jobs=1)
             final = _wait_for_orchestration_terminal(test_client, timeout=60)
             assert final["status"] == "completed"
-            # The queue file was written to the spaced path.
-            assert spaced_queue.exists()
 
     def test_output_capture_is_bounded_and_excludes_secrets(
         self, client: TestClient, app_settings: Settings, queue_path: Path
     ) -> None:
         """Test 10: Output capture is bounded and excludes secrets."""
-        # Use --secret-leak to print a fake secret, then verify it's filtered.
         _start_orchestration(client, mode="sequential", extra_args=["--secret-leak"], max_jobs=1)
 
         final = _wait_for_orchestration_terminal(client, timeout=60)
         assert final["status"] == "completed"
 
-        # The captured stdout must NOT contain the secret.
         assert "sk-or-v1" not in final["jobhunter_stdout"]
         assert "OPENROUTER_API_KEY" not in final["jobhunter_stdout"]
-        # The redacted marker should be present instead.
         assert "[redacted]" in final["jobhunter_stdout"]
-
-        # The capture is bounded (the setting default is 8192 bytes).
-        assert (
-            len(final["jobhunter_stdout"].encode("utf-8")) <= 8192 + 100
-        )  # allow truncation marker
+        assert len(final["jobhunter_stdout"].encode("utf-8")) <= 8192 + 100
 
 
 class TestJobHunterRunner:
@@ -512,11 +701,29 @@ class TestJobHunterRunner:
         )
         cmd = runner.build_command()
         assert isinstance(cmd, list)
-        assert "--output" in cmd
-        assert str(queue_path) in cmd
+        # run_all.py does NOT get --output.
+        assert "--output" not in cmd
         # The Python executable comes first, then the script path.
         assert cmd[0]  # python
-        assert cmd[1].endswith("run_export_queue.py")
+        assert cmd[1].endswith("run_all.py")
+
+    def test_build_command_export_queue_passes_output(
+        self, tmp_path: Path, queue_path: Path
+    ) -> None:
+        """run_export_queue.py DOES get --output."""
+        from universal_auto_applier.services.jobhunter_runner import JobHunterRunner
+
+        settings = _make_settings(
+            tmp_path, queue_path=queue_path, entry_point="run_export_queue.py"
+        )
+        runner = JobHunterRunner(
+            settings=settings,
+            queue_output_path=queue_path,
+            entry_point="run_export_queue.py",
+        )
+        cmd = runner.build_command()
+        assert "--output" in cmd
+        assert str(queue_path) in cmd
 
     def test_validate_rejects_missing_repo(self, tmp_path: Path, queue_path: Path) -> None:
         """Validation fails when the repo path is not configured."""
@@ -541,7 +748,7 @@ class TestJobHunterRunner:
             host="127.0.0.1",
             port=8400,
             data_dir=tmp_path / "uaa",
-            jobhunter_repo=tmp_path,  # exists but no run_export_queue.py
+            jobhunter_repo=tmp_path,
             queue_path=queue_path,
         )
         runner = JobHunterRunner(settings=settings, queue_output_path=queue_path)
@@ -554,10 +761,13 @@ class TestJobHunterRunner:
         """Launching and waiting writes the queue file atomically."""
         from universal_auto_applier.services.jobhunter_runner import JobHunterRunner
 
-        settings = _make_settings(tmp_path, queue_path=queue_path)
+        settings = _make_settings(
+            tmp_path, queue_path=queue_path, entry_point="run_export_queue.py"
+        )
         runner = JobHunterRunner(
             settings=settings,
             queue_output_path=queue_path,
+            entry_point="run_export_queue.py",
             extra_args=["--jobs", "3"],
         )
         pid = runner.launch()
@@ -567,3 +777,198 @@ class TestJobHunterRunner:
         assert queue_path.exists()
         lines = queue_path.read_text(encoding="utf-8").strip().split("\n")
         assert len(lines) == 3
+
+    def test_timeout_terminates_child_and_reaps(self, tmp_path: Path, queue_path: Path) -> None:
+        """Test: JobHunterRunner.wait() timeout terminates the child and reaps it."""
+        from universal_auto_applier.services.jobhunter_runner import JobHunterRunner
+
+        settings = _make_settings(
+            tmp_path,
+            queue_path=queue_path,
+            entry_point="run_export_queue.py",
+            timeout_seconds=2,
+        )
+        runner = JobHunterRunner(
+            settings=settings,
+            queue_output_path=queue_path,
+            entry_point="run_export_queue.py",
+            extra_args=["--timeout-test"],
+        )
+        pid = runner.launch()
+        runner.wait(timeout=2)
+        # The process was terminated.
+        assert runner.was_timed_out
+        # The PID is no longer alive.
+        try:
+            os.kill(pid, 0)
+            pytest.fail(f"PID {pid} still alive after timeout")
+        except ProcessLookupError:
+            pass
+        except PermissionError:
+            pass
+
+
+class TestRestartLivenessSafety:
+    """Test 6 (defect 6): restart/liveness safety."""
+
+    def test_dead_persisted_jobhunter_pid_recovered_safely(
+        self, tmp_path: Path, queue_path: Path
+    ) -> None:
+        """A dead persisted JobHunter PID is recovered safely on restart."""
+        settings = _make_settings(tmp_path, queue_path=queue_path)
+        settings.data_dir.mkdir(parents=True, exist_ok=True)
+        apply_migrations(build_engine_url(settings.data_dir / "uaa.sqlite"))
+
+        # Use a PID that is guaranteed to not exist (very high number).
+        dead_pid = 999999
+
+        app1 = create_app(settings=settings)
+        with TestClient(app1):
+            Base.metadata.create_all(app1.state.engine)
+            from universal_auto_applier.persistence.orchestration_run_repository import (
+                create_orchestration_run,
+                update_orchestration_run,
+            )
+
+            with session_scope(app1.state.session_factory) as session:
+                create_orchestration_run(session, run_id="orch-dead-pid-1", mode="sequential")
+                update_orchestration_run(
+                    session,
+                    "orch-dead-pid-1",
+                    status="jobhunter_running",
+                    jobhunter_pid=dead_pid,
+                    current_phase="jobhunter_running",
+                )
+
+        app2 = create_app(settings=settings)
+        with TestClient(app2) as client2:
+            Base.metadata.create_all(app2.state.engine)
+            status = client2.get("/api/orchestration/status").json()
+            assert status["status"] == "failed"
+            assert "interrupted" in status["last_error"].lower()
+
+    def test_live_child_not_treated_as_dead(self, tmp_path: Path, queue_path: Path) -> None:
+        """A confirmed-live child is not treated as dead and blocks duplicate start.
+
+        This test seeds an orchestration run with the CURRENT process's PID
+        as the JobHunter PID. Since the current process is alive, the
+        startup recovery should NOT mark it as failed. The run remains active
+        and blocks a new orchestration start with 409.
+        """
+        settings = _make_settings(tmp_path, queue_path=queue_path)
+        settings.data_dir.mkdir(parents=True, exist_ok=True)
+        apply_migrations(build_engine_url(settings.data_dir / "uaa.sqlite"))
+
+        live_pid = os.getpid()
+
+        app1 = create_app(settings=settings)
+        with TestClient(app1):
+            Base.metadata.create_all(app1.state.engine)
+            from universal_auto_applier.persistence.orchestration_run_repository import (
+                create_orchestration_run,
+                update_orchestration_run,
+            )
+
+            with session_scope(app1.state.session_factory) as session:
+                create_orchestration_run(session, run_id="orch-live-pid-1", mode="sequential")
+                update_orchestration_run(
+                    session,
+                    "orch-live-pid-1",
+                    status="jobhunter_running",
+                    jobhunter_pid=live_pid,
+                    current_phase="jobhunter_running",
+                )
+
+        app2 = create_app(settings=settings)
+        with TestClient(app2) as client2:
+            Base.metadata.create_all(app2.state.engine)
+            status = client2.get("/api/orchestration/status").json()
+            # The run is still active (not recovered).
+            assert status["status"] == "jobhunter_running"
+            # A new start is blocked with 409.
+            resp = client2.post(
+                "/api/orchestration/start",
+                json={"mode": "sequential", "fixture_html": GREENHOUSE_APPLY_HTML, "max_jobs": 1},
+            )
+            assert resp.status_code == 409
+
+    def test_restart_never_launches_replacement_child(
+        self, tmp_path: Path, queue_path: Path
+    ) -> None:
+        """Restart never launches a replacement JobHunter child automatically."""
+        settings = _make_settings(tmp_path, queue_path=queue_path)
+        settings.data_dir.mkdir(parents=True, exist_ok=True)
+        apply_migrations(build_engine_url(settings.data_dir / "uaa.sqlite"))
+
+        # Seed an active orchestration run.
+        app1 = create_app(settings=settings)
+        with TestClient(app1):
+            Base.metadata.create_all(app1.state.engine)
+            from universal_auto_applier.persistence.orchestration_run_repository import (
+                create_orchestration_run,
+                update_orchestration_run,
+            )
+
+            with session_scope(app1.state.session_factory) as session:
+                create_orchestration_run(session, run_id="orch-no-auto-1", mode="sequential")
+                update_orchestration_run(
+                    session,
+                    "orch-no-auto-1",
+                    status="jobhunter_running",
+                    jobhunter_pid=999999,
+                    current_phase="jobhunter_running",
+                )
+
+        app2 = create_app(settings=settings)
+        with TestClient(app2) as client2:
+            Base.metadata.create_all(app2.state.engine)
+            status = client2.get("/api/orchestration/status").json()
+            # The run was recovered (marked failed), not auto-retried.
+            assert status["status"] == "failed"
+            # No new JobHunter PID was launched.
+            status2 = client2.get("/api/orchestration/status").json()
+            assert status2["jobhunter_pid"] == 999999  # unchanged
+
+    def test_cancel_never_kills_using_only_stale_pid(
+        self, tmp_path: Path, queue_path: Path
+    ) -> None:
+        """Cancellation never kills a process using only an unverified persisted PID.
+
+        The orchestration service's cancel() uses the owned Popen handle,
+        never a stale PID from the database. This test verifies that when
+        there's no owned runner (e.g. after a restart), cancel() does not
+        attempt to kill the persisted PID.
+        """
+        settings = _make_settings(tmp_path, queue_path=queue_path)
+        settings.data_dir.mkdir(parents=True, exist_ok=True)
+        apply_migrations(build_engine_url(settings.data_dir / "uaa.sqlite"))
+
+        # Use the current process's PID as the persisted JobHunter PID.
+        # If cancel() tried to kill it using the stale PID, it would kill
+        # the test process itself.
+        live_pid = os.getpid()
+
+        app = create_app(settings=settings)
+        with TestClient(app) as client:
+            Base.metadata.create_all(app.state.engine)
+            from universal_auto_applier.persistence.orchestration_run_repository import (
+                create_orchestration_run,
+                update_orchestration_run,
+            )
+
+            with session_scope(app.state.session_factory) as session:
+                create_orchestration_run(session, run_id="orch-cancel-stale-1", mode="sequential")
+                update_orchestration_run(
+                    session,
+                    "orch-cancel-stale-1",
+                    status="jobhunter_running",
+                    jobhunter_pid=live_pid,
+                    current_phase="jobhunter_running",
+                )
+
+            # Cancel should NOT kill the persisted PID (the test process).
+            resp = client.post("/api/orchestration/cancel")
+            assert resp.status_code == 200
+
+            # The test process is still alive (we're still running).
+            assert os.getpid() == live_pid

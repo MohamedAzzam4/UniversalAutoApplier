@@ -32,13 +32,12 @@ from universal_auto_applier.persistence.orchestration_run_repository import (
     create_orchestration_run,
     get_active_orchestration_run,
     get_latest_orchestration_run,
+    list_active_orchestration_runs,
     mark_orchestration_run_terminal,
     orchestration_run_to_dict,
     update_orchestration_run,
 )
-from universal_auto_applier.services.jobhunter_runner import (
-    JobHunterRunner,
-)
+from universal_auto_applier.services.jobhunter_runner import JobHunterRunner
 
 logger = logging.getLogger("universal_auto_applier.orchestration_service")
 
@@ -125,8 +124,7 @@ class OrchestrationService:
             self._cancel_requested.clear()
             self._jobhunter_extra_args = jobhunter_extra_args or []
             # Wait for any previous orchestration thread to fully complete
-            # before starting a new one. This prevents the previous runner's
-            # Popen handle from being GC'd while its child is still running.
+            # before starting a new one.
             if self._thread is not None and self._thread.is_alive():
                 self._thread.join(timeout=30)
             # Ensure the previous runner's subprocess has been waited on.
@@ -251,24 +249,39 @@ class OrchestrationService:
         """Reconcile durable state after a server restart.
 
         - Detects orphaned active orchestration runs (the previous process died).
+        - For runs with a persisted JobHunter PID, conservatively checks PID
+          liveness. A PID that is alive (owned by this process or a child)
+          is kept active and blocks duplicate start. A dead/missing PID is
+          marked failed.
         - Never launches a duplicate JobHunter or UAA run automatically.
         - Marks orphaned runs as ``failed`` with a durable reason.
         - Reuses WQ-5 recovery for stale UAA pipeline runs (already done in
           the app lifespan before this service is called).
         - Surfaces a safe manual recovery action in the run's last_error.
         """
-        from universal_auto_applier.persistence.orchestration_run_repository import (
-            list_active_orchestration_runs,
-        )
+        from universal_auto_applier.services.pipeline_recovery_service import pid_is_alive
 
         recovered: list[str] = []
+        healthy_kept: list[str] = []
         with session_scope(self._session_factory) as session:
             active_runs = list_active_orchestration_runs(session)
             for row in active_runs:
+                # If the run has a persisted JobHunter PID and it's alive,
+                # keep the run active (don't recover it). This is conservative:
+                # we can't verify we OWN the process, but we don't mark it
+                # failed either. The operator can cancel it manually.
+                if row.jobhunter_pid is not None and pid_is_alive(row.jobhunter_pid):
+                    healthy_kept.append(row.run_id)
+                    logger.info(
+                        "[orchestration] startup recovery: run %s has live PID %s; keeping active",
+                        row.run_id[:8],
+                        row.jobhunter_pid,
+                    )
+                    continue
                 reason = (
                     f"Orchestration run {row.run_id[:8]} was interrupted by a "
                     f"server restart. JobHunter child (pid={row.jobhunter_pid}) "
-                    f"is no longer owned by this process. Manual recovery: "
+                    f"is no longer alive. Manual recovery: "
                     f"review the run state and start a new orchestration run "
                     f"if needed. Nothing was auto-retried."
                 )
@@ -286,7 +299,13 @@ class OrchestrationService:
                 len(recovered),
                 [run_id[:8] for run_id in recovered],
             )
-        return {"recovered": recovered}
+        if healthy_kept:
+            logger.info(
+                "[orchestration] startup recovery: %d run(s) with live PID kept active: %s",
+                len(healthy_kept),
+                [run_id[:8] for run_id in healthy_kept],
+            )
+        return {"recovered": recovered, "healthy_kept": healthy_kept}
 
     # ------------------------------------------------------------------
     # Internal: run loop
@@ -324,15 +343,17 @@ class OrchestrationService:
 
         Proves this exact order:
         1. validate configuration (done in start()).
-        2. start JobHunter.
+        2. start JobHunter (full workflow: scan → evaluate/tailor → export).
         3. wait for successful exit.
         4. verify queue file exists and is stable.
         5. call the existing WQ-3 queue-import service.
         6. start the existing WQ-4/WQ-5 safe browser pipeline.
         7. expose final results in durable orchestration status.
+
+        If JobHunter fails or times out, no import occurs and no pipeline starts.
         """
         # Phase 1: JobHunter
-        self._set_phase(run_id, "jobhunter_running", "Starting JobHunter export")
+        self._set_phase(run_id, "jobhunter_running", "Starting JobHunter full workflow")
         queue_path = self._resolve_queue_output()
         self._runner = JobHunterRunner(
             settings=self._settings,
@@ -347,15 +368,18 @@ class OrchestrationService:
                 run_id,
                 jobhunter_pid=pid,
                 jobhunter_started_at=_utcnow(),
-                last_action=f"JobHunter subprocess launched (pid={pid})",
+                last_action=f"JobHunter subprocess launched (pid={pid}, entry={self._settings.jobhunter_entry_point})",
             )
 
         if self._cancel_requested.is_set():
             self._runner.cancel()
             return
 
-        exit_code = self._runner.wait()
-        result = self._runner.collect_result(exit_code)
+        # Wait for JobHunter with the configured timeout.
+        timeout = self._settings.jobhunter_timeout_seconds or None
+        exit_code = self._runner.wait(timeout=timeout)
+        timed_out = self._runner.was_timed_out
+        result = self._runner.collect_result(exit_code, timed_out=timed_out)
         with session_scope(self._session_factory) as session:
             update_orchestration_run(
                 session,
@@ -364,10 +388,20 @@ class OrchestrationService:
                 jobhunter_finished_at=_utcnow(),
                 jobhunter_stdout=result.stdout,
                 jobhunter_stderr=result.stderr,
-                last_action=f"JobHunter exited with code {exit_code}",
+                last_action=f"JobHunter exited with code {exit_code}"
+                + (" (timed out)" if timed_out else ""),
             )
 
         if self._cancel_requested.is_set():
+            return
+
+        # If JobHunter timed out or failed, do NOT import or start pipeline.
+        if timed_out:
+            self._mark_failed(
+                run_id,
+                f"JobHunter timed out after {timeout}s and was terminated. "
+                f"No queue import or pipeline started.",
+            )
             return
 
         if exit_code != 0:
@@ -438,16 +472,19 @@ class OrchestrationService:
     def _run_parallel(self, run_id: str, fixture_html: str | None, max_jobs: int) -> None:
         """Parallel: UAA pipeline (existing jobs) + JobHunter concurrently.
 
-        - Start the UAA pipeline for already queued eligible jobs and JobHunter
-          concurrently.
-        - Do not start two UAA pipeline workers.
-        - When JobHunter finishes successfully, import the atomic queue once.
-        - After import, schedule newly imported eligible jobs without
-          reprocessing completed/recovered/terminal jobs.
-        - Failure of JobHunter must not erase or invalidate UAA work already
-          completed from the existing queue.
+        Required sequence:
+        1. Start UAA processing for jobs already eligible.
+        2. Start JobHunter concurrently.
+        3. Wait for JobHunter's successful exit and atomic queue publication.
+        4. Import the queue exactly once.
+        5. Wait for the initial UAA pipeline run to reach a terminal state.
+        6. If the import created newly eligible jobs, start exactly one second
+           safe UAA pipeline pass for those jobs.
+        7. Wait for that pass and persist its run id and outcome.
+        8. Do not start a second pass when the import produced zero new eligible jobs.
+        9. Do not reprocess jobs handled by the initial pass.
+        10. Remain dry-run/review-only.
         """
-        # Start JobHunter in a sub-thread so we can start UAA concurrently.
         queue_path = self._resolve_queue_output()
         self._runner = JobHunterRunner(
             settings=self._settings,
@@ -464,7 +501,7 @@ class OrchestrationService:
         )
 
         # Phase 1: start JobHunter
-        self._set_phase(run_id, "jobhunter_running", "Starting JobHunter export (parallel)")
+        self._set_phase(run_id, "jobhunter_running", "Starting JobHunter full workflow (parallel)")
         try:
             pid = self._runner.launch()
         except Exception as exc:  # noqa: BLE001
@@ -477,7 +514,7 @@ class OrchestrationService:
                 run_id,
                 jobhunter_pid=pid,
                 jobhunter_started_at=_utcnow(),
-                last_action=f"JobHunter subprocess launched (pid={pid})",
+                last_action=f"JobHunter subprocess launched (pid={pid}, entry={self._settings.jobhunter_entry_point})",
             )
 
         jh_thread.start()
@@ -485,60 +522,72 @@ class OrchestrationService:
         if self._cancel_requested.is_set():
             return
 
-        # Phase 2: start UAA pipeline for existing jobs
+        # Phase 2: start UAA pipeline for existing jobs (initial pass)
         self._set_phase(run_id, "pipeline_running", "Starting UAA pipeline for existing jobs")
+        initial_pipeline_state: dict[str, Any] | None = None
         try:
-            pipeline_state = self._pipeline_worker.start(
+            initial_pipeline_state = self._pipeline_worker.start(
                 max_jobs=max_jobs,
                 fixture_html=fixture_html,
             )
         except RuntimeError as exc:
             # Pipeline couldn't start (maybe no eligible jobs). That's OK in
             # parallel mode — we still wait for JobHunter and import.
-            pipeline_state = {"run_id": None, "status": "idle", "error": str(exc)}
+            initial_pipeline_state = None
             with session_scope(self._session_factory) as session:
                 update_orchestration_run(
                     session,
                     run_id,
-                    last_action=f"Pipeline not started: {exc}",
+                    last_action=f"Initial pipeline not started: {exc}",
                 )
 
-        with session_scope(self._session_factory) as session:
-            update_orchestration_run(
-                session,
-                run_id,
-                pipeline_run_id=pipeline_state.get("run_id"),
-                pipeline_state=pipeline_state.get("status"),
-            )
+        if initial_pipeline_state is not None:
+            with session_scope(self._session_factory) as session:
+                update_orchestration_run(
+                    session,
+                    run_id,
+                    pipeline_run_id_initial=initial_pipeline_state.get("run_id"),
+                    pipeline_state_initial=initial_pipeline_state.get("status"),
+                )
 
         # Wait for JobHunter to finish.
-        jh_thread.join(timeout=600)
+        jh_timeout = self._settings.jobhunter_timeout_seconds or 600
+        jh_thread.join(timeout=jh_timeout + 30)
         if jh_thread.is_alive():
-            logger.warning("[orchestration] JobHunter thread did not finish in 600s")
+            logger.warning(
+                "[orchestration] JobHunter thread did not finish in %ss", jh_timeout + 30
+            )
             self._runner.cancel()
             jh_thread.join(timeout=30)
 
         if self._cancel_requested.is_set():
             return
 
-        # Phase 3: import the queue (if JobHunter succeeded)
-        # The _run_jobhunter method updated the run row with exit_code.
+        # Check JobHunter exit code.
         with session_scope(self._session_factory) as session:
             row = get_latest_orchestration_run(session)
         if row is None:
             return
         if row.jobhunter_exit_code != 0:
-            # JobHunter failed — do NOT import, do NOT erase UAA work.
-            self._set_phase(
+            # JobHunter failed or timed out — do NOT import, do NOT erase UAA work.
+            # Wait for the initial pipeline to finish.
+            if initial_pipeline_state is not None:
+                self._wait_for_pipeline_initial(run_id)
+            self._mark_failed(
                 run_id,
-                "failed",
-                f"JobHunter failed (exit {row.jobhunter_exit_code}); no import. UAA pipeline continues.",
+                f"JobHunter failed (exit {row.jobhunter_exit_code}); no import. UAA initial pipeline completed.",
             )
-            # Wait for the pipeline to finish (it was already started).
-            self._wait_for_pipeline(run_id)
             return
 
-        # JobHunter succeeded: import the queue.
+        # Phase 3: Wait for the initial pipeline to reach terminal state.
+        if initial_pipeline_state is not None:
+            self._set_phase(run_id, "pipeline_running", "Waiting for initial UAA pipeline pass")
+            self._wait_for_pipeline_initial(run_id)
+
+        if self._cancel_requested.is_set():
+            return
+
+        # Phase 4: import the queue (JobHunter succeeded).
         self._set_phase(run_id, "importing", "Importing queue (parallel)")
         try:
             summary = self._queue_import_service.run(path=queue_path, trigger="orchestration")
@@ -557,19 +606,60 @@ class OrchestrationService:
                 last_action=f"Queue import: {summary.state} ({summary.imported} imported)",
             )
 
-        # Wait for the pipeline to finish. Newly imported eligible jobs are
-        # NOT automatically picked up by the running pipeline (the pipeline
-        # snapshots eligible jobs at start). A new pipeline start would be
-        # needed to process them — but we do NOT auto-start a second pipeline
-        # (only one active pipeline at a time). The operator can start a new
-        # orchestration run or pipeline after this one completes.
+        if self._cancel_requested.is_set():
+            return
+
+        # Phase 5: If the import created newly eligible jobs, start a second
+        # pipeline pass for those jobs. Do not start a second pass if zero
+        # new eligible jobs were imported.
+        newly_eligible = self._count_newly_eligible_jobs()
+        if newly_eligible == 0:
+            with session_scope(self._session_factory) as session:
+                update_orchestration_run(
+                    session,
+                    run_id,
+                    last_action="No newly eligible jobs after import; no second pipeline pass",
+                )
+            return
+
+        self._set_phase(
+            run_id, "pipeline_running", "Starting second UAA pipeline pass for newly imported jobs"
+        )
+        try:
+            second_pipeline_state = self._pipeline_worker.start(
+                max_jobs=max_jobs,
+                fixture_html=fixture_html,
+            )
+        except RuntimeError as exc:
+            # If we can't start the second pass, that's not a hard failure —
+            # the initial pass already ran. Log it as an error but don't fail.
+            with session_scope(self._session_factory) as session:
+                update_orchestration_run(
+                    session,
+                    run_id,
+                    last_error=f"Second pipeline pass failed to start: {exc}",
+                )
+            return
+
+        with session_scope(self._session_factory) as session:
+            update_orchestration_run(
+                session,
+                run_id,
+                pipeline_run_id=second_pipeline_state.get("run_id"),
+                pipeline_state=second_pipeline_state.get("status"),
+                last_action=f"Second pipeline pass started: {second_pipeline_state.get('status')}",
+            )
+
+        # Wait for the second pipeline pass to reach terminal state.
         self._wait_for_pipeline(run_id)
 
     def _run_jobhunter(self, run_id: str) -> None:
         """Run JobHunter and update the run row (used in parallel mode)."""
         assert self._runner is not None
-        exit_code = self._runner.wait()
-        result = self._runner.collect_result(exit_code)
+        timeout = self._settings.jobhunter_timeout_seconds or None
+        exit_code = self._runner.wait(timeout=timeout)
+        timed_out = self._runner.was_timed_out
+        result = self._runner.collect_result(exit_code, timed_out=timed_out)
         with session_scope(self._session_factory) as session:
             update_orchestration_run(
                 session,
@@ -578,8 +668,31 @@ class OrchestrationService:
                 jobhunter_finished_at=_utcnow(),
                 jobhunter_stdout=result.stdout,
                 jobhunter_stderr=result.stderr,
-                last_action=f"JobHunter exited with code {exit_code}",
+                last_action=f"JobHunter exited with code {exit_code}"
+                + (" (timed out)" if timed_out else ""),
             )
+
+    def _count_newly_eligible_jobs(self) -> int:
+        """Count jobs in READY_TO_APPLY or QUEUED status (eligible for pipeline)."""
+        from sqlalchemy import func, select
+
+        from universal_auto_applier.core.statuses import ApplicationStatus
+        from universal_auto_applier.persistence.models import ApplicationJobRow
+
+        with session_scope(self._session_factory) as session:
+            count = session.execute(
+                select(func.count())
+                .select_from(ApplicationJobRow)
+                .where(
+                    ApplicationJobRow.status.in_(
+                        [
+                            ApplicationStatus.READY_TO_APPLY.value,
+                            ApplicationStatus.QUEUED.value,
+                        ]
+                    )
+                )
+            ).scalar_one()
+        return int(count)
 
     def _wait_for_stable_queue(self, path: Path, timeout: float = 5.0) -> bool:
         """Wait until the queue file exists and its size is stable.
@@ -604,7 +717,11 @@ class OrchestrationService:
         return path.exists() and path.is_file()
 
     def _wait_for_pipeline(self, run_id: str, timeout: float = 300.0) -> None:
-        """Poll the pipeline worker until it reaches a terminal state."""
+        """Poll the pipeline worker until it reaches a terminal state.
+
+        Updates ``pipeline_state`` (the second-pass / sequential pipeline)
+        on the orchestration run row.
+        """
         import time
 
         deadline = time.monotonic() + timeout
@@ -619,6 +736,31 @@ class OrchestrationService:
                     run_id,
                     pipeline_state=status,
                     last_action=f"Pipeline: {status}",
+                )
+            if status in ("idle", "completed", "cancelled", "failed", "recovered"):
+                return
+            time.sleep(0.5)
+
+    def _wait_for_pipeline_initial(self, run_id: str, timeout: float = 300.0) -> None:
+        """Poll the pipeline worker until it reaches a terminal state.
+
+        Updates ``pipeline_state_initial`` (the first-pass / initial pipeline)
+        on the orchestration run row.
+        """
+        import time
+
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            if self._cancel_requested.is_set():
+                return
+            state = self._pipeline_worker.get_state_dict()
+            status = state.get("status", "idle")
+            with session_scope(self._session_factory) as session:
+                update_orchestration_run(
+                    session,
+                    run_id,
+                    pipeline_state_initial=status,
+                    last_action=f"Initial pipeline: {status}",
                 )
             if status in ("idle", "completed", "cancelled", "failed", "recovered"):
                 return
@@ -675,15 +817,25 @@ class OrchestrationService:
         """Resolve the queue output path.
 
         Priority:
-        1. settings.jobhunter_queue_output (explicit override)
-        2. settings.queue_path (the standard UAA queue path)
+        1. settings.jobhunter_queue_output (explicit absolute override)
+        2. <jobhunter_repo>/data/application_queue.jsonl (JobHunter default)
+        3. settings.queue_path (the standard UAA queue path, for backward compat)
+
+        ``run_all.py`` writes to the path configured in JobHunter's
+        ``config/profile.yml`` → ``queue_export.output_path``, which defaults
+        to ``data/application_queue.jsonl`` relative to the JobHunter repo
+        root. UAA reads the queue from that same path after JobHunter exits.
         """
         if self._settings.jobhunter_queue_output is not None:
             return self._settings.jobhunter_queue_output
+        repo = self._settings.jobhunter_repo
+        if repo is not None:
+            # Default: <jobhunter_repo>/data/application_queue.jsonl
+            return repo / "data" / "application_queue.jsonl"
         if self._settings.queue_path is not None:
             return self._settings.queue_path
         raise OrchestrationConfigurationError(
-            "Queue output path is not configured (set UAA_QUEUE_PATH or UAA_JOBHUNTER_QUEUE_OUTPUT)"
+            "Queue output path is not configured (set UAA_JOBHUNTER_REPO or UAA_JOBHUNTER_QUEUE_OUTPUT)"
         )
 
 

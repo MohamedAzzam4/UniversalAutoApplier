@@ -7,8 +7,9 @@ Create Date: 2026-08-10 00:00:00
 New table ``orchestration_runs`` — one durable row per cross-repository
 orchestration run (JobHunter export -> UAA import -> UAA pipeline). The row
 persists the mode (sequential/parallel), the overall phase, the JobHunter
-child PID and exit code, the queue-import run id, the UAA pipeline run id,
-bounded errors, timestamps, and the cancellation reason.
+child PID and exit code, the queue-import run id, the UAA pipeline run IDs
+(initial and post-import for parallel mode), bounded errors, timestamps,
+and the cancellation reason.
 
 Only one active orchestration run may exist at a time (enforced by the
 service layer's in-process lock plus the ``status`` column: terminal runs
@@ -54,7 +55,13 @@ def upgrade() -> None:
         sa.Column("queue_import_state", sa.String(16), nullable=True),
         sa.Column("queue_imported", sa.Integer(), nullable=True, default=0),
         sa.Column("queue_skipped", sa.Integer(), nullable=True, default=0),
-        # UAA pipeline run link
+        # UAA pipeline run links. In sequential mode, only pipeline_run_id is
+        # used. In parallel mode, pipeline_run_id_initial is the first pass
+        # (existing jobs) and pipeline_run_id is the second pass (newly
+        # imported jobs). pipeline_state / pipeline_state_initial track their
+        # respective terminal states.
+        sa.Column("pipeline_run_id_initial", sa.String(64), nullable=True),
+        sa.Column("pipeline_state_initial", sa.String(32), nullable=True),
         sa.Column("pipeline_run_id", sa.String(64), nullable=True),
         sa.Column("pipeline_state", sa.String(32), nullable=True),
         # Bounded structured errors

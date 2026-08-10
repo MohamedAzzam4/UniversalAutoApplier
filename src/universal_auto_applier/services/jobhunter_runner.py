@@ -1,18 +1,33 @@
 """JobHunter subprocess boundary (WQ-6).
 
 Launches JobHunter as an external subprocess using its documented public
-entry point (``python run_export_queue.py --output <path>``). This module
-NEVER imports JobHunter Python modules — the boundary is process-level only.
+entry point. The production default is ``run_all.py`` (full workflow:
+scan → evaluate/tailor → atomic queue export). For testing, the entry
+point can be set to a fake producer script.
+
+This module NEVER imports JobHunter Python modules — the boundary is
+process-level only.
 
 Safety:
 - Never constructs a shell command string. Uses an argument list with
   :class:`subprocess.Popen`.
 - Never places tokens, API keys, CV data, or candidate data in command-line
-  arguments (only the queue output path is passed, which is a local file).
+  arguments.
+- ``run_all.py`` does NOT accept ``--output``; UAA reads the queue from the
+  path JobHunter writes to (configured in JobHunter's profile.yml). Only
+  ``run_export_queue.py`` (the standalone exporter) accepts ``--output``.
+- Drains stdout and stderr CONCURRENTLY while the child is running using
+  background threads. This prevents OS pipe-buffer deadlock when a noisy
+  child fills the pipe before the parent reads it.
 - Captures stdout/stderr with bounded storage (the caller configures the
-  max bytes; the capture is truncated to that limit).
+  max bytes; the capture is truncated to that limit). Secrets are redacted
+  before durable storage.
 - The caller determines success from the process exit code plus the atomic
   queue file contract — never by parsing human-readable logs.
+- On timeout: marks the result as timed out, requests graceful termination,
+  force-kills after the configured grace period, reaps the process, joins
+  drain threads, and persists the timeout outcome. The orchestration run
+  becomes failed; no queue import occurs.
 - Graceful termination is attempted first (SIGTERM/TerminateProcess); forced
   termination (SIGKILL) is used only after a bounded grace period.
 - Never kills a process based solely on an unverified stale PID. Cancellation
@@ -25,6 +40,7 @@ import logging
 import os
 import subprocess
 import sys
+import threading
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -48,6 +64,10 @@ _SECRET_PATTERNS = (
     "google_ai",
     "telegram",
 )
+
+# Entry points that accept --output. Only run_export_queue.py supports it;
+# run_all.py does NOT (it reads the path from config/profile.yml).
+_ENTRY_POINTS_WITH_OUTPUT_FLAG = frozenset({"run_export_queue.py"})
 
 
 @dataclass
@@ -88,7 +108,7 @@ class JobHunterRunner:
     settings: Settings
     queue_output_path: Path
     # The entry point script name relative to the JobHunter repo root.
-    entry_point: str = "run_export_queue.py"
+    entry_point: str = "run_all.py"
     # Optional extra args passed after --output. Used by tests to point at
     # fixture data inside the JobHunter repo (e.g. --evaluations, --pipeline).
     extra_args: list[str] = field(default_factory=lambda: list[str]())
@@ -99,6 +119,12 @@ class JobHunterRunner:
     _started_at: float = 0.0
     # Set by cancel() to signal wait() to stop polling.
     _cancel_requested: bool = False
+    # Set by _handle_timeout() to indicate the last wait() timed out.
+    _timed_out: bool = False
+    # Drain threads for concurrent stdout/stderr reading.
+    _drain_threads: list[threading.Thread] = field(default_factory=lambda: list[threading.Thread]())
+    # Lock for drain thread buffer access.
+    _buf_lock: threading.Lock = field(default_factory=threading.Lock)
 
     def validate(self) -> None:
         """Validate configuration before launching.
@@ -145,24 +171,29 @@ class JobHunterRunner:
 
         Never constructs a shell command string. Returns a list of arguments
         suitable for ``Popen(args=...)`` with ``shell=False``.
+
+        ``run_all.py`` does NOT accept ``--output``; it reads the queue path
+        from JobHunter's ``config/profile.yml``. Only ``run_export_queue.py``
+        accepts ``--output``. UAA reads the queue from
+        :attr:`queue_output_path` after JobHunter exits.
         """
         repo = self.settings.jobhunter_repo
         if repo is None:
             raise RuntimeError("JobHunter repo path is not configured")
         python = self._resolve_python()
         script = str(repo / self.entry_point)
-        # Only the queue output path is passed on the command line. No tokens,
-        # API keys, CV data, or candidate data are ever placed in args.
-        return [
-            python,
-            script,
-            "--output",
-            str(self.queue_output_path),
-            *self.extra_args,
-        ]
+        cmd: list[str] = [python, script]
+        # Only pass --output to entry points that support it.
+        if self.entry_point in _ENTRY_POINTS_WITH_OUTPUT_FLAG:
+            cmd += ["--output", str(self.queue_output_path)]
+        cmd += self.extra_args
+        return cmd
 
     def launch(self) -> int:
         """Launch the JobHunter subprocess and return its PID.
+
+        Starts concurrent drain threads for stdout/stderr to prevent OS
+        pipe-buffer deadlock.
 
         Raises:
             RuntimeError: if validation fails or the process cannot be started.
@@ -184,16 +215,85 @@ class JobHunterRunner:
                 errors="replace",
                 # Do not use shell=True — we pass an argument list.
                 shell=False,
+                # Use a moderate buffer size to reduce thread contention.
+                bufsize=-1,
             )
         except OSError as exc:
             raise RuntimeError(f"Failed to launch JobHunter subprocess: {exc}") from exc
         self._started_at = time.time()
+        self._timed_out = False
+        # Start concurrent drain threads immediately to prevent pipe deadlock.
+        self._start_drain_threads()
         logger.info(
-            "[orchestration] JobHunter subprocess launched (pid=%s, repo=%s)",
+            "[orchestration] JobHunter subprocess launched (pid=%s, repo=%s, entry=%s)",
             self._proc.pid,
             repo,
+            self.entry_point,
         )
         return self._proc.pid
+
+    def _start_drain_threads(self) -> None:
+        """Start background threads to drain stdout and stderr concurrently.
+
+        This prevents OS pipe-buffer deadlock: if the child writes more than
+        the pipe capacity (typically 64KB on Linux) without the parent
+        reading, the child blocks forever. The drain threads read
+        continuously and accumulate into bounded buffers.
+        """
+        proc = self._proc
+        if proc is None:
+            return
+        max_bytes = self.settings.orchestration_capture_max_bytes
+        for stream, buf_attr in ((proc.stdout, "_stdout_buf"), (proc.stderr, "_stderr_buf")):
+            if stream is None:
+                continue
+            thread = threading.Thread(
+                target=self._drain_stream,
+                args=(stream, buf_attr, max_bytes),
+                daemon=True,
+                name=f"jh-drain-{buf_attr}",
+            )
+            thread.start()
+            self._drain_threads.append(thread)
+
+    def _drain_stream(self, stream: Any, buf_attr: str, max_bytes: int) -> None:
+        """Read one stream line by line into a bounded buffer.
+
+        This runs in a background thread. It reads until EOF (process exits
+        and closes the pipe), accumulating lines into the buffer up to
+        ``max_bytes``. After the buffer is full, it continues reading and
+        DISCARDING lines to prevent the OS pipe buffer from filling up and
+        deadlocking the child process. Secrets are NOT filtered here
+        (filtering happens at collect_result time) to keep the hot path fast.
+        """
+        buf: list[str] = []
+        total = 0
+        buffer_full = False
+        try:
+            for line in stream:
+                if buffer_full:
+                    # Buffer is full; discard the line but keep reading to
+                    # prevent OS pipe deadlock.
+                    continue
+                encoded_len = len(line.encode("utf-8", errors="replace"))
+                if total + encoded_len > max_bytes:
+                    remaining = max_bytes - total
+                    if remaining > 0:
+                        buf.append(line[:remaining])
+                    buf.append("\n... [output truncated]\n")
+                    buffer_full = True
+                    continue
+                buf.append(line)
+                total += encoded_len
+        except (OSError, ValueError):
+            pass
+        finally:
+            try:
+                stream.close()
+            except OSError:
+                pass
+            with self._buf_lock:
+                setattr(self, buf_attr, buf)
 
     def _build_env(self) -> dict[str, str]:
         """Build the environment for the JobHunter subprocess.
@@ -223,49 +323,81 @@ class JobHunterRunner:
         proc = self._proc
         return proc is not None and proc.poll() is None
 
+    @property
+    def was_timed_out(self) -> bool:
+        """True if the last ``wait()`` call ended due to a timeout.
+
+        When True, the process was terminated by the runner and the
+        orchestration run should be marked failed (no import, no pipeline).
+        """
+        return self._timed_out
+
     def wait(self, timeout: float | None = None) -> int | None:
         """Wait for the child to exit and return its exit code.
 
-        Captures stdout/stderr into bounded buffers with secret filtering.
-        Returns None if the process was not launched.
+        Uses a poll loop so that ``cancel()`` can terminate the process from
+        another thread. On timeout, the process is terminated, force-killed
+        if necessary, reaped, and the result is marked as timed out.
 
-        Uses a poll loop instead of ``communicate()`` so that ``cancel()``
-        can terminate the process from another thread (the poll loop
-        detects the exit and returns).
+        Returns the exit code, or None if the process was not launched.
         """
         proc = self._proc
         if proc is None:
             return None
         deadline = None
-        if timeout is not None:
-            import time as _time
-
-            deadline = _time.monotonic() + timeout
-        # Poll until the process exits. This allows cancel() (from another
-        # thread) to terminate the process; this loop will detect the exit.
+        if timeout is not None and timeout > 0:
+            deadline = time.monotonic() + timeout
         while True:
             if self._cancel_requested:
                 # Cancel was requested; let cancel() handle the cleanup.
                 break
             rc = proc.poll()
             if rc is not None:
-                self._drain_and_store()
+                self._join_drain_threads()
                 return rc
-            if deadline is not None:
-                import time as _time
-
-                if _time.monotonic() >= deadline:
-                    self._drain_and_store()
-                    return proc.returncode
-            # Check for cancellation with a short sleep.
-            if self._cancel_requested:
-                break
-            import time as _time
-
-            _time.sleep(0.1)
-        # If we get here, cancel was requested. The cancel() method will
-        # call communicate() to drain and wait. Return the current returncode.
+            if deadline is not None and time.monotonic() >= deadline:
+                # Timeout: terminate, reap, mark timed out.
+                self._handle_timeout()
+                return proc.returncode
+            time.sleep(0.1)
+        # Cancel was requested; cancel() handles cleanup.
         return proc.returncode
+
+    def _handle_timeout(self) -> None:
+        """Handle a timeout: terminate, force-kill if needed, reap, join drains.
+
+        This ensures the child PID is no longer alive, pipes are drained, and
+        the orchestration run will be marked failed.
+        """
+        proc = self._proc
+        if proc is None:
+            return
+        self._timed_out = True
+        logger.warning(
+            "[orchestration] JobHunter subprocess timed out (pid=%s); terminating",
+            proc.pid,
+        )
+        self._terminate()
+        try:
+            proc.wait(timeout=self.settings.orchestration_cancel_grace_seconds)
+        except subprocess.TimeoutExpired:
+            logger.warning(
+                "[orchestration] JobHunter did not exit in %ss; force killing",
+                self.settings.orchestration_cancel_grace_seconds,
+            )
+            proc.kill()
+            try:
+                proc.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                pass
+        self._join_drain_threads()
+
+    def _join_drain_threads(self) -> None:
+        """Join the drain threads so they finish reading and close pipes."""
+        for thread in self._drain_threads:
+            if thread.is_alive():
+                thread.join(timeout=5)
+        self._drain_threads.clear()
 
     def cancel(self) -> int | None:
         """Request graceful cancellation of the child process.
@@ -279,8 +411,8 @@ class JobHunterRunner:
         if proc is None:
             return None
         if proc.poll() is not None:
-            # Already exited; drain any remaining output.
-            self._drain_and_store()
+            # Already exited; join drain threads.
+            self._join_drain_threads()
             return proc.returncode
         logger.info("[orchestration] cancelling JobHunter subprocess (pid=%s)", proc.pid)
         self._terminate()
@@ -296,36 +428,8 @@ class JobHunterRunner:
                 proc.wait(timeout=5)
             except subprocess.TimeoutExpired:
                 pass
-        self._drain_and_store()
+        self._join_drain_threads()
         return proc.returncode
-
-    def _drain_and_store(self) -> None:
-        """Drain remaining stdout/stderr from the process and store it.
-
-        Uses ``communicate()`` to safely read any remaining output after the
-        process has exited. This is safe to call after ``wait()`` or
-        ``cancel()`` because the process has already exited.
-        """
-        proc = self._proc
-        if proc is None:
-            return
-        try:
-            stdout_data, stderr_data = proc.communicate(timeout=1)
-        except subprocess.TimeoutExpired:
-            stdout_data, stderr_data = "", ""
-        except OSError:
-            stdout_data, stderr_data = "", ""
-        self._store_output(str(stdout_data or ""), str(stderr_data or ""))
-
-    def _store_output(self, stdout_str: str, stderr_str: str) -> None:
-        """Truncate and store captured output in the buffers."""
-        max_bytes = self.settings.orchestration_capture_max_bytes
-        if len(stdout_str.encode("utf-8")) > max_bytes:
-            stdout_str = stdout_str[:max_bytes] + "\n... [output truncated]\n"
-        if len(stderr_str.encode("utf-8")) > max_bytes:
-            stderr_str = stderr_str[:max_bytes] + "\n... [output truncated]\n"
-        self._stdout_buf = [stdout_str]
-        self._stderr_buf = [stderr_str]
 
     def _terminate(self) -> None:
         """Send a graceful termination signal to the child."""
@@ -356,11 +460,17 @@ class JobHunterRunner:
                 proc.wait(timeout=5)
             except OSError:
                 pass
+        self._join_drain_threads()
 
-    def collect_result(self, exit_code: int | None, *, cancelled: bool = False) -> JobHunterResult:
+    def collect_result(
+        self, exit_code: int | None, *, cancelled: bool = False, timed_out: bool = False
+    ) -> JobHunterResult:
         """Build a :class:`JobHunterResult` from the current state."""
-        stdout = _filter_secrets("".join(self._stdout_buf))
-        stderr = _filter_secrets("".join(self._stderr_buf))
+        with self._buf_lock:
+            stdout_raw = "".join(self._stdout_buf)
+            stderr_raw = "".join(self._stderr_buf)
+        stdout = _filter_secrets(stdout_raw)
+        stderr = _filter_secrets(stderr_raw)
         return JobHunterResult(
             exit_code=exit_code,
             stdout=stdout,
@@ -369,6 +479,7 @@ class JobHunterRunner:
             started_at=self._started_at,
             finished_at=time.time(),
             cancelled=cancelled,
+            timed_out=timed_out,
         )
 
 
