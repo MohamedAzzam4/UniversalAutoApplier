@@ -79,7 +79,11 @@ pid_is_alive = _pid_is_alive
 
 
 def _pid_is_alive_windows(pid: int) -> bool:
-    """Windows liveness probe via OpenProcess (query-only access).
+    """Windows liveness probe via OpenProcess + GetExitCodeProcess.
+
+    ``OpenProcess`` succeeds even for a terminated process if the handle
+    is still valid. We must also check ``GetExitCodeProcess`` to see if the
+    process has actually exited (exit code != STILL_ACTIVE = 259).
 
     ``ctypes.windll`` only exists on Windows; resolve it dynamically so the
     module type-checks on every platform.
@@ -90,12 +94,21 @@ def _pid_is_alive_windows(pid: int) -> bool:
     if windll is None:
         return False
     PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+    STILL_ACTIVE = 259
     kernel32 = windll.kernel32
     handle = kernel32.OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, False, pid)
     if not handle:
         return False
-    kernel32.CloseHandle(handle)
-    return True
+    try:
+        exit_code = ctypes.c_ulong()
+        if kernel32.GetExitCodeProcess(handle, ctypes.byref(exit_code)):
+            # If GetExitCodeProcess succeeds and the exit code is STILL_ACTIVE,
+            # the process is running. Otherwise it has exited.
+            return exit_code.value == STILL_ACTIVE
+        # GetExitCodeProcess failed — conservatively treat as alive.
+        return True
+    finally:
+        kernel32.CloseHandle(handle)
 
 
 def _heartbeat_expired(heartbeat: datetime | None, timeout: timedelta) -> bool:
