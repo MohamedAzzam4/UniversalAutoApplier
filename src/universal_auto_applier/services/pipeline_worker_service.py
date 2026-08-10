@@ -178,6 +178,12 @@ class PipelineWorkerService:
                     errors="replace",
                 )
             except OSError as exc:
+                # Clean up the target manifest on launch failure.
+                if target_ids_file is not None:
+                    try:
+                        target_ids_file.unlink(missing_ok=True)
+                    except OSError:
+                        pass
                 # The run row exists but the worker never started. Mark it
                 # failed so the status API does not report a ghost "running".
                 with session_scope(self._session_factory) as session:

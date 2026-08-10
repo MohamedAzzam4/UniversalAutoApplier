@@ -151,4 +151,7 @@ def get_orchestration_status(request: Request) -> dict[str, Any]:
         }
     state = service.status()
     state["message"] = _SAFETY_MESSAGE
+    state["jobhunter_workers"] = 1
+    state["pipeline_workers"] = 1
+    state["max_jobs"] = "batch-size limit (not worker count)"
     return state

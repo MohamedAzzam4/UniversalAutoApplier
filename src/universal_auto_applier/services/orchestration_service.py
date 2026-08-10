@@ -702,39 +702,87 @@ class OrchestrationService:
                 )
             return
 
-        self._set_phase(
-            run_id, "pipeline_running", "Starting second UAA pipeline pass for newly imported jobs"
-        )
-        try:
-            second_pipeline_state = self._pipeline_worker.start(
-                max_jobs=max_jobs,
-                fixture_html=fixture_html,
-                target_application_ids=new_ids,
-            )
-        except RuntimeError as exc:
-            # Second pass failure is a HARD orchestration failure: import
-            # succeeded but processing the newly eligible jobs did not start.
-            # Imported jobs remain safely eligible for manual retry.
-            self._mark_failed(
-                run_id,
-                f"Import succeeded ({summary.imported} imported, {new_count} newly eligible) "
-                f"but the second pipeline pass failed to start: {exc}. "
-                f"The newly imported jobs remain eligible for manual retry.",
-            )
-            return
+        # Phase 5: If the import created newly eligible jobs, process them
+        # in bounded batches of max_jobs until all target IDs leave
+        # READY_TO_APPLY/QUEUED.
+        remaining_ids = list(new_ids)
+        pass_num = 0
+        pipeline_run_ids: list[str] = []
+        while remaining_ids:
+            if self._cancel_requested.is_set():
+                return
 
+            pass_num += 1
+            batch = remaining_ids[:max_jobs]
+            self._set_phase(
+                run_id,
+                "pipeline_running",
+                f"Starting pipeline pass {pass_num} for {len(batch)} targeted jobs "
+                f"({len(remaining_ids)} remaining)",
+            )
+            try:
+                pass_state = self._pipeline_worker.start(
+                    max_jobs=max_jobs,
+                    fixture_html=fixture_html,
+                    target_application_ids=batch,
+                )
+            except RuntimeError as exc:
+                self._mark_failed(
+                    run_id,
+                    f"Import succeeded ({summary.imported} imported, {new_count} newly eligible) "
+                    f"but pipeline pass {pass_num} failed to start: {exc}. "
+                    f"{len(remaining_ids)} target IDs remain eligible for manual retry.",
+                )
+                return
+
+            run_id_str = pass_state.get("run_id")
+            if run_id_str:
+                pipeline_run_ids.append(run_id_str)
+            with session_scope(self._session_factory) as session:
+                update_orchestration_run(
+                    session,
+                    run_id,
+                    pipeline_run_id=run_id_str,
+                    pipeline_state=pass_state.get("status"),
+                    last_action=f"Pipeline pass {pass_num} started: {pass_state.get('status')}",
+                )
+
+            if not self._wait_for_pipeline(run_id):
+                return
+
+            # Recompute remaining eligible target IDs.
+            current_eligible = self._snapshot_eligible_ids()
+            remaining_ids = [tid for tid in remaining_ids if tid in current_eligible]
+
+            with session_scope(self._session_factory) as session:
+                update_orchestration_run(
+                    session,
+                    run_id,
+                    last_action=f"Pipeline pass {pass_num} completed; "
+                    f"{len(remaining_ids)} target IDs remaining",
+                )
+
+            if remaining_ids and len(remaining_ids) == len(batch):
+                # No progress: all IDs in this batch are still eligible.
+                self._mark_failed(
+                    run_id,
+                    f"Pipeline pass {pass_num} made no progress: "
+                    f"{len(remaining_ids)} target IDs still eligible after processing. "
+                    "The remaining jobs need manual review.",
+                )
+                return
+
+        # All target IDs processed. The newly_eligible_count and
+        # newly_eligible_ids_json remain at their original import-time values
+        # (the count of IDs that were newly eligible, and the list of those IDs).
+        # We only update the pipeline_run_id and last_action.
         with session_scope(self._session_factory) as session:
             update_orchestration_run(
                 session,
                 run_id,
-                pipeline_run_id=second_pipeline_state.get("run_id"),
-                pipeline_state=second_pipeline_state.get("status"),
-                last_action=f"Second pipeline pass started: {second_pipeline_state.get('status')}",
+                pipeline_run_id=pipeline_run_ids[-1] if pipeline_run_ids else None,
+                last_action=f"All {new_count} target IDs processed in {pass_num} pass(es)",
             )
-
-        # Wait for the second pipeline pass to reach terminal state.
-        if not self._wait_for_pipeline(run_id):
-            return
 
     def _run_jobhunter(self, run_id: str) -> None:
         """Run JobHunter and update the run row (used in parallel mode)."""
@@ -1102,23 +1150,73 @@ class OrchestrationService:
         """Read JobHunter's configured queue output path from config/profile.yml.
 
         Returns the path string (may be relative), or None if the config
-        file is missing or the key is absent. Never raises — missing config
-        means JobHunter will use its default (data/application_queue.jsonl).
+        file is missing or the key is absent (JobHunter's documented default
+        applies).
+
+        Raises OrchestrationConfigurationError if:
+        - The file exists but contains malformed YAML.
+        - The root is not a mapping.
+        - ``queue_export`` is not a mapping.
+        - ``output_path`` is not a string or is blank.
         """
         import yaml
 
         profile_path = repo / "config" / "profile.yml"
         if not profile_path.exists():
             return None
+
         try:
             with profile_path.open("r", encoding="utf-8") as f:
-                profile: dict[str, Any] = yaml.safe_load(f) or {}
-        except Exception:  # noqa: BLE001
+                profile: Any = yaml.safe_load(f)
+        except yaml.YAMLError as exc:
+            raise OrchestrationConfigurationError(
+                f"JobHunter config/profile.yml contains malformed YAML: {exc}"
+            ) from exc
+        except OSError as exc:
+            raise OrchestrationConfigurationError(
+                f"Cannot read JobHunter config/profile.yml: {exc}"
+            ) from exc
+
+        if profile is None:
+            # Empty file → no queue_export key → use default.
             return None
-        configured: Any = profile.get("queue_export", {}).get("output_path")
+
+        if not isinstance(profile, dict):
+            raise OrchestrationConfigurationError(
+                f"JobHunter config/profile.yml root must be a mapping, got {type(profile).__name__}"
+            )
+
+        profile_dict: dict[str, Any] = profile  # type: ignore[assignment]
+        queue_export: Any = profile_dict.get("queue_export")
+        if queue_export is None:
+            # No queue_export key → use default.
+            return None
+
+        if not isinstance(queue_export, dict):
+            raise OrchestrationConfigurationError(
+                f"JobHunter config/profile.yml -> queue_export must be a mapping, "
+                f"got {type(queue_export).__name__}"
+            )
+
+        queue_export_dict: dict[str, Any] = queue_export  # type: ignore[assignment]
+        configured: Any = queue_export_dict.get("output_path")
         if configured is None:
+            # Key absent → use default.
             return None
-        return str(configured)
+
+        if not isinstance(configured, str):
+            raise OrchestrationConfigurationError(
+                f"JobHunter config/profile.yml -> queue_export.output_path "
+                f"must be a string, got {type(configured).__name__}"
+            )
+
+        stripped = configured.strip()
+        if not stripped:
+            raise OrchestrationConfigurationError(
+                "JobHunter config/profile.yml -> queue_export.output_path is a blank string"
+            )
+
+        return stripped
 
     def _resolve_queue_output(self) -> Path:
         """Resolve the queue output path from JobHunter's config/profile.yml.

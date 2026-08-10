@@ -123,8 +123,10 @@ class PipelineWorkerRunner:
         self.max_jobs = max(1, max_jobs)
         self.fixture_file = fixture_file
         self.job_pulse_ms = max(0, job_pulse_ms)
-        self.target_application_ids: set[str] | None = (
-            set(target_application_ids) if target_application_ids else None
+        # An empty list means "no targeting" (unrestricted). A non-empty list
+        # means "only process these IDs". None is treated as empty.
+        self.target_application_ids: set[str] = (
+            set(target_application_ids) if target_application_ids else set()
         )
         self.mode = "fixture" if fixture_file is not None else "live"
         self._orchestrator: Any | None = None
@@ -185,8 +187,8 @@ class PipelineWorkerRunner:
                 ApplicationStatus.QUEUED.value,
             )
         ]
-        # If target_application_ids is set, restrict to only those IDs.
-        if self.target_application_ids is not None:
+        # If target_application_ids is set (non-empty), restrict to only those IDs.
+        if self.target_application_ids:
             eligible = [
                 job for job in eligible if job.application_id in self.target_application_ids
             ]
@@ -486,6 +488,88 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     return parser.parse_args(argv)
 
 
+def _load_target_ids(target_ids_file: Path | None) -> list[str]:
+    """Load and validate target application IDs from a manifest file.
+
+    If ``target_ids_file`` is None, returns an empty list (no targeting).
+
+    If the file is supplied, it MUST exist, be valid JSON, and contain a
+    non-empty list of unique non-blank strings. Any failure raises
+    ``RuntimeError`` — the caller must fail the pipeline rather than
+    falling back to unrestricted processing.
+    """
+    if target_ids_file is None:
+        return []
+
+    if not target_ids_file.exists():
+        raise RuntimeError(
+            f"Target IDs file not found: {target_ids_file}. "
+            "Pipeline cannot start in targeted mode with a missing manifest."
+        )
+
+    import json as _json
+
+    try:
+        raw = target_ids_file.read_text(encoding="utf-8")
+    except OSError as exc:
+        raise RuntimeError(f"Cannot read target IDs file {target_ids_file}: {exc}") from exc
+
+    try:
+        data: Any = _json.loads(raw)
+    except ValueError as exc:
+        raise RuntimeError(
+            f"Target IDs file {target_ids_file} contains invalid JSON: {exc}"
+        ) from exc
+
+    if not isinstance(data, list):
+        raise RuntimeError(
+            f"Target IDs file {target_ids_file} must contain a JSON list, got {type(data).__name__}"
+        )
+
+    data_list: list[Any] = data  # type: ignore[assignment]
+
+    if len(data_list) == 0:
+        raise RuntimeError(
+            f"Target IDs file {target_ids_file} contains an empty list. "
+            "Pipeline cannot start in targeted mode with zero target IDs."
+        )
+
+    # Validate each entry: must be a non-blank string.
+    seen: set[str] = set()
+    result: list[str] = []
+    for i, entry in enumerate(data_list):
+        if not isinstance(entry, str):
+            raise RuntimeError(
+                f"Target IDs file {target_ids_file} entry {i} is not a string: "
+                f"got {type(entry).__name__} ({entry!r})"
+            )
+        stripped: str = entry.strip()
+        if not stripped:
+            raise RuntimeError(f"Target IDs file {target_ids_file} entry {i} is a blank string")
+        if stripped in seen:
+            raise RuntimeError(
+                f"Target IDs file {target_ids_file} contains duplicate ID: {stripped}"
+            )
+        seen.add(stripped)
+        result.append(stripped)
+
+    return result
+
+
+def _cleanup_target_manifest(target_ids_file: Path | None) -> None:
+    """Delete the target manifest file after the worker has read it.
+
+    Best-effort: logs a warning on failure but never raises.
+    """
+    if target_ids_file is None:
+        return
+    try:
+        if target_ids_file.exists():
+            target_ids_file.unlink()
+    except OSError:
+        logger.warning("could not delete target manifest %s", target_ids_file)
+
+
 def main(argv: list[str] | None = None) -> int:
     """CLI entrypoint used by ``python -m ...``."""
     args = _parse_args(argv)
@@ -493,17 +577,35 @@ def main(argv: list[str] | None = None) -> int:
     engine = make_engine(build_engine_url(args.data_dir / "uaa.sqlite"))
     factory = make_session_factory(engine)
 
-    # Load target application IDs if a target file was provided.
-    target_ids: list[str] | None = None
-    if args.target_ids_file is not None and args.target_ids_file.exists():
-        import json as _json
-
+    # Load and validate target application IDs if a target file was provided.
+    # This fails closed: any malformed manifest raises RuntimeError.
+    target_ids: list[str] = []
+    if args.target_ids_file is not None:
         try:
-            target_ids = _json.loads(args.target_ids_file.read_text(encoding="utf-8"))
-            if not isinstance(target_ids, list):
-                target_ids = None
-        except (OSError, ValueError):
-            target_ids = None
+            target_ids = _load_target_ids(args.target_ids_file)
+        except RuntimeError:
+            # Mark the run failed and exit with nonzero code.
+            logger.exception("target manifest validation failed")
+            try:
+                from universal_auto_applier.persistence.db import session_scope as _ss
+                from universal_auto_applier.persistence.pipeline_run_repository import (
+                    mark_pipeline_run_terminal as _mark,
+                )
+
+                with _ss(factory) as session:
+                    _mark(
+                        session,
+                        args.run_id,
+                        status="failed",
+                        last_action="Target manifest validation failed",
+                        last_error="Target manifest was missing, unreadable, or malformed",
+                    )
+            except Exception:  # noqa: BLE001
+                pass
+            engine.dispose()
+            return 3
+        # Clean up the manifest after successful read.
+        _cleanup_target_manifest(args.target_ids_file)
 
     try:
         runner = PipelineWorkerRunner(

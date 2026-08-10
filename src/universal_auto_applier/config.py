@@ -127,6 +127,13 @@ class Settings(BaseModel):
     # after the grace period, and the orchestration run is marked failed.
     # 0 means no timeout (wait indefinitely).
     jobhunter_timeout_seconds: int = Field(default=0, ge=0, le=3_600)
+    # Effective worker counts. Both JobHunter (run_all.py) and the UAA
+    # pipeline are single-worker (sequential subprocess). These are
+    # read-only configuration values that document the effective
+    # concurrency model. Worker counts > 1 are rejected until real worker
+    # pools exist.
+    jobhunter_workers: int = Field(default=1, ge=1, le=1)
+    pipeline_workers: int = Field(default=1, ge=1, le=1)
 
     model_config = {"frozen": True, "extra": "ignore"}
 
@@ -264,4 +271,6 @@ def load_settings(env: dict[str, str] | None = None) -> Settings:
             "UAA_ORCHESTRATION_CAPTURE_MAX_BYTES", 8192, 256, 65_536
         ),
         jobhunter_timeout_seconds=_parse_int("UAA_JOBHUNTER_TIMEOUT_SECONDS", 0, 0, 3_600),
+        jobhunter_workers=_parse_int("UAA_JOBHUNTER_WORKERS", 1, 1, 1),
+        pipeline_workers=_parse_int("UAA_PIPELINE_WORKERS", 1, 1, 1),
     )
