@@ -36,6 +36,7 @@ from universal_auto_applier.persistence.models import (
     Base,
     SubmissionResultRow,
 )
+from universal_auto_applier.services.pipeline_recovery_service import pid_is_alive
 
 FIXTURES_DIR = Path(__file__).resolve().parent.parent / "fixtures"
 GREENHOUSE_APPLY_HTML = (FIXTURES_DIR / "platforms" / "greenhouse_apply.html").read_text(
@@ -459,18 +460,8 @@ class TestCancellation:
         assert final["cancel_reason"]
 
         # The JobHunter child PID is no longer alive.
-        # On Unix, we can check with os.kill(pid, 0). On Windows, the
-        # cancel() method already waited for the process to exit.
-        try:
-            os.kill(pid, 0)
-            # If we get here, the process is still alive — that's a failure.
-            pytest.fail(f"JobHunter PID {pid} is still alive after cancel")
-        except ProcessLookupError:
-            # Expected: the process is gone.
-            pass
-        except PermissionError:
-            # Process exists but owned by another user — unlikely in tests.
-            pass
+        # Use pid_is_alive which works on both Unix and Windows.
+        assert not pid_is_alive(pid), f"JobHunter PID {pid} is still alive after cancel"
 
 
 class TestRestartRecovery:
@@ -565,14 +556,8 @@ class TestTimeoutCleanup:
             assert final["status"] == "failed"
             assert "timed out" in final["last_error"].lower()
 
-            # The child PID is no longer alive.
-            try:
-                os.kill(pid, 0)
-                pytest.fail(f"JobHunter PID {pid} is still alive after timeout")
-            except ProcessLookupError:
-                pass
-            except PermissionError:
-                pass
+            # The child PID is no longer alive (cross-platform check).
+            assert not pid_is_alive(pid), f"JobHunter PID {pid} is still alive after timeout"
 
             # No queue import occurred.
             assert final["queue_import_state"] is None
@@ -798,14 +783,8 @@ class TestJobHunterRunner:
         runner.wait(timeout=2)
         # The process was terminated.
         assert runner.was_timed_out
-        # The PID is no longer alive.
-        try:
-            os.kill(pid, 0)
-            pytest.fail(f"PID {pid} still alive after timeout")
-        except ProcessLookupError:
-            pass
-        except PermissionError:
-            pass
+        # The PID is no longer alive (cross-platform check).
+        assert not pid_is_alive(pid), f"PID {pid} still alive after timeout"
 
 
 class TestRestartLivenessSafety:
