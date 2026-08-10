@@ -355,6 +355,15 @@ class OrchestrationService:
         # Phase 1: JobHunter
         self._set_phase(run_id, "jobhunter_running", "Starting JobHunter full workflow")
         queue_path = self._resolve_queue_output()
+        # Capture queue signature BEFORE JobHunter for publication detection.
+        q_hash_before, q_mtime_before = self._queue_file_signature(queue_path)
+        with session_scope(self._session_factory) as session:
+            update_orchestration_run(
+                session,
+                run_id,
+                queue_hash_before=q_hash_before,
+                queue_mtime_ns_before=q_mtime_before,
+            )
         self._runner = JobHunterRunner(
             settings=self._settings,
             queue_output_path=queue_path,
@@ -412,8 +421,31 @@ class OrchestrationService:
             )
             return
 
-        # Phase 2: verify queue file is stable
+        # Phase 2: verify queue file is stable and was actually published.
         self._set_phase(run_id, "verifying_queue", "Verifying queue file")
+        q_hash_after, q_mtime_after = self._queue_file_signature(queue_path)
+        with session_scope(self._session_factory) as session:
+            update_orchestration_run(
+                session,
+                run_id,
+                queue_hash_after=q_hash_after,
+                queue_mtime_ns_after=q_mtime_after,
+            )
+        if not self._was_queue_published(run_id):
+            with session_scope(self._session_factory) as session:
+                update_orchestration_run(
+                    session,
+                    run_id,
+                    queue_published=False,
+                    last_action="JobHunter succeeded but no new queue was published; no import",
+                )
+            return
+        with session_scope(self._session_factory) as session:
+            update_orchestration_run(
+                session,
+                run_id,
+                queue_published=True,
+            )
         if not self._wait_for_stable_queue(queue_path):
             self._mark_failed(
                 run_id,
@@ -486,6 +518,15 @@ class OrchestrationService:
         10. Remain dry-run/review-only.
         """
         queue_path = self._resolve_queue_output()
+        # Capture queue signature BEFORE JobHunter for publication detection.
+        q_hash_before, q_mtime_before = self._queue_file_signature(queue_path)
+        with session_scope(self._session_factory) as session:
+            update_orchestration_run(
+                session,
+                run_id,
+                queue_hash_before=q_hash_before,
+                queue_mtime_ns_before=q_mtime_before,
+            )
         self._runner = JobHunterRunner(
             settings=self._settings,
             queue_output_path=queue_path,
@@ -588,12 +629,47 @@ class OrchestrationService:
             return
 
         # Phase 4: import the queue (JobHunter succeeded).
+        # Detect whether a new queue was actually published during this run.
+        q_hash_after, q_mtime_after = self._queue_file_signature(queue_path)
+        with session_scope(self._session_factory) as session:
+            update_orchestration_run(
+                session,
+                run_id,
+                queue_hash_after=q_hash_after,
+                queue_mtime_ns_after=q_mtime_after,
+            )
+
+        # Check if the queue was actually published (hash changed or file appeared).
+        if not self._was_queue_published(run_id):
+            with session_scope(self._session_factory) as session:
+                update_orchestration_run(
+                    session,
+                    run_id,
+                    queue_published=False,
+                    last_action="JobHunter succeeded but no new queue was published; no import",
+                )
+            return
+
+        with session_scope(self._session_factory) as session:
+            update_orchestration_run(
+                session,
+                run_id,
+                queue_published=True,
+            )
+
+        # Snapshot eligible IDs BEFORE import for exact newly-eligible computation.
+        eligible_before = self._snapshot_eligible_ids()
+
         self._set_phase(run_id, "importing", "Importing queue (parallel)")
         try:
             summary = self._queue_import_service.run(path=queue_path, trigger="orchestration")
         except Exception as exc:  # noqa: BLE001
             self._mark_failed(run_id, f"Queue import failed: {exc}")
             return
+
+        # Snapshot eligible IDs AFTER import and compute the exact newly eligible set.
+        eligible_after = self._snapshot_eligible_ids()
+        new_ids, new_count = self._compute_newly_eligible(eligible_before, eligible_after)
 
         with session_scope(self._session_factory) as session:
             update_orchestration_run(
@@ -603,7 +679,9 @@ class OrchestrationService:
                 queue_import_state=summary.state,
                 queue_imported=summary.imported,
                 queue_skipped=summary.skipped,
-                last_action=f"Queue import: {summary.state} ({summary.imported} imported)",
+                newly_eligible_count=new_count,
+                newly_eligible_ids_json=new_ids,
+                last_action=f"Queue import: {summary.state} ({summary.imported} imported, {new_count} newly eligible)",
             )
 
         if self._cancel_requested.is_set():
@@ -612,8 +690,7 @@ class OrchestrationService:
         # Phase 5: If the import created newly eligible jobs, start a second
         # pipeline pass for those jobs. Do not start a second pass if zero
         # new eligible jobs were imported.
-        newly_eligible = self._count_newly_eligible_jobs()
-        if newly_eligible == 0:
+        if new_count == 0:
             with session_scope(self._session_factory) as session:
                 update_orchestration_run(
                     session,
@@ -631,14 +708,15 @@ class OrchestrationService:
                 fixture_html=fixture_html,
             )
         except RuntimeError as exc:
-            # If we can't start the second pass, that's not a hard failure —
-            # the initial pass already ran. Log it as an error but don't fail.
-            with session_scope(self._session_factory) as session:
-                update_orchestration_run(
-                    session,
-                    run_id,
-                    last_error=f"Second pipeline pass failed to start: {exc}",
-                )
+            # Second pass failure is a HARD orchestration failure: import
+            # succeeded but processing the newly eligible jobs did not start.
+            # Imported jobs remain safely eligible for manual retry.
+            self._mark_failed(
+                run_id,
+                f"Import succeeded ({summary.imported} imported, {new_count} newly eligible) "
+                f"but the second pipeline pass failed to start: {exc}. "
+                f"The newly imported jobs remain eligible for manual retry.",
+            )
             return
 
         with session_scope(self._session_factory) as session:
@@ -673,26 +751,120 @@ class OrchestrationService:
             )
 
     def _count_newly_eligible_jobs(self) -> int:
-        """Count jobs in READY_TO_APPLY or QUEUED status (eligible for pipeline)."""
-        from sqlalchemy import func, select
+        """Count jobs in READY_TO_APPLY or QUEUED status (eligible for pipeline).
+
+        Deprecated: use ``_snapshot_eligible_ids`` + ``_compute_newly_eligible``
+        for exact evidence. This method is retained for backward compatibility.
+        """
+        return len(self._snapshot_eligible_ids())
+
+    def _snapshot_eligible_ids(self) -> set[str]:
+        """Snapshot the set of application IDs currently eligible for the pipeline.
+
+        Eligible = READY_TO_APPLY or QUEUED. Returns a set of application_id
+        strings (SHA-256 hashes, never candidate data).
+        """
+        from sqlalchemy import select
 
         from universal_auto_applier.core.statuses import ApplicationStatus
         from universal_auto_applier.persistence.models import ApplicationJobRow
 
         with session_scope(self._session_factory) as session:
-            count = session.execute(
-                select(func.count())
-                .select_from(ApplicationJobRow)
-                .where(
-                    ApplicationJobRow.status.in_(
-                        [
-                            ApplicationStatus.READY_TO_APPLY.value,
-                            ApplicationStatus.QUEUED.value,
-                        ]
+            rows = (
+                session.execute(
+                    select(ApplicationJobRow.application_id).where(
+                        ApplicationJobRow.status.in_(
+                            [
+                                ApplicationStatus.READY_TO_APPLY.value,
+                                ApplicationStatus.QUEUED.value,
+                            ]
+                        )
                     )
                 )
-            ).scalar_one()
-        return int(count)
+                .scalars()
+                .all()
+            )
+        return set(rows)
+
+    @staticmethod
+    def _compute_newly_eligible(before: set[str], after: set[str]) -> tuple[list[str], int]:
+        """Compute the exact newly eligible application IDs from before/after snapshots.
+
+        Returns (sorted_list_of_new_ids, count).
+        """
+        new_ids = after - before
+        return sorted(new_ids), len(new_ids)
+
+    @staticmethod
+    def _hash_queue_file(path: Path) -> str | None:
+        """Return the SHA-256 hex digest of the queue file, or None if missing.
+
+        Uses the same algorithm as the queue-import service's fingerprint.
+        """
+        import hashlib
+
+        try:
+            if not path.exists() or not path.is_file():
+                return None
+            digest = hashlib.sha256()
+            with path.open("rb") as fh:
+                for chunk in iter(lambda: fh.read(1024 * 1024), b""):
+                    digest.update(chunk)
+            return digest.hexdigest()
+        except OSError:
+            return None
+
+    @staticmethod
+    def _queue_file_signature(path: Path) -> tuple[str | None, int | None]:
+        """Return (content_hash, mtime_ns) of the queue file, or (None, None).
+
+        The mtime_ns is used to detect whether the file was written during
+        the JobHunter run. ``os.replace`` always updates mtime, so a
+        re-exported identical queue is correctly detected as a publication.
+        A stale pre-existing file (JobHunter didn't export) has an unchanged
+        mtime and is NOT treated as a publication.
+        """
+        import hashlib
+
+        try:
+            if not path.exists() or not path.is_file():
+                return None, None
+            stat = path.stat()
+            digest = hashlib.sha256()
+            with path.open("rb") as fh:
+                for chunk in iter(lambda: fh.read(1024 * 1024), b""):
+                    digest.update(chunk)
+            return digest.hexdigest(), stat.st_mtime_ns
+        except OSError:
+            return None, None
+
+    def _was_queue_published(self, run_id: str) -> bool:
+        """Check whether the queue file was actually published during this run.
+
+        A publication is detected when:
+        - The mtime_ns after JobHunter differs from the mtime_ns before, OR
+        - The file did not exist before but exists after (hash None → not-None).
+
+        An unchanged pre-existing queue (same mtime_ns) is NOT a publication.
+        Content hash is recorded for durable evidence but mtime_ns is the
+        primary detector because ``os.replace`` always updates it, even for
+        identical content (idempotent re-export).
+        """
+        with session_scope(self._session_factory) as session:
+            row = get_latest_orchestration_run(session)
+        if row is None:
+            return False
+        before_hash = row.queue_hash_before
+        after_hash = row.queue_hash_after
+        before_mtime = row.queue_mtime_ns_before
+        after_mtime = row.queue_mtime_ns_after
+        # File appeared (was None before, exists after).
+        if before_hash is None and after_hash is not None:
+            return True
+        # mtime changed (file was written during this run, even with same content).
+        if before_mtime is not None and after_mtime is not None and before_mtime != after_mtime:
+            return True
+        return False
 
     def _wait_for_stable_queue(self, path: Path, timeout: float = 5.0) -> bool:
         """Wait until the queue file exists and its size is stable.

@@ -64,6 +64,21 @@ def upgrade() -> None:
         sa.Column("pipeline_state_initial", sa.String(32), nullable=True),
         sa.Column("pipeline_run_id", sa.String(64), nullable=True),
         sa.Column("pipeline_state", sa.String(32), nullable=True),
+        # Queue publication detection: content hash + mtime_ns before/after
+        # JobHunter to distinguish a newly published queue from a stale
+        # pre-existing file. mtime_ns is the primary detector because
+        # ``os.replace`` always updates it, even for identical content.
+        sa.Column("queue_hash_before", sa.String(64), nullable=True),
+        sa.Column("queue_hash_after", sa.String(64), nullable=True),
+        sa.Column("queue_mtime_ns_before", sa.Integer(), nullable=True),
+        sa.Column("queue_mtime_ns_after", sa.Integer(), nullable=True),
+        sa.Column("queue_published", sa.Boolean(), nullable=True),
+        # Exact newly eligible evidence: snapshot of eligible application IDs
+        # before/after import, the computed newly eligible set, and its count.
+        # The IDs list is bounded and contains only application_id hashes
+        # (never candidate data).
+        sa.Column("newly_eligible_count", sa.Integer(), nullable=True, default=0),
+        sa.Column("newly_eligible_ids_json", sa.JSON(), nullable=True),
         # Bounded structured errors
         sa.Column("errors_json", sa.JSON(), nullable=False, default=list),
         sa.Column("started_at", sa.DateTime(timezone=True), nullable=False),

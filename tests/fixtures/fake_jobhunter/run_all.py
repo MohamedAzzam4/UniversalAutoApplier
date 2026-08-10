@@ -84,6 +84,9 @@ def main() -> int:
     parser.add_argument(
         "--timeout-test", action="store_true", help="Sleep 60s to test timeout cleanup"
     )
+    parser.add_argument(
+        "--no-export", action="store_true", help="Succeed without writing the queue (no new jobs)"
+    )
     # Accept (and ignore) args that the real run_all.py accepts, for compat.
     parser.add_argument("--dry-run", action="store_true", help="Ignored (compat)")
     parser.add_argument("--scan-only", action="store_true", help="Ignored (compat)")
@@ -117,6 +120,11 @@ def main() -> int:
     print(f"[EVAL] Generated {args.jobs} tailored CV(s) and cover letter(s)", flush=True)
 
     # --- Phase 2.5: EXPORT (atomic) ---
+    if args.no_export:
+        print("[EXPORT] PHASE 2.5: No new jobs found; skipping export.", flush=True)
+        print("[SUMMARY] Pipeline complete: 0 job(s) exported (no new jobs)", flush=True)
+        return 0
+
     if args.delay > 0:
         time.sleep(args.delay)
     print("[EXPORT] PHASE 2.5: Publishing application_queue.jsonl...", flush=True)

@@ -419,6 +419,15 @@ class OrchestrationRunRow(Base):
     pipeline_state_initial: Mapped[str | None] = mapped_column(String(32), nullable=True)
     pipeline_run_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
     pipeline_state: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    # Queue publication detection: content hash + mtime_ns before/after.
+    queue_hash_before: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    queue_hash_after: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    queue_mtime_ns_before: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    queue_mtime_ns_after: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    queue_published: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
+    # Exact newly eligible evidence: count + list of application_id hashes.
+    newly_eligible_count: Mapped[int | None] = mapped_column(Integer, nullable=True, default=0)
+    newly_eligible_ids_json: Mapped[list[str] | None] = mapped_column(JSON, nullable=True)
     # Bounded structured errors
     errors_json: Mapped[list[dict[str, Any]]] = mapped_column(JSON, default=list)
     started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
