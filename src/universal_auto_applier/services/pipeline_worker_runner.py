@@ -115,6 +115,7 @@ class PipelineWorkerRunner:
         max_jobs: int,
         fixture_file: Path | None = None,
         job_pulse_ms: int,
+        target_application_ids: list[str] | None = None,
     ) -> None:
         self.settings = settings
         self.session_factory = session_factory
@@ -122,6 +123,9 @@ class PipelineWorkerRunner:
         self.max_jobs = max(1, max_jobs)
         self.fixture_file = fixture_file
         self.job_pulse_ms = max(0, job_pulse_ms)
+        self.target_application_ids: set[str] | None = (
+            set(target_application_ids) if target_application_ids else None
+        )
         self.mode = "fixture" if fixture_file is not None else "live"
         self._orchestrator: Any | None = None
         self._live_runner: LiveBrowserRunner | None = None
@@ -180,7 +184,13 @@ class PipelineWorkerRunner:
                 ApplicationStatus.READY_TO_APPLY.value,
                 ApplicationStatus.QUEUED.value,
             )
-        ][: self.max_jobs]
+        ]
+        # If target_application_ids is set, restrict to only those IDs.
+        if self.target_application_ids is not None:
+            eligible = [
+                job for job in eligible if job.application_id in self.target_application_ids
+            ]
+        eligible = eligible[: self.max_jobs]
 
         self._update(
             jobs_total=len(eligible),
@@ -467,6 +477,12 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--max-jobs", type=int, default=10)
     parser.add_argument("--fixture-file", type=Path, default=None)
     parser.add_argument("--job-pulse-ms", type=int, default=0)
+    parser.add_argument(
+        "--target-ids-file",
+        type=Path,
+        default=None,
+        help="JSON file containing a list of application IDs to restrict this run to.",
+    )
     return parser.parse_args(argv)
 
 
@@ -476,6 +492,19 @@ def main(argv: list[str] | None = None) -> int:
     settings = load_settings().model_copy(update={"data_dir": args.data_dir})
     engine = make_engine(build_engine_url(args.data_dir / "uaa.sqlite"))
     factory = make_session_factory(engine)
+
+    # Load target application IDs if a target file was provided.
+    target_ids: list[str] | None = None
+    if args.target_ids_file is not None and args.target_ids_file.exists():
+        import json as _json
+
+        try:
+            target_ids = _json.loads(args.target_ids_file.read_text(encoding="utf-8"))
+            if not isinstance(target_ids, list):
+                target_ids = None
+        except (OSError, ValueError):
+            target_ids = None
+
     try:
         runner = PipelineWorkerRunner(
             settings=settings,
@@ -484,6 +513,7 @@ def main(argv: list[str] | None = None) -> int:
             max_jobs=args.max_jobs,
             fixture_file=args.fixture_file,
             job_pulse_ms=args.job_pulse_ms,
+            target_application_ids=target_ids,
         )
         return runner.run()
     finally:

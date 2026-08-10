@@ -258,7 +258,13 @@ class _FailingSecondPassPipelineWorker:
         self._real = real_worker
         self._start_count = 0
 
-    def start(self, *, max_jobs: int = 10, fixture_html: str | None = None) -> dict[str, Any]:
+    def start(
+        self,
+        *,
+        max_jobs: int = 10,
+        fixture_html: str | None = None,
+        target_application_ids: list[str] | None = None,
+    ) -> dict[str, Any]:
         self._start_count += 1
         if self._start_count == 2:
             raise RuntimeError("second pipeline pass failed (simulated)")

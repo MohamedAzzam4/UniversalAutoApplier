@@ -189,16 +189,14 @@ class TestOlderEligibleCannotStarveNew:
         queue_path: Path,
         tmp_path: Path,
     ) -> None:
-        """Seed 5 older eligible jobs (max_jobs=2 would only process 2).
-        Run parallel orchestration with --jobs 1 (one new job).
-        After the initial pass processes 2 older jobs, the second pass
-        must still process the newly imported job even though 3 older
-        eligible jobs remain.
+        """Seed 5 older eligible jobs. Use max_jobs=2 (batch limit). Export/import
+        1 new job. With the target_application_ids mechanism, the second pass
+        targets ONLY the new ID, so it is processed despite 5 older eligible
+        jobs competing for capacity. The older jobs are NOT reprocessed.
 
-        The pipeline processes eligible jobs in first_seen_at order.
-        After the initial pass, processed jobs leave READY_TO_APPLY.
-        The second pass picks up ALL remaining eligible (older unprocessed
-        + newly imported). The newly imported job IS processed.
+        Without target_application_ids, max_jobs=2 would process the first 2
+        older jobs (by first_seen_at order) and the new job would be starved.
+        The target mechanism ensures the new job is processed exactly once.
         """
         # Seed 5 older eligible jobs.
         for i in range(5):
@@ -210,12 +208,14 @@ class TestOlderEligibleCannotStarveNew:
             with session_scope(client.app.state.session_factory) as session:  # type: ignore[union-attr]
                 upsert_application_job(session, job)
 
-        # Run parallel with max_jobs=10 (enough to process all eligible).
+        # Run parallel with max_jobs=2 (batch limit). The initial pass
+        # processes at most 2 of the 5 older jobs. The second pass targets
+        # ONLY the newly imported job ID.
         _start_orchestration(
             client,
             mode="parallel",
             extra_args=["--jobs", "1"],
-            max_jobs=10,
+            max_jobs=2,
         )
         final = _wait_for_orchestration_terminal(client, timeout=120)
         assert final["status"] == "completed", f"Expected completed, got {final}"
@@ -232,6 +232,13 @@ class TestOlderEligibleCannotStarveNew:
             ApplicationStatus.SUBMITTED.value,
             ApplicationStatus.APPLIED.value,
         ), f"Newly imported job {new_id[:12]} was not processed (status={job.status})"
+
+        # No submission occurred.
+        with session_scope(client.app.state.session_factory) as session:  # type: ignore[union-attr]
+            sub_count = session.execute(
+                select(func.count()).select_from(SubmissionResultRow)
+            ).scalar_one()
+        assert sub_count == 0
 
 
 class TestPipelineFailureFailsOrchestration:

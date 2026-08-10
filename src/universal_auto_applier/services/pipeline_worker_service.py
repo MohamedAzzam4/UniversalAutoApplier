@@ -84,8 +84,18 @@ class PipelineWorkerService:
         *,
         max_jobs: int = 10,
         fixture_html: str | None = None,
+        target_application_ids: list[str] | None = None,
     ) -> dict[str, Any]:
         """Start a new pipeline run in a subprocess. Returns immediately.
+
+        Args:
+            max_jobs: Maximum number of jobs to process in this run (batch limit).
+            fixture_html: Optional test-only fixture HTML for dry-run mode.
+            target_application_ids: Optional list of application IDs to restrict
+                this run to. When set, the pipeline worker only processes these
+                IDs (filtering out all other eligible jobs). The IDs are written
+                to a temp file and passed via --target-ids-file to avoid putting
+                any data in command-line arguments.
 
         Raises RuntimeError if a run is already active.
         """
@@ -139,6 +149,22 @@ class PipelineWorkerService:
             ]
             if fixture_file is not None:
                 cmd += ["--fixture-file", str(fixture_file)]
+
+            # Write target application IDs to a temp file (not command-line args).
+            target_ids_file: Path | None = None
+            if target_application_ids:
+                import json as _json
+                import tempfile as _tempfile
+
+                target_root = self._settings.data_dir / "target_ids"
+                target_root.mkdir(parents=True, exist_ok=True)
+                fd, tmp_target = _tempfile.mkstemp(
+                    dir=str(target_root), prefix=f"target-{run_id[:8]}-", suffix=".json"
+                )
+                with os.fdopen(fd, "w", encoding="utf-8") as f:
+                    _json.dump(sorted(target_application_ids), f)
+                target_ids_file = Path(tmp_target)
+                cmd += ["--target-ids-file", str(target_ids_file)]
 
             env = self._worker_env()
             try:
