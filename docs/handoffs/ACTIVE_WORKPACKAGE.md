@@ -172,7 +172,7 @@ ensures any `ResourceWarning` is a test failure.
 - `ruff check src tests migrations` -> All checks passed.
 - `ruff format --check src tests migrations` -> All files already formatted.
 - `pyright` -> 0 errors, 0 warnings, 0 informations.
-- `pytest tests/integration/test_orchestration*.py` -> 94 passed (43 existing + 51 new).
+- `pytest tests/integration/test_orchestration*.py` -> 97 passed (43 existing + 54 new).
 - Subprocess cleanup and multi-batch tests run 8+ consecutive times: all pass.
 
 ## Limitations
@@ -180,9 +180,10 @@ ensures any `ResourceWarning` is a test failure.
 - **Single-worker only.** `jobhunter_workers=1`, `pipeline_workers=1` (validated `le=1`). `max_jobs` is a batch-size limit, not a worker count. Real worker pools are future work.
 - **No auto-resubmission.** Orchestration is dry-run/review-only. Final submission requires the separate `live-submit` CLI/API path with explicit approval gates.
 - **No cross-repo Python imports.** JobHunter runs as an external subprocess; UAA never imports JobHunter modules. The boundary is process-level.
-- **Stale manifest cleanup is NOT automatic at startup.** Each run creates its own manifest with a unique run-id prefix. Stale manifests from crashed runs remain on disk (they are not consumed by new runs). This is acceptable: manifests are small JSON files in `data_dir/target_ids/`.
+- **Stale manifest cleanup IS automatic at startup.** `OrchestrationService.recover_on_startup()` calls `_cleanup_stale_manifests()` which removes orphaned `target-*.json` files from `data_dir/target_ids/`. Only files matching the WQ-6 naming pattern are candidates. Manifests belonging to active runs (live PID) are preserved. Non-manifest files (e.g. `README.txt`, `other-data.json`) are never touched.
 - **PID liveness is conservative.** On startup recovery, a live PID keeps the run active (blocks duplicate start) even if UAA doesn't own the process. The operator can cancel manually. This is safer than killing a PID we don't own.
 - **Multi-batch max_passes is `ceil(N/max_jobs)+1`.** The +1 safety margin allows the no-progress detection to fire on the last batch without hitting the max-passes limit first. If a batch makes no progress, the run fails immediately with a clear durable error.
+- **Target ID validation is strict.** `_load_target_ids` rejects malformed IDs (not 64-char lowercase hex) with a clear error. Well-formed IDs that don't exist in the database are accepted — the pipeline worker finds 0 matching eligible jobs and the no-progress detection catches this.
 
 ## Exact next action
 

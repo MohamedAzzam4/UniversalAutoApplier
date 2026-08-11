@@ -310,7 +310,85 @@ class OrchestrationService:
                 len(healthy_kept),
                 [run_id[:8] for run_id in healthy_kept],
             )
-        return {"recovered": recovered, "healthy_kept": healthy_kept}
+        # Clean up stale target manifest files left by crashed orchestration
+        # runs. Each manifest is a small JSON file in
+        # ``data_dir/target_ids/`` named ``target-{run_id_prefix}-{random}.json``.
+        # Stale manifests belong to runs that are no longer active (terminal or
+        # missing). Active runs' manifests are preserved. See
+        # :meth:`_cleanup_stale_manifests` for the full policy.
+        manifest_cleanup = self._cleanup_stale_manifests(healthy_kept + recovered)
+        return {
+            "recovered": recovered,
+            "healthy_kept": healthy_kept,
+            "manifests_removed": manifest_cleanup,
+        }
+
+    def _cleanup_stale_manifests(self, active_run_ids: list[str]) -> int:
+        """Remove stale target manifest files left by crashed orchestration runs.
+
+        Manifest files live in ``data_dir/target_ids/`` and are named
+        ``target-{run_id_prefix}-{random}.json``. Each manifest is created by
+        :meth:`PipelineWorkerService.start` when ``target_application_ids`` is
+        set, and is normally deleted by the pipeline worker after it reads
+        the IDs. If the orchestration process crashes between creation and
+        consumption, the manifest remains on disk.
+
+        Policy (bounded and deterministic):
+        - Only files inside ``data_dir/target_ids/`` are considered.
+        - Only files matching the naming pattern ``target-*.json`` are
+          candidates (owned by UAA/WQ-6).
+        - Files whose name contains a prefix of an ACTIVE run ID are
+          preserved (the run may still consume them).
+        - All other matching files are deleted (they belong to runs that are
+          terminal or no longer exist).
+        - Malformed files (not valid JSON, or JSON that is not a list) are
+          deleted (they cannot be useful and may indicate corruption).
+        - Files that cannot be read or deleted (permissions, locks) are
+          skipped with a warning — the cleanup is best-effort.
+        - Returns the count of deleted files.
+
+        This method is called from :meth:`recover_on_startup` so it runs on
+        every server start. It never raises.
+        """
+        target_root = self._settings.data_dir / "target_ids"
+        if not target_root.exists() or not target_root.is_dir():
+            return 0
+        import fnmatch
+
+        removed = 0
+        try:
+            candidates = sorted(target_root.iterdir())
+        except OSError:
+            return 0
+        for path in candidates:
+            if not path.is_file():
+                continue
+            if not fnmatch.fnmatch(path.name, "target-*.json"):
+                continue
+            # Check if this manifest belongs to an active run. The manifest
+            # name is ``target-{run_id_prefix}-{random}.json`` where
+            # ``run_id_prefix`` is the first 8 chars of the run UUID.
+            stem = path.stem  # e.g. "target-6777be08-abc123"
+            parts = stem.split("-", 1)
+            if len(parts) >= 2:
+                run_prefix = parts[1].split("-")[0]  # first 8 chars
+                # If any active run ID starts with this prefix, preserve.
+                if any(rid.startswith(run_prefix) for rid in active_run_ids):
+                    continue
+            # Stale or orphaned manifest — delete it.
+            try:
+                path.unlink()
+                removed += 1
+                logger.info(
+                    "[orchestration] startup cleanup: removed stale manifest %s",
+                    path.name,
+                )
+            except OSError:
+                logger.warning(
+                    "[orchestration] startup cleanup: could not remove %s",
+                    path.name,
+                )
+        return removed
 
     # ------------------------------------------------------------------
     # Internal: run loop

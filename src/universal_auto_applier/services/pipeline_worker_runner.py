@@ -488,15 +488,38 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     return parser.parse_args(argv)
 
 
+def _is_valid_application_id(value: str) -> bool:
+    """Return True if ``value`` matches the ApplicationJob identity contract.
+
+    Per ``core/identity.py``, ``application_id`` is always a lowercase
+    SHA-256 hexdigest: exactly 64 characters from ``[0-9a-f]``.
+
+    This validation is intentionally strict: a malformed ID is a programming
+    error (the caller passed garbage), not a "not found" condition. Malformed
+    IDs are rejected with a clear error rather than silently treated as
+    "not found in the database."
+    """
+    if len(value) != 64:
+        return False
+    return all(c in "0123456789abcdef" for c in value)
+
+
 def _load_target_ids(target_ids_file: Path | None) -> list[str]:
     """Load and validate target application IDs from a manifest file.
 
     If ``target_ids_file`` is None, returns an empty list (no targeting).
 
     If the file is supplied, it MUST exist, be valid JSON, and contain a
-    non-empty list of unique non-blank strings. Any failure raises
-    ``RuntimeError`` — the caller must fail the pipeline rather than
-    falling back to unrestricted processing.
+    non-empty list of unique non-blank strings. Each string MUST be a valid
+    ApplicationJob identity (lowercase SHA-256 hexdigest, 64 chars).
+
+    Any failure raises ``RuntimeError`` — the caller must fail the pipeline
+    rather than falling back to unrestricted processing. Malformed IDs are
+    rejected with a clear error; they are NOT silently treated as "not found
+    in the database." Well-formed IDs that simply don't exist in the database
+    are accepted here (the pipeline worker will find zero matching eligible
+    jobs and complete with 0 processed — the orchestration's no-progress
+    detection then catches this).
     """
     if target_ids_file is None:
         return []
@@ -534,7 +557,8 @@ def _load_target_ids(target_ids_file: Path | None) -> list[str]:
             "Pipeline cannot start in targeted mode with zero target IDs."
         )
 
-    # Validate each entry: must be a non-blank string.
+    # Validate each entry: must be a non-blank string matching the
+    # ApplicationJob identity contract (lowercase SHA-256 hexdigest, 64 chars).
     seen: set[str] = set()
     result: list[str] = []
     for i, entry in enumerate(data_list):
@@ -546,6 +570,13 @@ def _load_target_ids(target_ids_file: Path | None) -> list[str]:
         stripped: str = entry.strip()
         if not stripped:
             raise RuntimeError(f"Target IDs file {target_ids_file} entry {i} is a blank string")
+        if not _is_valid_application_id(stripped):
+            raise RuntimeError(
+                f"Target IDs file {target_ids_file} entry {i} is not a valid "
+                f"ApplicationJob identity (expected 64-char lowercase SHA-256 "
+                f"hexdigest, got {stripped!r} with length {len(stripped)}). "
+                f"Malformed IDs are rejected — do not pass arbitrary strings."
+            )
         if stripped in seen:
             raise RuntimeError(
                 f"Target IDs file {target_ids_file} contains duplicate ID: {stripped}"

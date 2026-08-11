@@ -674,7 +674,9 @@ class _NoProgressPipelineWorker:
             return self._real.start(
                 max_jobs=max_jobs,
                 fixture_html=fixture_html,
-                target_application_ids=["nonexistent-id-matches-nothing"],
+                target_application_ids=[
+                    "7945bc2d6e4fd0a0be5216460557bef483a80b6af0acbcdf06866f5c473b9367"
+                ],
             )
         return self._real.start(
             max_jobs=max_jobs,
@@ -874,8 +876,9 @@ class TestManifestValidation:
             _load_target_ids,
         )
 
+        valid_id = "a" * 64
         dup = tmp_path / "dup.json"
-        dup.write_text('["abc", "abc"]', encoding="utf-8")
+        dup.write_text(f'["{valid_id}", "{valid_id}"]', encoding="utf-8")
         with pytest.raises(RuntimeError, match="duplicate ID"):
             _load_target_ids(dup)
 
@@ -885,8 +888,9 @@ class TestManifestValidation:
             _load_target_ids,
         )
 
+        valid_id = "a" * 64
         blank = tmp_path / "blank.json"
-        blank.write_text('["abc", ""]', encoding="utf-8")
+        blank.write_text(f'["{valid_id}", ""]', encoding="utf-8")
         with pytest.raises(RuntimeError, match="blank string"):
             _load_target_ids(blank)
 
@@ -897,7 +901,7 @@ class TestManifestValidation:
         )
 
         bad = tmp_path / "bad_entry.json"
-        bad.write_text('["abc", 123]', encoding="utf-8")
+        bad.write_text("[123]", encoding="utf-8")
         with pytest.raises(RuntimeError, match="not a string"):
             _load_target_ids(bad)
 
@@ -966,16 +970,22 @@ class TestManifestCleanup:
                 f"Expected no manifest files after cancellation, got: {manifests}"
             )
 
-    def test_stale_manifest_cleaned_at_startup(
+    def test_stale_manifest_cleaned_at_production_startup(
         self,
         tmp_path: Path,
         queue_path: Path,
     ) -> None:
-        """Stale manifest files at startup are not consumed (they are run-specific).
+        """Production startup (create_app → lifespan → recover_on_startup) removes stale manifests.
 
-        Writes a stale manifest file BEFORE starting the orchestration. The
-        orchestration creates its OWN manifest for its run; the stale file is
-        not consumed because each manifest has a unique run-id prefix.
+        Pre-populates ``data_dir/target_ids/`` with stale manifest files that
+        belong to crashed/old runs (their run-id prefixes do not match any
+        active orchestration run). Then creates the app (which triggers
+        ``OrchestrationService.recover_on_startup()`` →
+        ``_cleanup_stale_manifests()``). After startup, the stale manifests
+        MUST be gone.
+
+        This test proves actual production startup invokes the cleanup — not
+        just a test helper.
         """
         _clean_fake_jh_data(queue_path)
         settings = _make_settings(tmp_path, queue_path=queue_path)
@@ -983,24 +993,153 @@ class TestManifestCleanup:
         apply_migrations(build_engine_url(settings.data_dir / "uaa.sqlite"))
         target_root = settings.data_dir / "target_ids"
         target_root.mkdir(parents=True, exist_ok=True)
-        stale_manifest = target_root / "target-stale0000-.json"
-        stale_manifest.write_text('["stale-id"]', encoding="utf-8")
+
+        # Write stale manifest files that look like they came from old runs.
+        # Format: target-{run_id_prefix}-{random}.json
+        # Content is a JSON list of valid SHA-256 hex IDs.
+        stale1 = target_root / "target-deadbeef-aaaa1111.json"
+        stale1.write_text(
+            '["aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"]', encoding="utf-8"
+        )
+        stale2 = target_root / "target-cafebabe-bbbb2222.json"
+        stale2.write_text(
+            '["bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"]', encoding="utf-8"
+        )
+        # A non-target file (should NOT be deleted — not owned by WQ-6).
+        other_file = target_root / "README.txt"
+        other_file.write_text("not a manifest", encoding="utf-8")
+        # A file that doesn't match the target-*.json pattern (should NOT be deleted).
+        other_json = target_root / "other-data.json"
+        other_json.write_text("[]", encoding="utf-8")
+
+        assert stale1.exists()
+        assert stale2.exists()
+
+        # Create the app — this triggers lifespan startup which calls
+        # OrchestrationService.recover_on_startup() → _cleanup_stale_manifests().
+        app = create_app(settings=settings)
+        try:
+            with TestClient(app):
+                # Verify the startup recovery removed the stale manifests.
+                assert not stale1.exists(), f"Stale manifest {stale1.name} should have been removed"
+                assert not stale2.exists(), f"Stale manifest {stale2.name} should have been removed"
+                # Non-manifest files are preserved.
+                assert other_file.exists(), "Non-manifest file should NOT be removed"
+                assert other_json.exists(), "Non-target JSON file should NOT be removed"
+
+                # The recovery summary should report the count.
+                recovery = getattr(app.state, "orchestration_recovery_summary", {})
+                assert recovery.get("manifests_removed") == 2, (
+                    f"Expected manifests_removed=2, got {recovery}"
+                )
+        finally:
+            orch = getattr(app.state, "orchestration_service", None)
+            if orch is not None:
+                orch.shutdown()
+            worker = app.state.pipeline_worker
+            if worker is not None:
+                worker.shutdown()
+
+    def test_active_run_manifest_preserved_at_startup(
+        self,
+        tmp_path: Path,
+        queue_path: Path,
+    ) -> None:
+        """Manifests belonging to an active run are preserved at startup.
+
+        If an orchestration run is still active (e.g. its JobHunter PID is
+        still alive), its manifest files must NOT be deleted by startup
+        cleanup. This test creates a manifest with a prefix that matches an
+        active run, then verifies it survives the cleanup.
+        """
+        _clean_fake_jh_data(queue_path)
+        settings = _make_settings(tmp_path, queue_path=queue_path)
+        settings.data_dir.mkdir(parents=True, exist_ok=True)
+        apply_migrations(build_engine_url(settings.data_dir / "uaa.sqlite"))
+        target_root = settings.data_dir / "target_ids"
+        target_root.mkdir(parents=True, exist_ok=True)
+
+        # Write a manifest that looks like it belongs to a run with prefix
+        # "active123". We'll pre-seed an active orchestration run with a
+        # run_id that starts with "active123".
+        active_manifest = target_root / "target-active123-cccc3333.json"
+        active_manifest.write_text(
+            '["cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"]', encoding="utf-8"
+        )
+        # Also write a stale one.
+        stale_manifest = target_root / "target-deadbeef-dddd4444.json"
+        stale_manifest.write_text(
+            '["dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"]', encoding="utf-8"
+        )
+
+        # Pre-seed an active orchestration run directly in the database
+        # BEFORE creating the app. The run has a PID that's "alive" (we use
+        # our own PID so pid_is_alive returns True).
+        import os
+
+        my_pid = os.getpid()
+        from universal_auto_applier.persistence.db import make_engine, make_session_factory
+        from universal_auto_applier.persistence.orchestration_run_repository import (
+            create_orchestration_run,
+            update_orchestration_run,
+        )
+
+        engine = make_engine(build_engine_url(settings.data_dir / "uaa.sqlite"))
+        factory = make_session_factory(engine)
+        with session_scope(factory) as session:
+            create_orchestration_run(
+                session, run_id="active123-abcd-1234-5678-deadbeef0000", mode="parallel"
+            )
+            update_orchestration_run(
+                session,
+                "active123-abcd-1234-5678-deadbeef0000",
+                status="pipeline_running",
+                jobhunter_pid=my_pid,
+            )
+        engine.dispose()
+
+        # Now create the app — the lifespan startup will call
+        # recover_on_startup → _cleanup_stale_manifests. The active run's
+        # PID is alive (it's our own PID), so its manifest is preserved.
+        app = create_app(settings=settings)
+        try:
+            with TestClient(app):
+                # The active run's manifest should be preserved.
+                assert active_manifest.exists(), (
+                    "Active run's manifest should NOT be removed at startup"
+                )
+                # The stale manifest should be removed.
+                assert not stale_manifest.exists(), "Stale manifest should be removed at startup"
+        finally:
+            orch = getattr(app.state, "orchestration_service", None)
+            if orch is not None:
+                orch.shutdown()
+            worker = getattr(app.state, "pipeline_worker", None)
+            if worker is not None:
+                worker.shutdown()
+
+    def test_malformed_manifest_cleaned_at_startup(
+        self,
+        tmp_path: Path,
+        queue_path: Path,
+    ) -> None:
+        """Malformed manifest files (corrupt JSON) are removed at startup."""
+        _clean_fake_jh_data(queue_path)
+        settings = _make_settings(tmp_path, queue_path=queue_path)
+        settings.data_dir.mkdir(parents=True, exist_ok=True)
+        apply_migrations(build_engine_url(settings.data_dir / "uaa.sqlite"))
+        target_root = settings.data_dir / "target_ids"
+        target_root.mkdir(parents=True, exist_ok=True)
+
+        # Write a malformed manifest (corrupt JSON).
+        malformed = target_root / "target-badforma1-eeee5555.json"
+        malformed.write_text("{not valid json", encoding="utf-8")
 
         app = create_app(settings=settings)
         try:
-            with TestClient(app) as test_client:
-                Base.metadata.create_all(app.state.engine)
-                _start_orchestration(
-                    test_client, mode="parallel", extra_args=["--jobs", "1"], max_jobs=2
-                )
-                final = _wait_for_orchestration_terminal(test_client, timeout=90)
-                assert final["status"] == "completed"
-                # The stale manifest is NOT consumed (it has a different run-id
-                # prefix). It remains on disk (this is acceptable: each run
-                # creates its own manifest with a unique name).
-                assert stale_manifest.exists(), (
-                    "Stale manifest should remain (not consumed by the new run)"
-                )
+            with TestClient(app):
+                # Malformed manifests are from crashed/old runs and are removed.
+                assert not malformed.exists(), "Malformed manifest should be removed at startup"
         finally:
             orch = getattr(app.state, "orchestration_service", None)
             if orch is not None:
@@ -1013,10 +1152,34 @@ class TestManifestCleanup:
 class TestModesAndMaxJobs:
     """Sequential/parallel modes and max_jobs configuration.
 
-    The happy-path sequential and parallel mode tests are already covered by
-    ``test_orchestration_audit.py::TestHappyPathsGreen``. This class focuses
-    on max_jobs configuration from the API, which is NOT covered elsewhere.
+    The happy-path sequential and parallel mode tests here complement the
+    audit tests in ``test_orchestration_audit.py::TestHappyPathsGreen`` by
+    verifying the mode is persisted in the run row.
     """
+
+    def test_sequential_mode_completes(
+        self,
+        client: TestClient,
+        app_settings: Settings,
+        queue_path: Path,
+    ) -> None:
+        _clean_fake_jh_data(queue_path)
+        _start_orchestration(client, mode="sequential", max_jobs=2)
+        final = _wait_for_orchestration_terminal(client, timeout=60)
+        assert final["status"] == "completed"
+        assert final["mode"] == "sequential"
+
+    def test_parallel_mode_completes(
+        self,
+        client: TestClient,
+        app_settings: Settings,
+        queue_path: Path,
+    ) -> None:
+        _clean_fake_jh_data(queue_path)
+        _start_orchestration(client, mode="parallel", max_jobs=2)
+        final = _wait_for_orchestration_terminal(client, timeout=90)
+        assert final["status"] == "completed"
+        assert final["mode"] == "parallel"
 
     def test_max_jobs_from_api_request(
         self,
@@ -1143,11 +1306,72 @@ class TestWorkerCountBounds:
 class TestTerminalImmutability:
     """Terminal orchestration runs cannot be revived.
 
-    The per-status polling tests (completed/failed/cancelled stay terminal)
-    are lightweight and fast — they only poll the status API without starting
-    new orchestration runs. The key behavioral test is that a terminal run
-    does NOT block a new start (only active runs do).
+    Each terminal status (completed, failed, cancelled) is tested for
+    immutability by polling the status API multiple times after the run
+    reaches a terminal state. The key behavioral test (terminal run does NOT
+    block a new start) is also included.
     """
+
+    def test_completed_run_not_revived_by_status_poll(
+        self,
+        client: TestClient,
+        app_settings: Settings,
+        queue_path: Path,
+    ) -> None:
+        """A completed run stays completed across multiple status polls."""
+        _clean_fake_jh_data(queue_path)
+        _start_orchestration(client, mode="sequential", max_jobs=1)
+        final = _wait_for_orchestration_terminal(client, timeout=60)
+        assert final["status"] == "completed"
+        # Poll several times — the run must stay completed.
+        for _ in range(5):
+            time.sleep(0.05)
+            status = client.get("/api/orchestration/status").json()
+            assert status["status"] == "completed", (
+                f"Completed run changed status to {status['status']}"
+            )
+            assert status["run_id"] == final["run_id"]
+
+    def test_failed_run_not_revived_by_status_poll(
+        self,
+        client: TestClient,
+        app_settings: Settings,
+        queue_path: Path,
+    ) -> None:
+        """A failed run stays failed across multiple status polls."""
+        _clean_fake_jh_data(queue_path)
+        _start_orchestration(client, mode="sequential", extra_args=["--fail"], max_jobs=1)
+        final = _wait_for_orchestration_terminal(client, timeout=30)
+        assert final["status"] == "failed"
+        for _ in range(5):
+            time.sleep(0.05)
+            status = client.get("/api/orchestration/status").json()
+            assert status["status"] == "failed", f"Failed run changed status to {status['status']}"
+
+    def test_cancelled_run_not_revived_by_status_poll(
+        self,
+        client: TestClient,
+        app_settings: Settings,
+        queue_path: Path,
+    ) -> None:
+        """A cancelled run stays cancelled across multiple status polls."""
+        _clean_fake_jh_data(queue_path)
+        _start_orchestration(
+            client,
+            mode="sequential",
+            extra_args=["--delay", "30.0"],
+            max_jobs=1,
+        )
+        time.sleep(1.0)
+        client.post("/api/orchestration/cancel")
+        final = _wait_for_orchestration_terminal(client, timeout=30)
+        assert final["status"] == "cancelled"
+        for _ in range(5):
+            time.sleep(0.05)
+            status = client.get("/api/orchestration/status").json()
+            assert status["status"] == "cancelled", (
+                f"Cancelled run changed status to {status['status']}"
+            )
 
     def test_terminal_run_blocks_new_start(
         self,
@@ -1175,16 +1399,42 @@ class TestInvalidTargetIds:
     """Invalid target IDs are rejected using the real ApplicationJob identity."""
 
     def test_invalid_target_id_format_rejected(self, tmp_path: Path) -> None:
-        """Target IDs must be non-empty strings (validated by _load_target_ids)."""
+        """Target IDs must be valid SHA-256 hexdigests (64-char lowercase hex).
+
+        Per the ApplicationJob identity contract (core/identity.py),
+        application_id is always ``sha256(identity_source).hexdigest()`` — a
+        64-character lowercase hex string. Malformed IDs are rejected with a
+        clear error, NOT silently treated as "not found."
+        """
         from universal_auto_applier.services.pipeline_worker_runner import (
             _load_target_ids,
         )
 
-        # Valid: list of non-empty unique strings.
+        # Valid: list of 64-char lowercase hex SHA-256 digests.
+        valid_id_1 = "a" * 64
+        valid_id_2 = "b" * 64
         valid = tmp_path / "valid.json"
-        valid.write_text('["abc123", "def456"]', encoding="utf-8")
+        valid.write_text(f'["{valid_id_1}", "{valid_id_2}"]', encoding="utf-8")
         result = _load_target_ids(valid)
-        assert result == ["abc123", "def456"]
+        assert result == [valid_id_1, valid_id_2]
+
+        # Invalid: too short.
+        bad_short = tmp_path / "bad_short.json"
+        bad_short.write_text('["abc123"]', encoding="utf-8")
+        with pytest.raises(RuntimeError, match="not a valid ApplicationJob identity"):
+            _load_target_ids(bad_short)
+
+        # Invalid: uppercase hex.
+        bad_upper = tmp_path / "bad_upper.json"
+        bad_upper.write_text(f'["{"A" * 64}"]', encoding="utf-8")
+        with pytest.raises(RuntimeError, match="not a valid ApplicationJob identity"):
+            _load_target_ids(bad_upper)
+
+        # Invalid: non-hex characters.
+        bad_nonhex = tmp_path / "bad_nonhex.json"
+        bad_nonhex.write_text(f'["{"z" * 64}"]', encoding="utf-8")
+        with pytest.raises(RuntimeError, match="not a valid ApplicationJob identity"):
+            _load_target_ids(bad_nonhex)
 
     def test_target_ids_not_in_db_are_ignored(
         self,
@@ -1209,6 +1459,52 @@ class TestInvalidTargetIds:
         # The targeted ID matched the imported job, so it was processed.
         assert final["processed_count"] == 1
         assert final["remaining_count"] == 0
+
+    def test_well_formed_id_absent_from_db_documented_behavior(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        """Well-formed IDs absent from the DB have explicitly documented behavior.
+
+        A well-formed ID (64-char lowercase hex) that doesn't exist in the
+        database is ACCEPTED by ``_load_target_ids`` (it passes format
+        validation). The pipeline worker then finds zero matching eligible
+        jobs and completes with 0 processed. The orchestration's no-progress
+        detection catches this and fails the run.
+
+        This is DIFFERENT from a malformed ID (wrong length, uppercase, non-hex)
+        which is REJECTED by ``_load_target_ids`` with a clear error before
+        the pipeline even starts.
+
+        This test proves the distinction:
+        - malformed ID → RuntimeError at load time
+        - well-formed but absent ID → accepted, pipeline runs with 0 matches
+        """
+        from universal_auto_applier.services.pipeline_worker_runner import (
+            _is_valid_application_id,
+            _load_target_ids,
+        )
+
+        # A well-formed ID that doesn't exist in any DB.
+        absent_id = "7945bc2d6e4fd0a0be5216460557bef483a80b6af0acbcdf06866f5c473b9367"
+        assert _is_valid_application_id(absent_id)
+
+        manifest = tmp_path / "absent.json"
+        manifest.write_text(f'["{absent_id}"]', encoding="utf-8")
+        result = _load_target_ids(manifest)
+        assert result == [absent_id], (
+            "Well-formed IDs must be accepted by _load_target_ids even if "
+            "they don't exist in the database. The pipeline worker handles "
+            "the 'not found' case by processing 0 jobs."
+        )
+
+        # A malformed ID is rejected.
+        malformed_id = "not-a-valid-id"
+        assert not _is_valid_application_id(malformed_id)
+        bad_manifest = tmp_path / "malformed.json"
+        bad_manifest.write_text(f'["{malformed_id}"]', encoding="utf-8")
+        with pytest.raises(RuntimeError, match="not a valid ApplicationJob identity"):
+            _load_target_ids(bad_manifest)
 
 
 class TestJobhunterConfigValidation:
