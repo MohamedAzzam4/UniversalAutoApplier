@@ -428,6 +428,20 @@ class OrchestrationRunRow(Base):
     # Exact newly eligible evidence: count + list of application_id hashes.
     newly_eligible_count: Mapped[int | None] = mapped_column(Integer, nullable=True, default=0)
     newly_eligible_ids_json: Mapped[list[str] | None] = mapped_column(JSON, nullable=True)
+    # Durable batch-evidence (WQ-6 round 7). These columns are updated after
+    # every batch in the multi-batch continuation loop so the orchestration
+    # state remains truthful after restart or failure. ``targeted_ids_json``
+    # is set once when the loop starts; the other columns are updated as
+    # batches complete. All lists contain only application_id hashes (never
+    # candidate data) and are bounded by the number of newly imported jobs.
+    targeted_ids_json: Mapped[list[str] | None] = mapped_column(JSON, nullable=True)
+    processed_ids_json: Mapped[list[str] | None] = mapped_column(JSON, nullable=True)
+    remaining_ids_json: Mapped[list[str] | None] = mapped_column(JSON, nullable=True)
+    targeted_count: Mapped[int | None] = mapped_column(Integer, nullable=True, default=0)
+    processed_count: Mapped[int | None] = mapped_column(Integer, nullable=True, default=0)
+    remaining_count: Mapped[int | None] = mapped_column(Integer, nullable=True, default=0)
+    pipeline_run_ids_json: Mapped[list[str] | None] = mapped_column(JSON, nullable=True)
+    pass_count: Mapped[int | None] = mapped_column(Integer, nullable=True, default=0)
     # Bounded structured errors
     errors_json: Mapped[list[dict[str, Any]]] = mapped_column(JSON, default=list)
     started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)

@@ -294,6 +294,7 @@ def queue_path(tmp_path: Path) -> Path:
 @pytest.fixture
 def app_settings(tmp_path: Path, queue_path: Path) -> Settings:
     """Settings with the fake JobHunter repo and a queue path."""
+    _clean_fake_jh_data(queue_path)
     settings = _make_settings(tmp_path, queue_path=queue_path)
     settings.data_dir.mkdir(parents=True, exist_ok=True)
     apply_migrations(build_engine_url(settings.data_dir / "uaa.sqlite"))
@@ -307,19 +308,21 @@ def client(app_settings: Settings) -> Any:
     with TestClient(app) as test_client:
         Base.metadata.create_all(app.state.engine)
         yield test_client
-        # Before the TestClient context exits, ensure any pipeline worker
-        # subprocess has been reaped.
+        # Properly shut down all services to prevent ResourceWarning.
+        orch = getattr(app.state, "orchestration_service", None)
+        if orch is not None and hasattr(orch, "shutdown"):
+            orch.shutdown()
         worker = app.state.pipeline_worker
-        if worker is not None:
+        if worker is not None and hasattr(worker, "shutdown"):
+            worker.shutdown()
+        else:
             proc = getattr(worker, "_proc", None)  # noqa: SLF001
             if proc is not None and proc.poll() is None:
                 try:
+                    proc.terminate()
                     proc.wait(timeout=10)
                 except Exception:  # noqa: BLE001
                     pass
-    import gc
-
-    gc.collect()
 
 
 # ---------------------------------------------------------------------------

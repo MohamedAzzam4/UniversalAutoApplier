@@ -157,6 +157,12 @@ def queue_path(tmp_path: Path) -> Path:
 @pytest.fixture
 def app_settings(tmp_path: Path, queue_path: Path) -> Settings:
     """Settings with the fake JobHunter repo and a queue path."""
+    # Clean any stale queue/PDF files from the fake JH repo.
+    data_dir = FAKE_JH_REPO / "data"
+    if data_dir.exists():
+        for f in data_dir.iterdir():
+            if f.suffix in (".jsonl", ".pdf") or f.name.startswith(".uaa"):
+                f.unlink()
     settings = _make_settings(tmp_path, queue_path=queue_path)
     settings.data_dir.mkdir(parents=True, exist_ok=True)
     apply_migrations(build_engine_url(settings.data_dir / "uaa.sqlite"))
@@ -170,19 +176,25 @@ def client(app_settings: Settings) -> Any:
     with TestClient(app) as test_client:
         Base.metadata.create_all(app.state.engine)
         yield test_client
-        # Before the TestClient context exits, ensure any pipeline worker
-        # subprocess has been reaped.
+        # Properly shut down the orchestration service (cancels JobHunter,
+        # waits for the orchestration thread, ensures Popen is reaped).
+        orch = getattr(app.state, "orchestration_service", None)
+        if orch is not None and hasattr(orch, "shutdown"):
+            orch.shutdown()
+        # Properly shut down the pipeline worker (terminates subprocess,
+        # waits, joins drain threads, closes pipes).
         worker = app.state.pipeline_worker
-        if worker is not None:
+        if worker is not None and hasattr(worker, "shutdown"):
+            worker.shutdown()
+        else:
+            # Fallback: ensure any lingering subprocess is reaped.
             proc = getattr(worker, "_proc", None)  # noqa: SLF001
             if proc is not None and proc.poll() is None:
                 try:
+                    proc.terminate()
                     proc.wait(timeout=10)
                 except Exception:  # noqa: BLE001
                     pass
-    import gc
-
-    gc.collect()
 
 
 class TestSequentialOrchestration:

@@ -165,17 +165,21 @@ def client(app_settings: Settings) -> Any:
     with TestClient(app) as test_client:
         Base.metadata.create_all(app.state.engine)
         yield test_client
+        # Properly shut down all services to prevent ResourceWarning.
+        orch = getattr(app.state, "orchestration_service", None)
+        if orch is not None and hasattr(orch, "shutdown"):
+            orch.shutdown()
         worker = app.state.pipeline_worker
-        if worker is not None:
+        if worker is not None and hasattr(worker, "shutdown"):
+            worker.shutdown()
+        else:
             proc = getattr(worker, "_proc", None)  # noqa: SLF001
             if proc is not None and proc.poll() is None:
                 try:
+                    proc.terminate()
                     proc.wait(timeout=10)
                 except Exception:  # noqa: BLE001
                     pass
-    import gc
-
-    gc.collect()
 
 
 class TestOlderEligibleCannotStarveNew:

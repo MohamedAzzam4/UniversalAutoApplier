@@ -340,6 +340,10 @@ class JobHunterRunner:
         if necessary, reaped, and the result is marked as timed out.
 
         Returns the exit code, or None if the process was not launched.
+
+        On any return path (normal exit, cancel, or timeout), the child has
+        been waited on (``returncode`` is set) and pipes are closed so
+        ``Popen.__del__`` will not emit ``ResourceWarning``.
         """
         proc = self._proc
         if proc is None:
@@ -354,20 +358,23 @@ class JobHunterRunner:
             rc = proc.poll()
             if rc is not None:
                 self._join_drain_threads()
+                self._close_pipes()
                 return rc
             if deadline is not None and time.monotonic() >= deadline:
                 # Timeout: terminate, reap, mark timed out.
                 self._handle_timeout()
                 return proc.returncode
             time.sleep(0.1)
-        # Cancel was requested; cancel() handles cleanup.
+        # Cancel was requested; cancel() handles cleanup. The caller MUST
+        # invoke cancel() (or close()) to ensure the process is reaped and
+        # pipes are closed before this runner is discarded.
         return proc.returncode
 
     def _handle_timeout(self) -> None:
         """Handle a timeout: terminate, force-kill if needed, reap, join drains.
 
-        This ensures the child PID is no longer alive, pipes are drained, and
-        the orchestration run will be marked failed.
+        This ensures the child PID is no longer alive, pipes are drained and
+        closed, and the orchestration run will be marked failed.
         """
         proc = self._proc
         if proc is None:
@@ -391,6 +398,7 @@ class JobHunterRunner:
             except subprocess.TimeoutExpired:
                 pass
         self._join_drain_threads()
+        self._close_pipes()
 
     def _join_drain_threads(self) -> None:
         """Join the drain threads so they finish reading and close pipes."""
@@ -399,20 +407,77 @@ class JobHunterRunner:
                 thread.join(timeout=5)
         self._drain_threads.clear()
 
+    def _close_pipes(self) -> None:
+        """Explicitly close ``proc.stdout`` and ``proc.stderr``.
+
+        The drain threads already call ``stream.close()`` in their ``finally``
+        block, but this is a belt-and-braces safety net so that
+        ``Popen.__del__`` never observes open pipes when the runner is GC'd.
+        Idempotent: silently skips if the pipe is already closed or None.
+        """
+        proc = self._proc
+        if proc is None:
+            return
+        for attr in ("stdout", "stderr"):
+            stream = getattr(proc, attr, None)
+            if stream is None:
+                continue
+            try:
+                if not stream.closed:
+                    stream.close()
+            except OSError:
+                pass
+
+    def close(self) -> None:
+        """Idempotently reap the child and close all pipes.
+
+        Safe to call multiple times. After this returns:
+        - the child process has been waited on (``returncode`` is set);
+        - drain threads have been joined;
+        - ``proc.stdout`` / ``proc.stderr`` are closed.
+
+        This is the contract every caller MUST satisfy before discarding the
+        runner reference, otherwise ``Popen.__del__`` may emit
+        ``ResourceWarning``.
+        """
+        proc = self._proc
+        if proc is None:
+            self._join_drain_threads()
+            return
+        if proc.poll() is None:
+            # Still running: terminate, then reap.
+            self._terminate()
+            try:
+                proc.wait(timeout=self.settings.orchestration_cancel_grace_seconds)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+                try:
+                    proc.wait(timeout=5)
+                except subprocess.TimeoutExpired:
+                    pass
+            except OSError:
+                pass
+        self._join_drain_threads()
+        self._close_pipes()
+
     def cancel(self) -> int | None:
         """Request graceful cancellation of the child process.
 
         Uses the owned :class:`Popen` handle — never a stale PID. Graceful
         termination (SIGTERM/TerminateProcess) is attempted first; forced
         termination (SIGKILL) is used only after the configured grace period.
+
+        After this returns, the child has been waited on (``returncode`` is
+        set) and pipes are closed.
         """
         self._cancel_requested = True
         proc = self._proc
         if proc is None:
             return None
         if proc.poll() is not None:
-            # Already exited; join drain threads.
+            # Already exited; join drain threads and close pipes.
             self._join_drain_threads()
+            self._close_pipes()
             return proc.returncode
         logger.info("[orchestration] cancelling JobHunter subprocess (pid=%s)", proc.pid)
         self._terminate()
@@ -429,6 +494,7 @@ class JobHunterRunner:
             except subprocess.TimeoutExpired:
                 pass
         self._join_drain_threads()
+        self._close_pipes()
         return proc.returncode
 
     def _terminate(self) -> None:
@@ -444,23 +510,10 @@ class JobHunterRunner:
     def _ensure_reaped(self) -> None:
         """Ensure the child process has been waited on (returncode is set).
 
-        This is a safety net called during shutdown to prevent
-        ResourceWarning from Popen.__del__ when the Popen handle is GC'd.
-        If the process is still running, terminate it first.
+        Deprecated alias for :meth:`close`. Retained for backward
+        compatibility with callers that already use it.
         """
-        proc = self._proc
-        if proc is None:
-            return
-        if proc.poll() is None:
-            self._terminate()
-            try:
-                proc.wait(timeout=5)
-            except subprocess.TimeoutExpired:
-                proc.kill()
-                proc.wait(timeout=5)
-            except OSError:
-                pass
-        self._join_drain_threads()
+        self.close()
 
     def collect_result(
         self, exit_code: int | None, *, cancelled: bool = False, timed_out: bool = False

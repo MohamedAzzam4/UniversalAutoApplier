@@ -113,16 +113,35 @@ class PipelineWorkerService:
             # replacing _proc. This prevents the old Popen handle from being
             # GC'd while its child is still running (ResourceWarning). The
             # drain threads have already read the output; we only need to
-            # set returncode via wait().
+            # set returncode via wait() and close the pipes.
             prev_proc = self._proc
-            if prev_proc is not None and prev_proc.returncode is None:
-                try:
-                    prev_proc.wait(timeout=5)
-                except subprocess.TimeoutExpired:
-                    prev_proc.terminate()
-                    prev_proc.wait(timeout=5)
-                except OSError:
-                    pass
+            if prev_proc is not None:
+                if prev_proc.returncode is None:
+                    try:
+                        prev_proc.wait(timeout=5)
+                    except subprocess.TimeoutExpired:
+                        prev_proc.terminate()
+                        try:
+                            prev_proc.wait(timeout=5)
+                        except subprocess.TimeoutExpired:
+                            pass
+                    except OSError:
+                        pass
+                # Join the previous drain threads and clear the list so the
+                # next shutdown() only waits for the new worker's threads.
+                for thread in self._drain_threads:
+                    if thread.is_alive():
+                        thread.join(timeout=5)
+                self._drain_threads.clear()
+                # Explicitly close the old Popen's pipes so __del__ cannot
+                # emit ResourceWarning.
+                for attr in ("stdout", "stderr"):
+                    stream = getattr(prev_proc, attr, None)
+                    if stream is not None and not stream.closed:
+                        try:
+                            stream.close()
+                        except OSError:
+                            pass
 
             run_id = str(uuid.uuid4())
             mode = "fixture_dry_run" if fixture_html else "sequential_dry_run"
@@ -298,26 +317,46 @@ class PipelineWorkerService:
         Called on app shutdown. The run row is left in its current state —
         WQ-5 owns stale-run recovery. On the next :meth:`start`, any stale
         active row causes a 409; :meth:`cancel` then recovers it.
+
+        Guarantees after this returns:
+        - the worker subprocess has been waited on (``returncode`` is set);
+        - drain threads have been joined;
+        - ``proc.stdout`` / ``proc.stderr`` are closed.
+
+        Idempotent: safe to call multiple times.
         """
         proc = self._proc
-        if proc is None:
-            return
-        if proc.poll() is None:
-            logger.info("[pipeline] terminating worker subprocess (pid=%s)", proc.pid)
-            try:
-                proc.terminate()
-                proc.wait(timeout=5)
-            except subprocess.TimeoutExpired:
-                proc.kill()
-                proc.wait(timeout=5)
-            except OSError:
-                logger.warning("[pipeline] error terminating worker subprocess")
-        # Wait for the drain threads to finish. After the process exits,
-        # the pipes reach EOF and the drain threads exit on their own.
-        for thread in self._drain_threads:
-            if thread.is_alive():
-                thread.join(timeout=5)
-        self._drain_threads.clear()
+        if proc is not None:
+            if proc.poll() is None:
+                logger.info("[pipeline] terminating worker subprocess (pid=%s)", proc.pid)
+                try:
+                    proc.terminate()
+                    proc.wait(timeout=5)
+                except subprocess.TimeoutExpired:
+                    proc.kill()
+                    try:
+                        proc.wait(timeout=5)
+                    except subprocess.TimeoutExpired:
+                        pass
+                except OSError:
+                    logger.warning("[pipeline] error terminating worker subprocess")
+            # Wait for the drain threads to finish. After the process exits,
+            # the pipes reach EOF and the drain threads exit on their own.
+            for thread in self._drain_threads:
+                if thread.is_alive():
+                    thread.join(timeout=5)
+            self._drain_threads.clear()
+            # Explicitly close the Popen pipes so __del__ cannot emit
+            # ResourceWarning. The drain threads already call stream.close()
+            # in their finally block, but this is a belt-and-braces safety net.
+            for attr in ("stdout", "stderr"):
+                stream = getattr(proc, attr, None)
+                if stream is not None and not stream.closed:
+                    try:
+                        stream.close()
+                    except OSError:
+                        pass
+            self._proc = None
 
     # ------------------------------------------------------------------
     # Helpers

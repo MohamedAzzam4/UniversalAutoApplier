@@ -127,13 +127,15 @@ class OrchestrationService:
             # before starting a new one.
             if self._thread is not None and self._thread.is_alive():
                 self._thread.join(timeout=30)
-            # Ensure the previous runner's subprocess has been waited on.
-            if self._runner is not None and self._runner.is_alive:
+            # Ensure the previous runner's subprocess has been waited on and
+            # its pipes closed before we discard the reference. This prevents
+            # Popen.__del__ from emitting ResourceWarning when the old runner
+            # is garbage-collected.
+            if self._runner is not None:
                 try:
-                    self._runner.cancel()
+                    self._runner.close()
                 except Exception:  # noqa: BLE001
-                    logger.warning("[orchestration] error cleaning up previous runner")
-            # Clean up any previous runner handle.
+                    logger.warning("[orchestration] error closing previous runner")
             self._runner = None
             self._thread = threading.Thread(
                 target=self._run,
@@ -158,24 +160,27 @@ class OrchestrationService:
 
         Called on app shutdown. The run row is left in its current state —
         startup recovery handles orphaned runs. Never kills based on a stale
-        PID — uses the owned :class:`Popen` handle.
+        PID — uses the owned :class:`Popen` handle via ``runner.close()``.
+
+        Guarantees after this returns:
+        - the JobHunter child has been waited on (returncode set);
+        - drain threads joined;
+        - ``proc.stdout`` / ``proc.stderr`` closed;
+        - the orchestration thread has finished (bounded wait).
+
+        Idempotent: safe to call multiple times.
         """
         runner = self._runner
-        if runner is not None and runner.is_alive:
+        if runner is not None:
             try:
-                runner.cancel()
+                runner.close()
             except Exception:  # noqa: BLE001 - shutdown must not crash
-                logger.warning("[orchestration] error cancelling JobHunter during shutdown")
-        elif runner is not None:
-            # The runner already exited; ensure its Popen returncode is set
-            # to prevent ResourceWarning from Popen.__del__.
-            try:
-                runner._ensure_reaped()  # type: ignore[attr-defined]
-            except Exception:  # noqa: BLE001
-                pass
+                logger.warning("[orchestration] error closing JobHunter runner during shutdown")
         # Wait for the orchestration thread to finish (bounded).
         if self._thread is not None and self._thread.is_alive():
             self._thread.join(timeout=10)
+        # Clear the runner reference so a subsequent start() begins cleanly.
+        self._runner = None
 
     def cancel(self, *, reason: str = "User cancelled") -> dict[str, Any]:
         """Request cancellation of the active orchestration run.
@@ -318,7 +323,13 @@ class OrchestrationService:
         fixture_html: str | None,
         max_jobs: int,
     ) -> None:
-        """Execute the orchestration run in a background thread."""
+        """Execute the orchestration run in a background thread.
+
+        The JobHunter runner is always closed in a ``finally`` block so the
+        child process is reaped and pipes are closed even on exception or
+        cancellation. This is the single source of truth for runner cleanup
+        — individual phase methods do not need to close the runner.
+        """
         try:
             if mode == "sequential":
                 self._run_sequential(run_id, fixture_html, max_jobs)
@@ -328,6 +339,20 @@ class OrchestrationService:
             logger.exception("[orchestration] run %s failed: %s", run_id[:8], exc)
             self._mark_failed(run_id, str(exc))
             return
+        finally:
+            # Always close the runner so the child is reaped and pipes are
+            # closed, regardless of how the run ended (success, failure,
+            # cancellation, or exception). This is the only place that
+            # guarantees cleanup — phase methods may return early.
+            runner = self._runner
+            if runner is not None:
+                try:
+                    runner.close()
+                except Exception:  # noqa: BLE001 - cleanup must not mask errors
+                    logger.warning(
+                        "[orchestration] error closing runner in _run finally: %s",
+                        run_id[:8],
+                    )
 
         # If cancellation was requested, the cancel() method handles terminal
         # state. Otherwise mark completed (if not already terminal).
@@ -698,23 +723,83 @@ class OrchestrationService:
                 update_orchestration_run(
                     session,
                     run_id,
+                    targeted_ids_json=list(new_ids),
+                    processed_ids_json=[],
+                    remaining_ids_json=[],
+                    targeted_count=new_count,
+                    processed_count=0,
+                    remaining_count=0,
+                    pipeline_run_ids_json=[],
+                    pass_count=0,
                     last_action="No newly eligible jobs after import; no second pipeline pass",
                 )
             return
 
         # Phase 5: If the import created newly eligible jobs, process them
         # in bounded batches of max_jobs until all target IDs leave
-        # READY_TO_APPLY/QUEUED.
-        remaining_ids = list(new_ids)
+        # READY_TO_APPLY/QUEUED. Durable batch evidence is persisted after
+        # every batch so the orchestration state remains truthful after
+        # restart or failure.
+        targeted_ids = list(new_ids)
+        processed_ids: list[str] = []
+        remaining_ids = list(targeted_ids)
         pass_num = 0
         pipeline_run_ids: list[str] = []
-        max_passes = max(1, (new_count + max_jobs - 1) // max_jobs + 1)  # ceiling + 1 safety margin
+        # ceiling of new_count / max_jobs, plus 1 safety margin for no-progress
+        # detection (the no-progress check fires before this is exceeded).
+        max_passes = max(1, (new_count + max_jobs - 1) // max_jobs + 1)
+
+        # Persist the initial targeted set once. ``remaining_ids`` starts as
+        # the full targeted set; ``processed_ids`` is empty.
+        with session_scope(self._session_factory) as session:
+            update_orchestration_run(
+                session,
+                run_id,
+                targeted_ids_json=list(targeted_ids),
+                processed_ids_json=[],
+                remaining_ids_json=list(remaining_ids),
+                targeted_count=len(targeted_ids),
+                processed_count=0,
+                remaining_count=len(remaining_ids),
+                pipeline_run_ids_json=[],
+                pass_count=0,
+                last_action=(
+                    f"Starting multi-batch continuation: {len(targeted_ids)} target IDs, "
+                    f"max_jobs={max_jobs}"
+                ),
+            )
+
         while remaining_ids:
             if self._cancel_requested.is_set():
+                # Persist the current batch state before returning so the
+                # durable evidence reflects the partial progress.
+                self._persist_batch_evidence(
+                    run_id,
+                    targeted_ids=targeted_ids,
+                    processed_ids=processed_ids,
+                    remaining_ids=remaining_ids,
+                    pipeline_run_ids=pipeline_run_ids,
+                    pass_num=pass_num,
+                    last_action=f"Cancelled during pass {pass_num + 1} (before batch start)",
+                )
                 return
 
             pass_num += 1
             if pass_num > max_passes:
+                # Persist the final state before failing.
+                self._persist_batch_evidence(
+                    run_id,
+                    targeted_ids=targeted_ids,
+                    processed_ids=processed_ids,
+                    remaining_ids=remaining_ids,
+                    pipeline_run_ids=pipeline_run_ids,
+                    pass_num=pass_num - 1,
+                    last_action=(
+                        f"Exceeded maximum pipeline passes ({max_passes}) for "
+                        f"{new_count} target IDs with max_jobs={max_jobs}. "
+                        f"{len(remaining_ids)} IDs remain eligible."
+                    ),
+                )
                 self._mark_failed(
                     run_id,
                     f"Exceeded maximum pipeline passes ({max_passes}) for "
@@ -736,6 +821,19 @@ class OrchestrationService:
                     target_application_ids=batch,
                 )
             except RuntimeError as exc:
+                # Persist the current batch state before failing.
+                self._persist_batch_evidence(
+                    run_id,
+                    targeted_ids=targeted_ids,
+                    processed_ids=processed_ids,
+                    remaining_ids=remaining_ids,
+                    pipeline_run_ids=pipeline_run_ids,
+                    pass_num=pass_num - 1,
+                    last_action=(
+                        f"Pipeline pass {pass_num} failed to start: {exc}. "
+                        f"{len(remaining_ids)} target IDs remain eligible for manual retry."
+                    ),
+                )
                 self._mark_failed(
                     run_id,
                     f"Import succeeded ({summary.imported} imported, {new_count} newly eligible) "
@@ -753,23 +851,49 @@ class OrchestrationService:
                     run_id,
                     pipeline_run_id=run_id_str,
                     pipeline_state=pass_state.get("status"),
+                    pipeline_run_ids_json=list(pipeline_run_ids),
                     last_action=f"Pipeline pass {pass_num} started: {pass_state.get('status')}",
                 )
 
             if not self._wait_for_pipeline(run_id):
+                # The wait method already marked the run failed and persisted
+                # the pipeline state. Persist the batch evidence too so the
+                # targeted/processed/remaining lists reflect partial progress.
+                self._persist_batch_evidence(
+                    run_id,
+                    targeted_ids=targeted_ids,
+                    processed_ids=processed_ids,
+                    remaining_ids=remaining_ids,
+                    pipeline_run_ids=pipeline_run_ids,
+                    pass_num=pass_num,
+                    last_action=f"Pipeline pass {pass_num} did not complete successfully",
+                )
                 return
 
-            # Recompute remaining eligible target IDs.
+            # Recompute remaining eligible target IDs. An ID is "processed"
+            # if it is no longer in the eligible set (it left READY_TO_APPLY
+            # / QUEUED, regardless of the terminal state it reached).
             current_eligible = self._snapshot_eligible_ids()
-            remaining_ids = [tid for tid in remaining_ids if tid in current_eligible]
+            new_remaining = [tid for tid in remaining_ids if tid in current_eligible]
+            newly_processed = [tid for tid in remaining_ids if tid not in current_eligible]
+            # Preserve order: targeted order, then by removal from remaining.
+            processed_ids = processed_ids + newly_processed
+            remaining_ids = new_remaining
 
-            with session_scope(self._session_factory) as session:
-                update_orchestration_run(
-                    session,
-                    run_id,
-                    last_action=f"Pipeline pass {pass_num} completed; "
-                    f"{len(remaining_ids)} target IDs remaining",
-                )
+            # Persist the durable batch evidence after every batch.
+            self._persist_batch_evidence(
+                run_id,
+                targeted_ids=targeted_ids,
+                processed_ids=processed_ids,
+                remaining_ids=remaining_ids,
+                pipeline_run_ids=pipeline_run_ids,
+                pass_num=pass_num,
+                last_action=(
+                    f"Pipeline pass {pass_num} completed; "
+                    f"{len(processed_ids)}/{len(targeted_ids)} processed, "
+                    f"{len(remaining_ids)} remaining"
+                ),
+            )
 
             # No-progress detection: check if ANY ID from the current batch
             # is still eligible. If so, the pass made no progress on those IDs.
@@ -788,13 +912,56 @@ class OrchestrationService:
         # All target IDs processed. The newly_eligible_count and
         # newly_eligible_ids_json remain at their original import-time values
         # (the count of IDs that were newly eligible, and the list of those IDs).
-        # We only update the pipeline_run_id and last_action.
+        # Final pass_count is the number of completed passes.
         with session_scope(self._session_factory) as session:
             update_orchestration_run(
                 session,
                 run_id,
                 pipeline_run_id=pipeline_run_ids[-1] if pipeline_run_ids else None,
-                last_action=f"All {new_count} target IDs processed in {pass_num} pass(es)",
+                targeted_ids_json=list(targeted_ids),
+                processed_ids_json=list(processed_ids),
+                remaining_ids_json=[],
+                targeted_count=len(targeted_ids),
+                processed_count=len(processed_ids),
+                remaining_count=0,
+                pipeline_run_ids_json=list(pipeline_run_ids),
+                pass_count=pass_num,
+                last_action=(f"All {new_count} target IDs processed in {pass_num} pass(es)"),
+            )
+
+    def _persist_batch_evidence(
+        self,
+        run_id: str,
+        *,
+        targeted_ids: list[str],
+        processed_ids: list[str],
+        remaining_ids: list[str],
+        pipeline_run_ids: list[str],
+        pass_num: int,
+        last_action: str,
+    ) -> None:
+        """Persist the durable batch evidence after every batch.
+
+        This is the single source of truth for the targeted/processed/remaining
+        ID lists and the ordered list of pipeline run IDs. Called after every
+        batch in the multi-batch continuation loop, and on every early-exit
+        path (cancellation, failure, no-progress). The data is bounded by the
+        number of newly imported jobs and contains only application_id hashes
+        (never candidate data).
+        """
+        with session_scope(self._session_factory) as session:
+            update_orchestration_run(
+                session,
+                run_id,
+                targeted_ids_json=list(targeted_ids),
+                processed_ids_json=list(processed_ids),
+                remaining_ids_json=list(remaining_ids),
+                targeted_count=len(targeted_ids),
+                processed_count=len(processed_ids),
+                remaining_count=len(remaining_ids),
+                pipeline_run_ids_json=list(pipeline_run_ids),
+                pass_count=pass_num,
+                last_action=last_action,
             )
 
     def _run_jobhunter(self, run_id: str) -> None:
