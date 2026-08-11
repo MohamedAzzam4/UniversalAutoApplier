@@ -268,12 +268,20 @@ class TestParallelOrchestration:
         )
 
         # While JobHunter is running (delay=2s), the pipeline should start.
-        time.sleep(1.0)
-        mid_status = client.get("/api/orchestration/status").json()
-        assert (
-            mid_status["pipeline_run_id_initial"] is not None
-            or mid_status["pipeline_state_initial"] is not None
-        )
+        # On Windows, the pipeline subprocess may take longer to launch.
+        # Poll for up to 5s instead of a single sleep+check.
+        deadline = time.monotonic() + 5.0
+        started = False
+        while time.monotonic() < deadline:
+            mid_status = client.get("/api/orchestration/status").json()
+            if (
+                mid_status["pipeline_run_id_initial"] is not None
+                or mid_status["pipeline_state_initial"] is not None
+            ):
+                started = True
+                break
+            time.sleep(0.3)
+        assert started, f"Pipeline did not start while JobHunter was running. Status: {mid_status}"
 
         final = _wait_for_orchestration_terminal(client, timeout=90)
         assert final["status"] == "completed"

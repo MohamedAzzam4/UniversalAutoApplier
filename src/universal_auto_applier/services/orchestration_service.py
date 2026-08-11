@@ -708,11 +708,20 @@ class OrchestrationService:
         remaining_ids = list(new_ids)
         pass_num = 0
         pipeline_run_ids: list[str] = []
+        max_passes = max(1, (new_count + max_jobs - 1) // max_jobs + 1)  # ceiling + 1 safety margin
         while remaining_ids:
             if self._cancel_requested.is_set():
                 return
 
             pass_num += 1
+            if pass_num > max_passes:
+                self._mark_failed(
+                    run_id,
+                    f"Exceeded maximum pipeline passes ({max_passes}) for "
+                    f"{new_count} target IDs with max_jobs={max_jobs}. "
+                    f"{len(remaining_ids)} IDs remain eligible.",
+                )
+                return
             batch = remaining_ids[:max_jobs]
             self._set_phase(
                 run_id,
@@ -762,12 +771,16 @@ class OrchestrationService:
                     f"{len(remaining_ids)} target IDs remaining",
                 )
 
-            if remaining_ids and len(remaining_ids) == len(batch):
-                # No progress: all IDs in this batch are still eligible.
+            # No-progress detection: check if ANY ID from the current batch
+            # is still eligible. If so, the pass made no progress on those IDs.
+            batch_set = set(batch)
+            batch_still_eligible = [tid for tid in remaining_ids if tid in batch_set]
+            if batch_still_eligible:
                 self._mark_failed(
                     run_id,
                     f"Pipeline pass {pass_num} made no progress: "
-                    f"{len(remaining_ids)} target IDs still eligible after processing. "
+                    f"{len(batch_still_eligible)} of {len(batch)} batch IDs "
+                    f"still eligible after processing. "
                     "The remaining jobs need manual review.",
                 )
                 return
