@@ -37,10 +37,14 @@ jobs:
   verify-windows-py314:
     name: Windows + Python 3.14 bootstrap gate
     runs-on: windows-latest
-    # Each gate runs exactly once. The heaviest step (pytest with Playwright)
-    # takes ~30-35 minutes on the hosted runner. 45 minutes provides ample
-    # headroom without encouraging runaway suites.
-    timeout-minutes: 45
+    # Each gate runs exactly once. With deduplication, the heaviest path is
+    # setup (~21 min) + pytest with Playwright (~30 min). The original 65-min
+    # timeout is retained: it provides headroom without encouraging runaway
+    # suites, and was proven sufficient on the PR check for 30027f2 (which
+    # passed in ~52 min with the old duplicated suite). The deduplication
+    # removes ~20 min of redundant execution, so the single-suite run fits
+    # comfortably.
+    timeout-minutes: 65
 
     steps:
       - name: Checkout
