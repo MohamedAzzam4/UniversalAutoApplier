@@ -6,6 +6,15 @@ name: verify-linux
 # and tests Python 3.11 (minimum), 3.12 (reference), and 3.13/3.14 (forward
 # compatibility). The Windows workflow (verify-windows-py314.yml) is the
 # primary target-environment proof requested during review.
+#
+# Design note (WQ-6 post-merge hotfix):
+# Previously this workflow called `test.sh` with RUN_ALL=1 INCLUDE_PLAYWRIGHT=1
+# (which runs ruff + pyright + pytest internally) and THEN re-ran ruff, pyright,
+# and the full pytest suite as direct steps. Each expensive suite ran twice.
+# The workflow now uses a single authoritative orchestration path: each gate
+# runs exactly once as a dedicated step with step-level visibility. The
+# `test.sh` script remains available for local use but is not invoked in CI
+# to avoid duplication.
 
 "on":
   push:
@@ -56,26 +65,48 @@ jobs:
         run: |
           ./scripts/setup.sh
 
-      - name: Run test.sh (all gates including Playwright)
-        run: |
-          RUN_ALL=1 INCLUDE_PLAYWRIGHT=1 ./scripts/test.sh
+      # ------------------------------------------------------------------
+      # Quality gates — each runs exactly once.
+      # ------------------------------------------------------------------
 
-      - name: Direct ruff check
+      - name: Ruff check (src tests migrations)
         run: ./.venv/bin/python -m ruff check src tests migrations
 
-      - name: Direct ruff format --check
+      - name: Ruff format --check (src tests migrations)
         run: ./.venv/bin/python -m ruff format --check src tests migrations
 
-      - name: Direct pyright
+      - name: Pyright
         run: ./.venv/bin/python -m pyright
 
-      - name: Direct pytest (full suite)
-        run: ./.venv/bin/python -m pytest
+      # ------------------------------------------------------------------
+      # Test suites — each runs exactly once.
+      # The pytest step uses -m "not live" to include Playwright while
+      # excluding live (real ATS) tests. This is the single authoritative
+      # full-suite run; no second pytest invocation follows.
+      # ------------------------------------------------------------------
 
-      - name: Contract tests specifically (ResourceWarning gate)
+      - name: Pytest (full suite, not live, including Playwright)
+        run: ./.venv/bin/python -m pytest -m "not live" -q
+
+      # ------------------------------------------------------------------
+      # ResourceWarning contract gate — a focused re-run of the contract
+      # tests to prove the filterwarnings = ["error"] config is wired
+      # correctly. This is lightweight (contract tests run in seconds)
+      # and distinct from the full suite above.
+      # ------------------------------------------------------------------
+
+      - name: Contract tests (ResourceWarning gate)
         run: ./.venv/bin/python -m pytest tests/contract/test_migrations.py -q
 
-      - name: Prove ResourceWarning filter is active
+      # ------------------------------------------------------------------
+      # Deliberate ResourceWarning proof — writes a temp test that emits
+      # a ResourceWarning, asserts pytest FAILS (proving the filter is
+      # active), then cleans up the temp file. This is distinct from the
+      # contract gate above: it proves the filter catches ANY
+      # ResourceWarning, not just those in existing tests.
+      # ------------------------------------------------------------------
+
+      - name: Prove ResourceWarning is treated as error
         run: |
           # Write a temp test that emits ResourceWarning. It should FAIL.
           cat > tests/test_rw_temp.py << 'EOF'
