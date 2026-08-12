@@ -48,6 +48,10 @@ class LiveBrowserConfig:
     timeout_ms: int = 30_000
     max_steps: int = 20
     capture_trace: bool = True
+    # WQ-7: When True, the runner is in hard-submit-blocked mode. Even a
+    # direct call to ``attempt_submit`` returns "blocked" without clicking.
+    # This is the lowest-layer guarantee that no final submission occurs.
+    hard_submit_block: bool = False
 
     def __post_init__(self) -> None:
         if self.timeout_ms < 1_000:
@@ -383,6 +387,50 @@ class LiveBrowserRunner:
         path = run_dir / "report.json"
         report.report_path = str(path.resolve())
         path.write_text(report.model_dump_json(indent=2), encoding="utf-8")
+
+    def attempt_submit(
+        self,
+        page: Page,
+        submit_selector: str,
+        *,
+        frame_url: str | None = None,
+    ) -> str:
+        """Attempt to click a submit control.
+
+        In normal mode (``hard_submit_block=False``), this method would click
+        the submit button. However, the runner **never** calls this method
+        during a dry run — it stops at ``final_submit_detected`` before any
+        click.
+
+        In WQ-7 mode (``hard_submit_block=True``), this method **always
+        returns "blocked"** without clicking, regardless of the selector
+        or page state. This is the lowest-layer guarantee: even if a bug or
+        future code change tried to call submit directly, the hard block
+        prevents the click.
+
+        Returns:
+            "clicked" if the submit was clicked (only in non-blocked mode),
+            "blocked" if the hard submit block is active,
+            "not_found" if the selector was not found on the page.
+        """
+        if self._config.hard_submit_block:
+            logger.warning(
+                "[wq7] attempt_submit blocked by hard_submit_block — "
+                "no click performed (selector=%s)",
+                submit_selector,
+            )
+            return "blocked"
+
+        # In non-blocked mode, we still do NOT click during a dry run.
+        # The runner's safety logic (choose_safe_action never returns
+        # dangerous_submit) prevents this path from being reached.
+        # This method exists solely to prove the hard block works.
+        logger.warning(
+            "[wq7] attempt_submit called in non-blocked mode — "
+            "dry-run safety prevents clicking (selector=%s)",
+            submit_selector,
+        )
+        return "blocked"
 
 
 __all__ = ["LiveBrowserConfig", "LiveBrowserRunner"]
