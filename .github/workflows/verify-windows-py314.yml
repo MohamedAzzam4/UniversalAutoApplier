@@ -52,12 +52,17 @@ jobs:
   # ------------------------------------------------------------------
   # Job A: windows-core
   # Quality gates + non-Playwright tests (unit, contract, integration).
-  # Does NOT install Playwright Chromium (saves ~10-15 min of setup).
+  # Installs Chromium because integration tests (test_submission_harness,
+  # test_api, test_pipeline_worker) launch subprocesses that use Playwright
+  # even though they are not marked as 'playwright' tests.
   # ------------------------------------------------------------------
   windows-core:
-    name: Windows Core (no Playwright)
+    name: Windows Core (integration tests need Chromium)
     runs-on: windows-latest
-    timeout-minutes: 30
+    # setup.ps1 with Chromium install takes ~27 min on Windows. The core
+    # test suite (not live, not playwright) takes ~14 min. Total ~41 min.
+    # 55 min provides headroom.
+    timeout-minutes: 55
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -109,10 +114,13 @@ jobs:
           if (Test-Path .venv) { Remove-Item -Recurse -Force .venv }
           if (Test-Path .uaa_data) { Remove-Item -Recurse -Force .uaa_data }
 
-      - name: Run setup.ps1 (skip Playwright browser install, skip smoke tests)
+      - name: Run setup.ps1 (install Chromium for integration tests, skip smoke tests)
         shell: pwsh
         run: |
-          .\scripts\setup.ps1 -PythonExecutable python -SkipBrowser -SkipSmokeTests
+          # Integration tests (test_submission_harness, test_api, test_pipeline_worker)
+          # launch subprocesses that use Playwright. They need Chromium installed
+          # even though they are not marked as 'playwright' tests.
+          .\scripts\setup.ps1 -PythonExecutable python -SkipSmokeTests
 
       # ------------------------------------------------------------------
       # Quality gates — each runs exactly once.
