@@ -63,6 +63,7 @@ class PipelineWorkerService:
         self._lock = threading.Lock()
         self._proc: subprocess.Popen[str] | None = None
         self._run_id: str | None = None
+        self._drain_threads: list[threading.Thread] = []
 
     # ------------------------------------------------------------------
     # State access
@@ -83,8 +84,18 @@ class PipelineWorkerService:
         *,
         max_jobs: int = 10,
         fixture_html: str | None = None,
+        target_application_ids: list[str] | None = None,
     ) -> dict[str, Any]:
         """Start a new pipeline run in a subprocess. Returns immediately.
+
+        Args:
+            max_jobs: Maximum number of jobs to process in this run (batch limit).
+            fixture_html: Optional test-only fixture HTML for dry-run mode.
+            target_application_ids: Optional list of application IDs to restrict
+                this run to. When set, the pipeline worker only processes these
+                IDs (filtering out all other eligible jobs). The IDs are written
+                to a temp file and passed via --target-ids-file to avoid putting
+                any data in command-line arguments.
 
         Raises RuntimeError if a run is already active.
         """
@@ -97,6 +108,41 @@ class PipelineWorkerService:
                 )
 
             fixture_file = self._prepare_fixture(fixture_html)
+
+            # Wait for any previous worker subprocess to fully exit before
+            # replacing _proc. This prevents the old Popen handle from being
+            # GC'd while its child is still running (ResourceWarning). The
+            # drain threads have already read the output; we only need to
+            # set returncode via wait() and close the pipes.
+            prev_proc = self._proc
+            if prev_proc is not None:
+                if prev_proc.returncode is None:
+                    try:
+                        prev_proc.wait(timeout=5)
+                    except subprocess.TimeoutExpired:
+                        prev_proc.terminate()
+                        try:
+                            prev_proc.wait(timeout=5)
+                        except subprocess.TimeoutExpired:
+                            pass
+                    except OSError:
+                        pass
+                # Join the previous drain threads and clear the list so the
+                # next shutdown() only waits for the new worker's threads.
+                for thread in self._drain_threads:
+                    if thread.is_alive():
+                        thread.join(timeout=5)
+                self._drain_threads.clear()
+                # Explicitly close the old Popen's pipes so __del__ cannot
+                # emit ResourceWarning.
+                for attr in ("stdout", "stderr"):
+                    stream = getattr(prev_proc, attr, None)
+                    if stream is not None and not stream.closed:
+                        try:
+                            stream.close()
+                        except OSError:
+                            pass
+
             run_id = str(uuid.uuid4())
             mode = "fixture_dry_run" if fixture_html else "sequential_dry_run"
             with session_scope(self._session_factory) as session:
@@ -123,6 +169,22 @@ class PipelineWorkerService:
             if fixture_file is not None:
                 cmd += ["--fixture-file", str(fixture_file)]
 
+            # Write target application IDs to a temp file (not command-line args).
+            target_ids_file: Path | None = None
+            if target_application_ids:
+                import json as _json
+                import tempfile as _tempfile
+
+                target_root = self._settings.data_dir / "target_ids"
+                target_root.mkdir(parents=True, exist_ok=True)
+                fd, tmp_target = _tempfile.mkstemp(
+                    dir=str(target_root), prefix=f"target-{run_id[:8]}-", suffix=".json"
+                )
+                with os.fdopen(fd, "w", encoding="utf-8") as f:
+                    _json.dump(sorted(target_application_ids), f)
+                target_ids_file = Path(tmp_target)
+                cmd += ["--target-ids-file", str(target_ids_file)]
+
             env = self._worker_env()
             try:
                 self._proc = subprocess.Popen(
@@ -135,6 +197,12 @@ class PipelineWorkerService:
                     errors="replace",
                 )
             except OSError as exc:
+                # Clean up the target manifest on launch failure.
+                if target_ids_file is not None:
+                    try:
+                        target_ids_file.unlink(missing_ok=True)
+                    except OSError:
+                        pass
                 # The run row exists but the worker never started. Mark it
                 # failed so the status API does not report a ghost "running".
                 with session_scope(self._session_factory) as session:
@@ -249,20 +317,46 @@ class PipelineWorkerService:
         Called on app shutdown. The run row is left in its current state —
         WQ-5 owns stale-run recovery. On the next :meth:`start`, any stale
         active row causes a 409; :meth:`cancel` then recovers it.
+
+        Guarantees after this returns:
+        - the worker subprocess has been waited on (``returncode`` is set);
+        - drain threads have been joined;
+        - ``proc.stdout`` / ``proc.stderr`` are closed.
+
+        Idempotent: safe to call multiple times.
         """
         proc = self._proc
-        if proc is None:
-            return
-        if proc.poll() is None:
-            logger.info("[pipeline] terminating worker subprocess (pid=%s)", proc.pid)
-            try:
-                proc.terminate()
-                proc.wait(timeout=5)
-            except subprocess.TimeoutExpired:
-                proc.kill()
-                proc.wait(timeout=5)
-            except OSError:
-                logger.warning("[pipeline] error terminating worker subprocess")
+        if proc is not None:
+            if proc.poll() is None:
+                logger.info("[pipeline] terminating worker subprocess (pid=%s)", proc.pid)
+                try:
+                    proc.terminate()
+                    proc.wait(timeout=5)
+                except subprocess.TimeoutExpired:
+                    proc.kill()
+                    try:
+                        proc.wait(timeout=5)
+                    except subprocess.TimeoutExpired:
+                        pass
+                except OSError:
+                    logger.warning("[pipeline] error terminating worker subprocess")
+            # Wait for the drain threads to finish. After the process exits,
+            # the pipes reach EOF and the drain threads exit on their own.
+            for thread in self._drain_threads:
+                if thread.is_alive():
+                    thread.join(timeout=5)
+            self._drain_threads.clear()
+            # Explicitly close the Popen pipes so __del__ cannot emit
+            # ResourceWarning. The drain threads already call stream.close()
+            # in their finally block, but this is a belt-and-braces safety net.
+            for attr in ("stdout", "stderr"):
+                stream = getattr(proc, attr, None)
+                if stream is not None and not stream.closed:
+                    try:
+                        stream.close()
+                    except OSError:
+                        pass
+            self._proc = None
 
     # ------------------------------------------------------------------
     # Helpers
@@ -302,6 +396,7 @@ class PipelineWorkerService:
                 name=f"pipeline-worker-drain-{id(stream)}",
             )
             thread.start()
+            self._drain_threads.append(thread)
 
     def _drain_stream(self, stream: Any, level: Any) -> None:
         """Read one subprocess stream line by line into the logger."""

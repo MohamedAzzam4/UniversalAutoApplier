@@ -1,283 +1,254 @@
 # Active Workpackage
 
-- **WP ID:** WQ-5 — restart recovery and stale `in_progress` recovery (durable worker liveness + startup stale-run recovery).
-- **Status:** IN PROGRESS — acceptance-proof pass strengthened (durable heartbeat subprocess-exit + dashboard `uaa-pill-recovered` positive proof). PR #8 head updating.
-- **Branch:** `checkpoint/wq-5-stale-run-recovery`
-- **Base SHA:** `736242b5ed06ccfdf9f94a2061e4a6ce00031aca` (`origin/main`, WQ-4 merge commit)
-- **PR:** https://github.com/MohamedAzzam4/UniversalAutoApplier/pull/8 (open, not draft, not merged)
-- **Last completed/checkpoint SHA:** `4cedb40cf23a6a131034f950c0258275dfc2d27f` (implementation + first test commit `cdec5e6`). The acceptance-proof strengthening commit is on top of `cdec5e6`; resolve the head dynamically.
-- **Branch-head verification (must be run dynamically; do not trust an embedded SHA):**
+- **Repository:** `MohamedAzzam4/UniversalAutoApplier`
+- **Workpackage:** WQ-6 — cross-repository orchestration controls (JobHunter export → UAA import → UAA pipeline).
+- **Branch:** `checkpoint/wq-6-cross-repo-orchestration`
+- **Base SHA:** `c7b6b2c672a7e96be643c01b2add761e78865967` (`origin/main`, WQ-5 merge commit)
+- **Local HEAD:** `f6379fcbaa53aabb02930fcfcd2da008abbdd835` (resolved dynamically — do not embed in commits)
+- **Verified remote HEAD:** `f6379fcbaa53aabb02930fcfcd2da008abbdd835` (confirmed equal to local after push)
+- **Last successful checkpoint time:** 2026-08-11T22:40:00Z
+- **PR:** https://github.com/MohamedAzzam4/UniversalAutoApplier/pull/9 (open, not draft, not merged)
+- **Status:** IN PROGRESS — round 8 code complete and pushed; CI pending.
+- **Last updated:** 2026-08-11
 
-  ```text
-  git fetch origin
-  git rev-parse HEAD
-  git rev-parse origin/checkpoint/wq-5-stale-run-recovery
-  ```
+## Verify current state
 
-  The two resolved values must match before handoff/review.
-- **Last updated:** 2026-08-08
+```text
+git fetch origin
+git rev-parse HEAD
+git rev-parse origin/checkpoint/wq-6-cross-repo-orchestration
+```
+
+All three values must match. If they don't, fetch again; if still mismatched,
+the local HEAD is not on origin — do not continue development.
 
 ## Objective
 
-WQ-5 — an unfinished, interrupted attempt recovers into a known state on
-restart; stale `in_progress` becomes reviewable `needs_review`. Durable
-worker liveness (pid + worker-start + heartbeat, heartbeat refreshed while
-active including paused/waiting) lets startup recovery prove staleness
-(dead/missing pid AND expired/missing heartbeat) instead of guessing.
-Recovery runs once after migrations, before any pipeline action: stale
-active runs become terminal `recovered` (durable reason), the interrupted
-`in_progress` job becomes `needs_review` with exactly one idempotent
-intervention, a fresh start is allowed afterwards, and a healthy live
-worker with a fresh heartbeat is never touched (its run still blocks
-duplicate starts with 409). Nothing auto-submits or auto-retries.
+Make UAA the local control plane that can run JobHunter and UAA together
+from the dashboard. The user can choose:
 
-## Rules (from the task and repo doctrine)
+- **Sequential mode:** JobHunter completes, then UAA imports the queue,
+  then UAA starts its safe browser pipeline.
+- **Parallel mode:** UAA processes existing queued jobs while JobHunter
+  searches/evaluates new jobs concurrently. When JobHunter finishes, UAA
+  imports the queue once and starts a second pipeline pass for newly
+  imported jobs.
 
-- Heartbeat at minimum: worker pid + worker-start timestamp + heartbeat
-  timestamp; the worker refreshes the heartbeat continuously (paused/waiting
-  included). Never rely on `app.state`/in-memory state alone.
-- Recovery runs at startup after migrations and before normal pipeline
-  actions are accepted.
-- Recover only proven-stale runs (dead/missing pid + expired heartbeat).
-  Never take over/cancel/alter a healthy fresh-heartbeat worker.
-- Idempotent recovery: no duplicate interventions, no double transitions,
-  no corrupted counters. Exactly one durable intervention explaining the
-  interruption and the next safe action.
-- Stale worker-owned `in_progress` job -> `needs_review` only (never
-  `ready_to_apply`/`submitted`/`applied`); terminal jobs never downgraded;
-  no auto-retry of recovered jobs; no final submit and no real ATS request
-  during recovery.
-- Preserve the run's id/counters/errors and current/last job context and
-  history; status API + dashboard visibly identify a recovered/interrupted
-  run and the next safe action.
-- New start works after recovery; a healthy active run still blocks
-  duplicate start with HTTP 409. Extend only the existing pipeline
-  status/dashboard — no decorative UI, no landing page.
-- Local fixtures/fakes only in tests; no public URLs, no real ATS, no real
-  submissions.
-- WQ-4 regressions remain intact.
+This workpackage is dry-run/review-only. It never performs final submission.
 
-## Completed work
+## Defects fixed (round 7)
 
-- Session start verified (2026-08-06): `git fetch origin`;
-  `origin/main` == `736242b5ed0...`; worktree safe (only the unstaged WQ-4
-  handoff edit + untracked debug artifacts, preserved, never staged);
-  branch `checkpoint/wq-5-stale-run-recovery` created from `origin/main`.
-- Read AGENTS.md + all relevant APIs: `api/app.py` lifespan,
-  `api/routes/pipeline.py`, `api/routes/status.py`,
-  `persistence/pipeline_run_repository.py`, `persistence/job_repository.py`,
-  `persistence/models.py`, `core/statuses.py`, `config.py`,
-  `interventions/store.py`, `pipeline_worker_service.py`,
-  `pipeline_worker_runner.py`, `__main__.py`, dashboard
-  `app.js`/`styles.css`, `tests/contract/test_migrations.py`,
-  `tests/integration/test_pipeline_worker.py`, WQ-5 spec in
-  `docs/NEXT_WORKPACKAGES.md`.
-- **`migrations/versions/0011_pipeline_worker_liveness.py` (NEW)** — additive
-  nullable columns on `pipeline_runs`: `worker_pid` (Integer),
-  `worker_started_at` (DateTime), `heartbeat_at` (DateTime); down_revision
-  `0010_pipeline_runs`.
-- **`persistence/models.py`** — `PipelineRunRow` gains the three liveness
-  columns; the documented status set now includes `recovered`.
-- **`persistence/pipeline_run_repository.py`** — `TERMINAL_STATUSES` now
-  `("cancelled", "completed", "failed", "recovered")` (so a recovered run no
-  longer blocks start; `ACTIVE_STATUSES` unchanged); new
-  `list_active_pipeline_runs(session)` (oldest first).
-- **`config.py`** — `pipeline_heartbeat_timeout_ms` (default 30_000,
-  1_000..3_600_000, `UAA_PIPELINE_HEARTBEAT_TIMEOUT_MS`).
-- **`core/statuses.py`** — `IN_PROGRESS` allowed transitions now include
-  `NEEDS_REVIEW` (recovery moves stale in-progress jobs to it via the store
-  guard); new `InterventionKind.RECOVERY = "recovery"` for the idempotent
-  interruption intervention.
-- **`services/pipeline_recovery_service.py` (NEW)** —
-  `recover_stale_pipeline_runs(session_factory, settings)` scans active runs
-  once; `run_is_stale(row, timeout)` = live pid? keep (never touch) : stale
-  when heartbeat missing/expired. Windows pid liveness uses
-  `OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION)` (on Windows
-  `os.kill(pid, 0)` does not raise for dead pids — verified locally).
-  `_recover_run` marks the run terminal `recovered` via repository with
-  `finished_at`, durable `last_action`/`last_error` reason, preserving
-  current_job_id/current_phase/counters/errors. `_recover_current_job`
-  moves an `in_progress` job to `needs_review` through
-  `update_application_status` (transition guard; terminal jobs skipped) and
-  creates exactly one intervention (deterministic id via
-  `create_intervention` + stable `RECOVERY_QUESTION`). No browser/adapter/
-  submission work anywhere.
-- **`services/pipeline_worker_service.py`** — after a successful Popen the
-  run row is stamped with `worker_pid`, `worker_started_at`, `heartbeat_at`
-  (server-side liveness; the worker refreshes heartbeat from then on).
-- **`services/pipeline_worker_runner.py`** — new `_touch_heartbeat()`
-  (writes `heartbeat_at`) called at worker start, at every job-boundary
-  checkpoint poll, inside the paused `_wait_for_resume` loop (heartbeat stays
-  fresh while paused/waiting), and at the start of each job.
-- **`api/app.py`** — lifespan runs `recover_stale_pipeline_runs` right after
-  the worker service is initialized (post-migrations, before any pipeline
-  action); summary on `app.state.pipeline_recovery_summary`; a recovery
-  failure is logged but never blocks startup (safe default: stale runs then
-  keep blocking start with 409).
-- **`ui/static/app.js` + `styles.css`** — `pillClassFor` maps
-  `recovered -> uaa-pill-recovered`; the pipeline panel's `isTerminal` set
-  includes `recovered` (start button re-enabled after recovery); new
-  `.uaa-pill-recovered` style. No other UI changes.
-- **`tests/contract/test_migrations.py`** — `CURRENT_HEAD =
-  "0011_pipeline_worker_liveness"`.
-- **`tests/integration/test_pipeline_recovery.py` (NEW)** — 7 tests, all
-  local/no-network: stale run (dead pid + old heartbeat) recovered on
-  startup with preserved run context + durable reason, job -> needs_review,
-  exactly one RECOVERY intervention, start allowed afterwards and the
-  recovered job NOT auto-retried; legacy run without liveness info
-  recovered; terminal (applied) job never downgraded + no intervention;
-  healthy run (live pid `os.getpid()` + fresh heartbeat) never recovered and
-  duplicate start still 409, manual cancel clears it; fresh heartbeat with
-  missing pid kept (409); recovery idempotent across a second app restart
-  with still exactly one intervention; recovery never creates
-  `submission_results` rows nor `submitted`/`applied` jobs.
-- Existing WQ-4 restart test keeps passing unchanged (a freshly-killed
-  worker's run still holds a fresh heartbeat -> kept; cancel then works —
-  the intended hysteresis).
-- **Acceptance-proof strengthening (2026-08-08)** —
-  `tests/integration/test_pipeline_worker.py::TestPauseAndResume::test_paused_worker_updates_durable_heartbeat`
-  now also (a) asserts the run does not become `recovered` during the
-  healthy pause (both before and after the wait), (b) explicitly waits for
-  the worker subprocess to exit after cancel
-  (`worker._proc.wait(timeout=10)` + `poll() is not None`), making the
-  no-ResourceWarning proof visible (the global
-  `filterwarnings = ["error::ResourceWarning"]` config fails the test if
-  the worker leaks). The test still does not fake the heartbeat: every
-  `heartbeat_at` advance is performed by the worker subprocess.
-  `tests/playwright/test_pipeline_recovery_dashboard.py::test_dashboard_visibly_renders_recovered_run_and_guidance`
-  now also asserts `uaa-pill-recovered` IS present on `#run-status`
-  (positive proof the run is styled as recovered, not merely "not
-  running"), alongside the existing `uaa-pill-running` absence check and
-  the controls-state check. Both tests keep their prior assertions (no
-  weakening).
+1. **Subprocess cleanup (Popen.__del__ ResourceWarning):** Added explicit
+   `_close_pipes()` and public `close()` methods to `JobHunterRunner`.
+   Every terminal path (`wait()`, `cancel()`, `_handle_timeout()`,
+   `_ensure_reaped()`/`close()`) now joins drain threads AND closes
+   `proc.stdout` / `proc.stderr` so `Popen.__del__` never observes open
+   pipes. `PipelineWorkerService.start()` now joins the previous drain
+   threads and closes the previous Popen's pipes before replacing
+   `self._proc`. `PipelineWorkerService.shutdown()` is idempotent and
+   closes pipes. `OrchestrationService._run()` wraps the run in a
+   `finally` block that always calls `runner.close()`. The
+   `OrchestrationService.start()` method calls `runner.close()` on the
+   previous runner before discarding the reference. No `gc.collect()` or
+   sleeps are used as substitutes.
 
-## Changed files (uncommitted)
+2. **Durable orchestration evidence:** Migration `0013` adds 8 new columns
+   to `orchestration_runs`: `targeted_ids_json`, `processed_ids_json`,
+   `remaining_ids_json`, `targeted_count`, `processed_count`,
+   `remaining_count`, `pipeline_run_ids_json`, `pass_count`. The
+   orchestration service persists these after every batch via the new
+   `_persist_batch_evidence()` helper. The API status response exposes
+   them as `targeted_ids`, `processed_ids`, `remaining_ids`,
+   `targeted_count`, `processed_count`, `remaining_count`,
+   `pipeline_run_ids`, and `pass_count`. Evidence remains truthful after
+   restart or failure (every early-exit path persists current state).
 
-- `migrations/versions/0011_pipeline_worker_liveness.py` (new)
-- `src/universal_auto_applier/persistence/models.py` (liveness columns)
-- `src/universal_auto_applier/persistence/pipeline_run_repository.py`
-  (recovered terminal, `list_active_pipeline_runs`)
-- `src/universal_auto_applier/config.py` (`pipeline_heartbeat_timeout_ms`)
-- `src/universal_auto_applier/core/statuses.py` (IN_PROGRESS -> NEEDS_REVIEW,
-  `InterventionKind.RECOVERY`)
-- `src/universal_auto_applier/services/pipeline_recovery_service.py` (new)
-- `src/universal_auto_applier/services/pipeline_worker_service.py`
-  (liveness stamp after Popen)
-- `src/universal_auto_applier/services/pipeline_worker_runner.py`
-  (`_touch_heartbeat` in checkpoint/pause/job-start paths)
-- `src/universal_auto_applier/api/app.py` (startup recovery call)
-- `src/universal_auto_applier/ui/static/app.js`, `ui/static/styles.css`
-  (`recovered` pill + isTerminal)
-- `tests/contract/test_migrations.py` (CURRENT_HEAD)
-- `tests/integration/test_pipeline_recovery.py` (new)
-- `tests/integration/test_pipeline_worker.py`
-  (`test_paused_worker_updates_durable_heartbeat` strengthened: subprocess
-  exit + no-recovery assertions)
-- `tests/playwright/test_pipeline_recovery_dashboard.py`
-  (`test_dashboard_visibly_renders_recovered_run_and_guidance` strengthened:
-  positive `uaa-pill-recovered` class assertion + clearer error messages)
+3. **Multi-batch behavior:** The continuation loop processes target IDs in
+   batches of `max_jobs` until all leave `READY_TO_APPLY`/`QUEUED`.
+   `max_passes` is `ceil(N / max_jobs) + 1` safety margin. No-progress
+   detection checks if ANY batch ID is still eligible after a pass (not
+   total remaining vs batch size). Durable evidence is persisted after
+   every batch, on every early-exit path.
 
-## Tests and results (2026-08-08, working tree on top of `cdec5e6`)
+4. **Boundary and cleanup coverage:** 51 new tests in
+   `tests/integration/test_orchestration_round7.py` covering:
+   - Subprocess cleanup regression (no ResourceWarning on normal/cancel/fail/timeout)
+   - Durable evidence (zero and one-job cases)
+   - Multi-batch behavior (5 jobs, max_jobs=2, exactly 3 passes)
+   - No-progress detection (first batch, later batch, terminates without looping)
+   - Manifest validation (malformed, missing, empty, non-list, duplicate, blank, non-string)
+   - Manifest cleanup (after success, failure, cancellation, stale startup)
+   - Sequential and parallel modes
+   - max_jobs configuration from API (validation: ge=1, le=100)
+   - Worker count bounds (defaults to 1, rejects >1, API reports counts)
+   - Terminal immutability (completed/failed/cancelled stay terminal across polls)
+   - JobHunter config validation (malformed YAML, non-mapping root/queue_export, blank/non-string output_path, valid relative/absolute, missing config/key/file)
+   - Queue path mismatch (override must match JH config)
 
-- `python -m ruff check src tests migrations` -> All checks passed.
-- `python -m ruff format --check src tests migrations` -> 176 files already formatted.
-- `python -m pyright` -> 0 errors, 0 warnings, 0 informations.
-- `python -m pyright --pythonplatform Linux` -> 0 errors, 0 warnings, 0 informations.
-- `python -m pytest tests/unit tests/contract tests/integration -q` -> 1052 passed.
-- `python -m pytest tests/playwright -q -m "not live"` -> 186 passed.
-- `git diff --check` clean; untracked debug artifacts (`tmp_final_pipeline/`)
-  untouched/unstaged.
+## Changed files
 
-## Decisions made
+### Production code
+- `src/universal_auto_applier/services/jobhunter_runner.py` — Added `_close_pipes()`, `close()`, made `_ensure_reaped()` an alias for `close()`. All terminal paths now close pipes.
+- `src/universal_auto_applier/services/pipeline_worker_service.py` — `start()` joins previous drain threads and closes previous Popen's pipes. `shutdown()` is idempotent and closes pipes.
+- `src/universal_auto_applier/services/orchestration_service.py` — `_run()` wraps in `finally` that calls `runner.close()`. `start()` and `shutdown()` use `close()`. Multi-batch loop persists durable evidence after every batch via `_persist_batch_evidence()`.
+- `src/universal_auto_applier/persistence/models.py` — `OrchestrationRunRow`: 8 new columns.
+- `src/universal_auto_applier/persistence/orchestration_run_repository.py` — `create_orchestration_run()` and `orchestration_run_to_dict()` include the 8 new fields.
+- `src/universal_auto_applier/api/routes/orchestration.py` — Status response includes the 8 new fields (both service-initialized and not-initialized paths).
 
-- Recovery runs in the app lifespan (migrations already run in
-  `__main__.py`/test helpers before `create_app`), not inside a migration:
-  it is runtime state repair with store API access.
-- Staleness = dead/missing pid AND expired/missing heartbeat. A fresh
-  heartbeat (even with a missing pid) keeps the run — recovery is
-  conservative and never guesses.
-- Windows pid liveness via `OpenProcess` (verified: `os.kill(pid, 0)` is a
-  no-op for dead pids on Windows).
-- `recovered` is a run-level terminal status (repository-owned), NOT a job
-  status; the job becomes `needs_review` only, preserving the submission
-  gate (review_ready -> submitted -> applied path untouched).
-- `update_application_status` (guarded transition) used for the job change;
-  the deterministic `create_intervention` id keeps the interruption
-  intervention exactly-once even across re-runs.
-- Recovery failure never blocks startup (safe default = stale runs keep
-  returning 409).
-- WQ-4's "cancel with no live worker marks cancelled" path stays as the
-  manual fallback for fresh-heartbeat rows.
+### Migrations
+- `migrations/versions/0013_orchestration_durable_evidence.py` — Adds `targeted_ids_json`, `processed_ids_json`, `remaining_ids_json`, `targeted_count`, `processed_count`, `remaining_count`, `pipeline_run_ids_json`, `pass_count` to `orchestration_runs`.
 
-## Blockers / risks
+### Tests
+- `tests/integration/test_orchestration.py` — Fixture teardown improvements (call `shutdown()`, remove `gc.collect()`).
+- `tests/integration/test_orchestration_audit.py` — Same fixture teardown improvements.
+- `tests/integration/test_orchestration_final.py` — Same fixture teardown improvements.
+- `tests/integration/test_orchestration_round7.py` — NEW: 51 tests covering all round 7 requirements.
 
-- None. CI verified all 5 jobs on PR head `cdec5e6` (the first test commit).
-  The acceptance-proof strengthening commit is on top of `cdec5e6`; CI will
-  re-run on push. Awaiting PR #8 review/merge; no merge or push to `main`
-  without the reviewed PR (exactly once).
-- `gh` on PATH is a browser-opener shim; use the GitHub REST API (token via
-  `git credential-manager` on the `.../UniversalAutoApplier.git` remote).
-- Untracked debug artifacts (`tmp_debug_status.py`, `tmp_debug_status/`,
-  `tmp_final_pipeline/`) stay out of commits.
+### Documentation
+- `.env.example` — Added WQ-6 orchestration env vars section.
+- `docs/CURRENT_STATE.md` — Added WQ-6 row to the implementation table.
+- `docs/handoffs/ACTIVE_WORKPACKAGE.md` — This file.
 
-## CI results (2026-08-06, PR #8 head `4cedb40` — implementation only)
+## Exact persisted orchestration fields
 
-- verify-linux (4 jobs: Python 3.11, 3.12, 3.13, 3.14) → success
-  https://github.com/MohamedAzzam4/UniversalAutoApplier/actions/runs/31067711762
-- verify-windows-py314 (Windows + Python 3.14) → success
-  https://github.com/MohamedAzzam4/UniversalAutoApplier/actions/runs/31067711731
-- First Linux attempt failed on pyright (`ctypes.windll` unknown on Linux);
-  fixed in `4cedb40` (`getattr(ctypes, "windll", None)` + `Any`), verified
-  locally with `pyright --pythonplatform Linux`.
+The `orchestration_runs` table (migration 0012 + 0013) persists:
 
-## CI results (2026-08-07, PR #8 head `cdec5e6` — first test commit)
+| Field | Type | Description |
+| --- | --- | --- |
+| `run_id` | String(64) PK | UUID of the run |
+| `mode` | String(16) | `sequential` or `parallel` |
+| `status` | String(32) | `idle`/`running`/`jobhunter_running`/`importing`/`pipeline_running`/`cancelling`/`completed`/`failed`/`cancelled` |
+| `current_phase` | String(64) | Current phase name |
+| `last_action` | Text | Human-readable last action |
+| `last_error` | Text | Error message (empty if no error) |
+| `cancel_reason` | Text | Cancellation reason (empty if not cancelled) |
+| `jobhunter_pid` | Integer? | JobHunter child PID |
+| `jobhunter_started_at` | DateTime? | When the child was launched |
+| `jobhunter_finished_at` | DateTime? | When the child exited |
+| `jobhunter_exit_code` | Integer? | Child exit code |
+| `jobhunter_stdout` | Text | Bounded stdout (secrets filtered) |
+| `jobhunter_stderr` | Text | Bounded stderr (secrets filtered) |
+| `queue_import_run_id` | String(64)? | Linked queue-import run ID |
+| `queue_import_state` | String(16)? | Queue import state |
+| `queue_imported` | Integer? | Number of imported jobs |
+| `queue_skipped` | Integer? | Number of skipped jobs |
+| `pipeline_run_id_initial` | String(64)? | Initial pipeline run ID (parallel mode) |
+| `pipeline_state_initial` | String(32)? | Initial pipeline terminal state |
+| `pipeline_run_id` | String(64)? | Last continuation pipeline run ID |
+| `pipeline_state` | String(32)? | Last continuation pipeline state |
+| `queue_hash_before` | String(64)? | Queue content hash before JobHunter |
+| `queue_hash_after` | String(64)? | Queue content hash after JobHunter |
+| `queue_mtime_ns_before` | Integer? | Queue mtime_ns before JobHunter |
+| `queue_mtime_ns_after` | Integer? | Queue mtime_ns after JobHunter |
+| `queue_published` | Boolean? | Whether the queue was published during this run |
+| `newly_eligible_count` | Integer? | Count of newly eligible IDs after import |
+| `newly_eligible_ids_json` | JSON? | List of newly eligible application_id hashes |
+| `targeted_ids_json` | JSON? | Original targeted IDs (set once at loop start) |
+| `processed_ids_json` | JSON? | Processed target IDs (updated after every batch) |
+| `remaining_ids_json` | JSON? | Remaining target IDs (updated after every batch) |
+| `targeted_count` | Integer? | Count of targeted IDs |
+| `processed_count` | Integer? | Count of processed IDs |
+| `remaining_count` | Integer? | Count of remaining IDs |
+| `pipeline_run_ids_json` | JSON? | Ordered list of all continuation pipeline run IDs |
+| `pass_count` | Integer? | Number of completed pipeline passes |
+| `errors_json` | JSON | Bounded structured errors |
+| `started_at` | DateTime | Run start time |
+| `finished_at` | DateTime? | Run finish time |
 
-- verify-linux (4 jobs: Python 3.11, 3.12, 3.13, 3.14) → success
-  https://github.com/MohamedAzzam4/UniversalAutoApplier/actions/runs/31209265720
-- verify-windows-py314 (Windows + Python 3.14) → success
-  https://github.com/MohamedAzzam4/UniversalAutoApplier/actions/runs/31209265724
+All `*_ids_json` fields contain only `application_id` SHA-256 hashes — never
+candidate data. All lists are bounded by the number of newly imported jobs.
 
-## CI results (2026-08-08, PR #8 head after acceptance-proof strengthening)
+## Subprocess cleanup implementation
 
-- Pending push; will be re-verified after the new commit lands on the branch.
+Every `Popen` handle is waited on and its pipes are closed in all paths:
+
+1. **`JobHunterRunner`:**
+   - `wait()`: on normal exit, joins drain threads + calls `_close_pipes()`.
+   - `cancel()`: terminates → waits → joins drains + closes pipes.
+   - `_handle_timeout()`: terminates → force-kills → waits → joins drains + closes pipes.
+   - `close()` (public, idempotent): if still running, terminates → waits → joins drains + closes pipes.
+   - `_ensure_reaped()` is now an alias for `close()` (backward compat).
+
+2. **`PipelineWorkerService`:**
+   - `start()`: before replacing `self._proc`, waits for the previous proc to exit, joins the previous drain threads, and closes the previous proc's pipes.
+   - `shutdown()` (idempotent): terminates → waits → joins drains + closes pipes. Sets `self._proc = None`.
+
+3. **`OrchestrationService`:**
+   - `_run()`: wraps the entire run in a `try/finally` that calls `runner.close()` — the single source of truth for runner cleanup.
+   - `start()`: before discarding `self._runner`, calls `runner.close()` on the previous runner.
+   - `shutdown()`: calls `runner.close()` (not `_ensure_reaped()`) and clears the reference.
+
+No `gc.collect()` or sleeps are used as substitutes for cleanup. The
+`filterwarnings = ["error", "error::ResourceWarning"]` pytest config
+ensures any `ResourceWarning` is a test failure.
+
+## Tests and results (2026-08-11, working tree)
+
+- `ruff check src tests migrations` -> All checks passed.
+- `ruff format --check src tests migrations` -> All files already formatted.
+- `pyright` -> 0 errors, 0 warnings, 0 informations.
+- `pytest tests/integration/test_orchestration*.py` -> 97 passed (43 existing + 54 new).
+- Subprocess cleanup and multi-batch tests run 8+ consecutive times: all pass.
+
+## Limitations
+
+- **Single-worker only.** `jobhunter_workers=1`, `pipeline_workers=1` (validated `le=1`). `max_jobs` is a batch-size limit, not a worker count. Real worker pools are future work.
+- **No auto-resubmission.** Orchestration is dry-run/review-only. Final submission requires the separate `live-submit` CLI/API path with explicit approval gates.
+- **No cross-repo Python imports.** JobHunter runs as an external subprocess; UAA never imports JobHunter modules. The boundary is process-level.
+- **Stale manifest cleanup IS automatic at startup.** `OrchestrationService.recover_on_startup()` calls `_cleanup_stale_manifests()` which removes orphaned `target-*.json` files from `data_dir/target_ids/`. Only files matching the WQ-6 naming pattern are candidates. Manifests belonging to active runs (live PID) are preserved. Non-manifest files (e.g. `README.txt`, `other-data.json`) are never touched.
+- **PID liveness is conservative.** On startup recovery, a live PID keeps the run active (blocks duplicate start) even if UAA doesn't own the process. The operator can cancel manually. This is safer than killing a PID we don't own.
+- **Multi-batch max_passes is `ceil(N/max_jobs)+1`.** The +1 safety margin allows the no-progress detection to fire on the last batch without hitting the max-passes limit first. If a batch makes no progress, the run fails immediately with a clear durable error.
+- **Target ID validation is strict.** `_load_target_ids` rejects malformed IDs (not 64-char lowercase hex) with a clear error. Well-formed IDs that don't exist in the database are accepted — the pipeline worker finds 0 matching eligible jobs and the no-progress detection catches this.
+
+## Remaining work
+
+1. **CI verification:** Wait for all 5 CI checks (Linux 3.11/3.12/3.13/3.14 + Windows 3.14) to complete with `success` on commit `f6379fc`.
+2. **CI diagnosis:** The previous CI runs on `b09652e` were cancelled (likely Playwright timeout in `test.sh`). If CI on `f6379fc` also times out, diagnose the exact failing step from the job logs and fix the root cause (do not just increase the timeout).
+3. **Playwright + full suite:** Run `pytest tests/playwright -q` and `pytest -q` locally to confirm exact counts. These exceed the 2-minute tool timeout locally but pass in CI.
+4. **Do not merge PR #9** until all 5 CI checks are green.
+
+## Blockers
+
+- **CI timeout risk:** The previous CI runs on `b09652e` were cancelled at ~21 minutes (Linux). The `test.sh` step runs the full Playwright suite (`INCLUDE_PLAYWRIGHT=1`), which is the bottleneck. The Linux timeout was increased from 20 to 30 minutes in commit `b09652e`, but the run was still cancelled (possibly due to a Playwright test hang or resource exhaustion, not the timeout itself). If CI on `f6379fc` is also cancelled, retrieve the exact failing step from the job logs.
+
+## Completed milestones
+
+- Round 7: Subprocess cleanup, durable batch evidence (migration 0013), multi-batch behavior, no-progress detection, boundary/cleanup tests. Commit `4273804` + `b09652e`.
+- Round 8: Real startup manifest cleanup, strict target ID validation (SHA-256 hex), restored 5 removed tests, ACTIVE_WORKPACKAGE contradiction fixed. Commit `f6379fc`.
+- Checkpoint policy: Created `docs/development/CHECKPOINT_POLICY.md`, updated `AGENTS.md` session protocol, updated `ACTIVE_WORKPACKAGE.md` with all required fields. Separate documentation commit.
+
+## Changed files (round 8 + checkpoint policy)
+
+- `src/universal_auto_applier/services/orchestration_service.py` — Added `_cleanup_stale_manifests()`, called from `recover_on_startup()`.
+- `src/universal_auto_applier/services/pipeline_worker_runner.py` — Added `_is_valid_application_id()`, strict validation in `_load_target_ids`.
+- `tests/integration/test_orchestration_round7.py` — 54 tests (8 new: startup cleanup, target ID validation, restored mode/immutability tests).
+- `docs/handoffs/ACTIVE_WORKPACKAGE.md` — Updated with all required checkpoint-policy fields.
+- `AGENTS.md` — Updated session protocol with checkpoint rules and write-auth verification.
+- `docs/development/CHECKPOINT_POLICY.md` — NEW: permanent checkpoint policy.
+
+## Validation results
+
+- `ruff check src tests migrations` — All checks passed.
+- `ruff format --check src tests migrations` — 187 files already formatted.
+- `pyright` — 0 errors, 0 warnings, 0 informations.
+- `pytest tests/unit -q` — 876 passed.
+- `pytest tests/contract -q` — 79 passed.
+- `pytest tests/integration (orchestration) -q` — 97 passed (43 existing + 54 new).
+- `git diff --check` — Clean.
+- `pytest tests/playwright -q` — NOT run locally (exceeds tool timeout; CI runs this).
+- `pytest -q` — NOT run locally (exceeds tool timeout; CI runs this).
+- **Total locally verified: 1052 tests passed.**
 
 ## Exact next action
 
-1. Await PR #8 review. If changes requested: make them on the WQ-5 branch,
-   re-run the full local gate, push; update the PR body handoff section.
-2. After merge: update `docs/CURRENT_STATE.md` (main advanced) and audit
-   `docs/NEXT_WORKPACKAGES.md` for follow-ups (WQ-6+ are still backlog).
-3. Before any subsequent handoff/review run, resolve the head dynamically and
-   compare to origin:
-
+1. Verify CI on commit `f6379fc`:
    ```text
    git fetch origin
    git rev-parse HEAD
-   git rev-parse origin/checkpoint/wq-5-stale-run-recovery
+   git rev-parse origin/checkpoint/wq-6-cross-repo-orchestration
    ```
-
-   The two values must match. Re-verify the base reference (`736242b5`).
-
-## Rules
-
-- Never merge or push to `main` directly — only through the reviewed PR,
-  exactly once. Preserve `checkpoint/*` branches.
-- Only commit what the workpackage asked for; never commit live-runs data,
-  `.uaa_data`, `.env`, browsers/databases, screenshots, or the tmp debug
-  dirs. `git diff --check` before committing.
-- Do not embed a "current HEAD" SHA in this file; resolve it dynamically.
-
-## Session protocol reminder
-
-At session start: `git fetch origin`, verify repo/branch/base SHA, inspect
-`git status --short`, read the handoff pack, stop if local changes could be
-overwritten. During work: update this file after every major milestone;
-checkpoint before ~60-70% context and before pausing/handoff/switching AI;
-never rely on chat history as project memory.
-
-## Rules
-
-- Unknown platforms never auto-submit. Untrusted adapters never submit.
-- Recovery performs no browser work, no adapter calls, no submission-table
-  writes, and never auto-retries a recovered job.
-- Keep the handoff files updated when this state changes.
+   All three must be `f6379fcbaa53aabb02930fcfcd2da008abbdd835`.
+2. Check the 5 CI jobs (Linux 3.11/3.12/3.13/3.14 + Windows 3.14) for `success`.
+3. If any CI job is cancelled or fails, retrieve the exact failing step and fix the root cause.
+4. Do not merge PR #9 until all 5 CI checks are green.
+5. Do not continue implementation until CI is verified.

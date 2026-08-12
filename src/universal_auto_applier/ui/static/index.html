@@ -85,6 +85,44 @@
         </div>
 
         <div class="uaa-card">
+          <h2>Cross-Repository Orchestration</h2>
+          <div class="uaa-status-grid">
+            <div class="uaa-stat">
+              <span class="uaa-stat-label">Orchestration Status</span>
+              <span id="orchestration-status" class="uaa-pill uaa-pill-idle">idle</span>
+            </div>
+            <div class="uaa-stat">
+              <span class="uaa-stat-label">Mode</span>
+              <select id="orchestration-mode" class="uaa-input">
+                <option value="sequential">Sequential</option>
+                <option value="parallel">Parallel</option>
+              </select>
+            </div>
+            <div class="uaa-stat">
+              <span class="uaa-stat-label">JobHunter</span>
+              <span id="orchestration-jobhunter-state" class="uaa-stat-label">—</span>
+            </div>
+            <div class="uaa-stat">
+              <span class="uaa-stat-label">Queue Import</span>
+              <span id="orchestration-queue-import" class="uaa-stat-label">—</span>
+            </div>
+          </div>
+          <div class="uaa-pipeline-controls">
+            <button id="orchestration-start" class="uaa-btn uaa-btn-success">Start Orchestration</button>
+            <button id="orchestration-cancel" class="uaa-btn uaa-btn-danger" disabled>Cancel</button>
+          </div>
+          <div class="uaa-pipeline-progress" style="margin-top: 0.5rem;">
+            <span id="orchestration-phase" class="uaa-stat-label"></span>
+            <span id="orchestration-last-action" class="uaa-stat-label"></span>
+            <span id="orchestration-last-error" class="uaa-stat-label" style="color: var(--uaa-danger);"></span>
+          </div>
+          <p class="uaa-safety-note">
+            Runs JobHunter export &rarr; UAA queue import &rarr; UAA dry-run pipeline.
+            No final submissions. JobHunter runs as an external subprocess.
+          </p>
+        </div>
+
+        <div class="uaa-card">
           <h2>System Health</h2>
           <ul id="component-list" class="uaa-component-list">
             <li>Loading...</li>

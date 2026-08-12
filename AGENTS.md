@@ -87,9 +87,12 @@ submit with review-before-submit, and records evidence and history.
 
 ### At session start
 
-1. `git fetch origin`.
-2. Verify the repository and the current branch.
-3. Resolve the branch head dynamically (never trust an embedded SHA for the
+1. **Read first:** `AGENTS.md`, `docs/development/CHECKPOINT_POLICY.md`,
+   and `docs/handoffs/ACTIVE_WORKPACKAGE.md`. These three documents define
+   the working contract, checkpoint rules, and git-safety policy.
+2. `git fetch origin`.
+3. Verify the repository and the current branch.
+4. Resolve the branch head dynamically (never trust an embedded SHA for the
    current HEAD; committing changes the SHA, so a file cannot self-report
    the commit that contains it):
 
@@ -102,24 +105,42 @@ submit with review-before-submit, and records evidence and history.
    **base SHA** and the **last completed/checkpoint SHA** from
    `docs/CURRENT_STATE.md` / `docs/handoffs/ACTIVE_WORKPACKAGE.md` against
    the resolved values; they are reference points, not the current HEAD.
-4. Inspect `git status --short` before any checkout or reset.
-5. Read, in order: `AGENTS.md`, `docs/CURRENT_STATE.md`,
+5. Inspect `git status --short` before any checkout or reset.
+6. Read, in order: `docs/CURRENT_STATE.md`,
    `docs/handoffs/ACTIVE_WORKPACKAGE.md`, `docs/NEXT_WORKPACKAGES.md`,
    `docs/generalization/IMPLEMENTATION_RULES.md`,
    `docs/generalization/TESTING_STRATEGY.md`.
-6. **Stop immediately** if any local changes could be overwritten; do not
+7. **Verify GitHub write authentication BEFORE making any code changes.**
+   Public read access (fetch/clone) does NOT prove push access. Test with
+   `git push --dry-run origin <branch>`. If it fails, **stop before
+   editing** and request a PAT. Do not begin implementation.
+8. **Stop immediately** if any local changes could be overwritten; do not
    `checkout`/`stash`/`reset` over them without explicit instruction.
 
-### During work
+### During work (checkpoint rule)
 
+- **Work is not considered preserved until its commit exists on origin.**
+  A local-only commit can be lost instantly if the sandbox is reset.
+- **Commit and push after every completed milestone.**
+- **Commit and push before a pause, handoff, restart, risky operation, or
+  expected context reset.**
+- **Commit and push when context usage approaches 60%.** Do not wait.
+- **After every push, verify local HEAD equals origin checkpoint HEAD:**
+  ```text
+  git rev-parse HEAD
+  git rev-parse origin/<branch>
+  ```
+  Record both full SHAs in `docs/handoffs/ACTIVE_WORKPACKAGE.md`.
+- **If push fails, stop substantial development immediately.** Resolve
+  the auth issue first (request a PAT), push, verify, then continue.
 - Update `docs/handoffs/ACTIVE_WORKPACKAGE.md` after every major milestone
   (status, completed work, changed files, tests and exact results,
   decisions, blockers, next action).
-- **Checkpoint before context reaches approximately 60-70 percent.**
-  Persist progress and commit before continuing.
-- Checkpoint before pausing, handing off, or switching AI.
 - **Never rely on chat history as project memory.** The documents are the
   memory.
+
+See `docs/development/CHECKPOINT_POLICY.md` for the full policy including
+the temporary credential helper pattern for pushing with a PAT.
 
 ## Commands
 

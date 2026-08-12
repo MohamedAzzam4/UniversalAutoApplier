@@ -115,6 +115,7 @@ class PipelineWorkerRunner:
         max_jobs: int,
         fixture_file: Path | None = None,
         job_pulse_ms: int,
+        target_application_ids: list[str] | None = None,
     ) -> None:
         self.settings = settings
         self.session_factory = session_factory
@@ -122,6 +123,11 @@ class PipelineWorkerRunner:
         self.max_jobs = max(1, max_jobs)
         self.fixture_file = fixture_file
         self.job_pulse_ms = max(0, job_pulse_ms)
+        # An empty list means "no targeting" (unrestricted). A non-empty list
+        # means "only process these IDs". None is treated as empty.
+        self.target_application_ids: set[str] = (
+            set(target_application_ids) if target_application_ids else set()
+        )
         self.mode = "fixture" if fixture_file is not None else "live"
         self._orchestrator: Any | None = None
         self._live_runner: LiveBrowserRunner | None = None
@@ -180,7 +186,13 @@ class PipelineWorkerRunner:
                 ApplicationStatus.READY_TO_APPLY.value,
                 ApplicationStatus.QUEUED.value,
             )
-        ][: self.max_jobs]
+        ]
+        # If target_application_ids is set (non-empty), restrict to only those IDs.
+        if self.target_application_ids:
+            eligible = [
+                job for job in eligible if job.application_id in self.target_application_ids
+            ]
+        eligible = eligible[: self.max_jobs]
 
         self._update(
             jobs_total=len(eligible),
@@ -467,7 +479,126 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--max-jobs", type=int, default=10)
     parser.add_argument("--fixture-file", type=Path, default=None)
     parser.add_argument("--job-pulse-ms", type=int, default=0)
+    parser.add_argument(
+        "--target-ids-file",
+        type=Path,
+        default=None,
+        help="JSON file containing a list of application IDs to restrict this run to.",
+    )
     return parser.parse_args(argv)
+
+
+def _is_valid_application_id(value: str) -> bool:
+    """Return True if ``value`` matches the ApplicationJob identity contract.
+
+    Per ``core/identity.py``, ``application_id`` is always a lowercase
+    SHA-256 hexdigest: exactly 64 characters from ``[0-9a-f]``.
+
+    This validation is intentionally strict: a malformed ID is a programming
+    error (the caller passed garbage), not a "not found" condition. Malformed
+    IDs are rejected with a clear error rather than silently treated as
+    "not found in the database."
+    """
+    if len(value) != 64:
+        return False
+    return all(c in "0123456789abcdef" for c in value)
+
+
+def _load_target_ids(target_ids_file: Path | None) -> list[str]:
+    """Load and validate target application IDs from a manifest file.
+
+    If ``target_ids_file`` is None, returns an empty list (no targeting).
+
+    If the file is supplied, it MUST exist, be valid JSON, and contain a
+    non-empty list of unique non-blank strings. Each string MUST be a valid
+    ApplicationJob identity (lowercase SHA-256 hexdigest, 64 chars).
+
+    Any failure raises ``RuntimeError`` — the caller must fail the pipeline
+    rather than falling back to unrestricted processing. Malformed IDs are
+    rejected with a clear error; they are NOT silently treated as "not found
+    in the database." Well-formed IDs that simply don't exist in the database
+    are accepted here (the pipeline worker will find zero matching eligible
+    jobs and complete with 0 processed — the orchestration's no-progress
+    detection then catches this).
+    """
+    if target_ids_file is None:
+        return []
+
+    if not target_ids_file.exists():
+        raise RuntimeError(
+            f"Target IDs file not found: {target_ids_file}. "
+            "Pipeline cannot start in targeted mode with a missing manifest."
+        )
+
+    import json as _json
+
+    try:
+        raw = target_ids_file.read_text(encoding="utf-8")
+    except OSError as exc:
+        raise RuntimeError(f"Cannot read target IDs file {target_ids_file}: {exc}") from exc
+
+    try:
+        data: Any = _json.loads(raw)
+    except ValueError as exc:
+        raise RuntimeError(
+            f"Target IDs file {target_ids_file} contains invalid JSON: {exc}"
+        ) from exc
+
+    if not isinstance(data, list):
+        raise RuntimeError(
+            f"Target IDs file {target_ids_file} must contain a JSON list, got {type(data).__name__}"
+        )
+
+    data_list: list[Any] = data  # type: ignore[assignment]
+
+    if len(data_list) == 0:
+        raise RuntimeError(
+            f"Target IDs file {target_ids_file} contains an empty list. "
+            "Pipeline cannot start in targeted mode with zero target IDs."
+        )
+
+    # Validate each entry: must be a non-blank string matching the
+    # ApplicationJob identity contract (lowercase SHA-256 hexdigest, 64 chars).
+    seen: set[str] = set()
+    result: list[str] = []
+    for i, entry in enumerate(data_list):
+        if not isinstance(entry, str):
+            raise RuntimeError(
+                f"Target IDs file {target_ids_file} entry {i} is not a string: "
+                f"got {type(entry).__name__} ({entry!r})"
+            )
+        stripped: str = entry.strip()
+        if not stripped:
+            raise RuntimeError(f"Target IDs file {target_ids_file} entry {i} is a blank string")
+        if not _is_valid_application_id(stripped):
+            raise RuntimeError(
+                f"Target IDs file {target_ids_file} entry {i} is not a valid "
+                f"ApplicationJob identity (expected 64-char lowercase SHA-256 "
+                f"hexdigest, got {stripped!r} with length {len(stripped)}). "
+                f"Malformed IDs are rejected — do not pass arbitrary strings."
+            )
+        if stripped in seen:
+            raise RuntimeError(
+                f"Target IDs file {target_ids_file} contains duplicate ID: {stripped}"
+            )
+        seen.add(stripped)
+        result.append(stripped)
+
+    return result
+
+
+def _cleanup_target_manifest(target_ids_file: Path | None) -> None:
+    """Delete the target manifest file after the worker has read it.
+
+    Best-effort: logs a warning on failure but never raises.
+    """
+    if target_ids_file is None:
+        return
+    try:
+        if target_ids_file.exists():
+            target_ids_file.unlink()
+    except OSError:
+        logger.warning("could not delete target manifest %s", target_ids_file)
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -476,6 +607,37 @@ def main(argv: list[str] | None = None) -> int:
     settings = load_settings().model_copy(update={"data_dir": args.data_dir})
     engine = make_engine(build_engine_url(args.data_dir / "uaa.sqlite"))
     factory = make_session_factory(engine)
+
+    # Load and validate target application IDs if a target file was provided.
+    # This fails closed: any malformed manifest raises RuntimeError.
+    target_ids: list[str] = []
+    if args.target_ids_file is not None:
+        try:
+            target_ids = _load_target_ids(args.target_ids_file)
+        except RuntimeError:
+            # Mark the run failed and exit with nonzero code.
+            logger.exception("target manifest validation failed")
+            try:
+                from universal_auto_applier.persistence.db import session_scope as _ss
+                from universal_auto_applier.persistence.pipeline_run_repository import (
+                    mark_pipeline_run_terminal as _mark,
+                )
+
+                with _ss(factory) as session:
+                    _mark(
+                        session,
+                        args.run_id,
+                        status="failed",
+                        last_action="Target manifest validation failed",
+                        last_error="Target manifest was missing, unreadable, or malformed",
+                    )
+            except Exception:  # noqa: BLE001
+                pass
+            engine.dispose()
+            return 3
+        # Clean up the manifest after successful read.
+        _cleanup_target_manifest(args.target_ids_file)
+
     try:
         runner = PipelineWorkerRunner(
             settings=settings,
@@ -484,6 +646,7 @@ def main(argv: list[str] | None = None) -> int:
             max_jobs=args.max_jobs,
             fixture_file=args.fixture_file,
             job_pulse_ms=args.job_pulse_ms,
+            target_application_ids=target_ids,
         )
         return runner.run()
     finally:

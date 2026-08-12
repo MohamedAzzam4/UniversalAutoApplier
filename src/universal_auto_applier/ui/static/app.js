@@ -318,6 +318,92 @@
     }
   });
 
+  // ---- Cross-Repository Orchestration (WQ-6) ----
+  async function loadOrchestrationStatus() {
+    try {
+      const data = await fetchJSON("/api/orchestration/status");
+      const statusEl = document.getElementById("orchestration-status");
+      const modeEl = document.getElementById("orchestration-mode");
+      const jhEl = document.getElementById("orchestration-jobhunter-state");
+      const qiEl = document.getElementById("orchestration-queue-import");
+      const phaseEl = document.getElementById("orchestration-phase");
+      const actionEl = document.getElementById("orchestration-last-action");
+      const errorEl = document.getElementById("orchestration-last-error");
+      const startBtn = document.getElementById("orchestration-start");
+      const cancelBtn = document.getElementById("orchestration-cancel");
+
+      if (statusEl) {
+        statusEl.textContent = data.status || "idle";
+        statusEl.className = pillClassFor(data.status);
+      }
+      // Only set the mode dropdown from server state if the user is not
+      // actively selecting (avoid clobbering during interaction).
+      if (modeEl && document.activeElement !== modeEl) {
+        modeEl.value = data.mode || "sequential";
+      }
+      if (jhEl) {
+        let jhText = "—";
+        if (data.jobhunter_pid != null) {
+          jhText = `pid=${data.jobhunter_pid}`;
+          if (data.jobhunter_exit_code != null) {
+            jhText += ` (exit ${data.jobhunter_exit_code})`;
+          }
+        }
+        jhEl.textContent = jhText;
+      }
+      if (qiEl) {
+        let qiText = "—";
+        if (data.queue_import_state) {
+          qiText = `${data.queue_import_state}`;
+          if (data.queue_imported != null) {
+            qiText += ` (${data.queue_imported} imported`;
+            if (data.queue_skipped != null && data.queue_skipped > 0) {
+              qiText += `, ${data.queue_skipped} skipped`;
+            }
+            qiText += `)`;
+          }
+        }
+        qiEl.textContent = qiText;
+      }
+      if (phaseEl) phaseEl.textContent = data.current_phase ? "Phase: " + data.current_phase : "";
+      if (actionEl) actionEl.textContent = data.last_action ? "Action: " + data.last_action : "";
+      if (errorEl) errorEl.textContent = data.last_error ? "Error: " + data.last_error : "";
+
+      const isActive = ["running", "jobhunter_running", "importing", "pipeline_running", "cancelling"].includes(
+        data.status,
+      );
+      if (startBtn) startBtn.disabled = isActive;
+      if (cancelBtn) cancelBtn.disabled = !isActive;
+    } catch (err) {
+      console.error("[UAA] orchestration status failed", err);
+    }
+  }
+
+  document.getElementById("orchestration-start")?.addEventListener("click", async () => {
+    const modeEl = document.getElementById("orchestration-mode");
+    const mode = modeEl ? modeEl.value : "sequential";
+    try {
+      await postJSON("/api/orchestration/start", { mode: mode, fixture_html: null, max_jobs: 10 });
+      loadOrchestrationStatus();
+    } catch (err) {
+      alert("Orchestration start failed: " + err.message);
+    }
+  });
+
+  document.getElementById("orchestration-cancel")?.addEventListener("click", async () => {
+    if (!confirm("Cancel the orchestration run? JobHunter and the pipeline will be stopped safely.")) return;
+    try {
+      await postJSON("/api/orchestration/cancel", {});
+      loadOrchestrationStatus();
+    } catch (err) {
+      alert("Orchestration cancel failed: " + err.message);
+    }
+  });
+
+  // Poll orchestration status alongside the dashboard poll.
+  setInterval(loadOrchestrationStatus, POLL_INTERVAL_MS);
+  loadOrchestrationStatus();
+
   // ---- Queue ----
   async function loadQueue() {
     try {

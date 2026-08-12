@@ -168,9 +168,20 @@ def test_dashboard_visibly_renders_recovered_run_and_guidance(tmp_path: Path, pa
         page.goto(server_url)
 
         # 1. Pipeline status visibly renders "recovered".
+        # The dashboard JS polls /api/pipeline/status on an interval. On the
+        # first poll, the recovery may not have committed yet. Wait for the
+        # JS to render the recovered state instead of checking once.
         page.wait_for_selector("#run-status", timeout=10_000)
         run_status_el = page.locator("#run-status")
-        run_status_text = run_status_el.inner_text()
+        # Poll until the status becomes "recovered" (recovery is synchronous
+        # in the lifespan, but the dashboard JS poll may not have fired yet).
+        deadline = time.time() + 15.0
+        run_status_text = ""
+        while time.time() < deadline:
+            run_status_text = run_status_el.inner_text()
+            if "recovered" in run_status_text.lower():
+                break
+            time.sleep(0.5)
         assert "recovered" in run_status_text.lower(), (
             f"expected #run-status to render 'recovered', got {run_status_text!r}"
         )

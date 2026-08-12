@@ -1,0 +1,1517 @@
+"""Cross-repository orchestration service (WQ-6).
+
+Coordinates JobHunter export -> UAA queue import -> UAA pipeline in either
+sequential or parallel mode. The service owns the durable
+:class:`OrchestrationRunRow`, the :class:`JobHunterRunner` subprocess, and
+the link to the existing :class:`PipelineWorkerService`.
+
+Safety:
+- Only one active orchestration run may exist (in-process lock + DB status).
+- Duplicate start returns HTTP 409.
+- Cancellation requests UAA pipeline cancellation safely and terminates only
+  the owned JobHunter child process (graceful first, forced only after grace).
+- Never kills a process based solely on an unverified stale PID.
+- Never performs final submission. The UAA pipeline is dry-run/review-only.
+- Never imports JobHunter Python modules. The boundary is process-level.
+- Never places tokens, API keys, CV data, or candidate data in logs or args.
+"""
+
+from __future__ import annotations
+
+import logging
+import threading
+import uuid
+from datetime import UTC, datetime
+from pathlib import Path
+from typing import Any
+
+from universal_auto_applier.config import Settings
+from universal_auto_applier.persistence.db import session_scope
+from universal_auto_applier.persistence.orchestration_run_repository import (
+    ACTIVE_STATUSES,
+    create_orchestration_run,
+    get_active_orchestration_run,
+    get_latest_orchestration_run,
+    list_active_orchestration_runs,
+    mark_orchestration_run_terminal,
+    orchestration_run_to_dict,
+    update_orchestration_run,
+)
+from universal_auto_applier.services.jobhunter_runner import JobHunterRunner
+
+logger = logging.getLogger("universal_auto_applier.orchestration_service")
+
+
+class OrchestrationConfigurationError(RuntimeError):
+    """Raised when orchestration configuration is incomplete or invalid."""
+
+
+class OrchestrationConcurrentError(RuntimeError):
+    """Raised when an orchestration run is already active."""
+
+
+def _utcnow() -> datetime:
+    return datetime.now(UTC)
+
+
+class OrchestrationService:
+    """Coordinates JobHunter + UAA import + UAA pipeline.
+
+    One instance is shared per running app (stored on ``app.state``) so its
+    in-process lock serializes concurrent orchestration start attempts.
+    """
+
+    def __init__(
+        self,
+        settings: Settings,
+        session_factory: Any,
+        pipeline_worker: Any,
+        queue_import_service: Any,
+    ) -> None:
+        self._settings = settings
+        self._session_factory = session_factory
+        self._pipeline_worker = pipeline_worker
+        self._queue_import_service = queue_import_service
+        self._lock = threading.Lock()
+        self._runner: JobHunterRunner | None = None
+        self._thread: threading.Thread | None = None
+        self._cancel_requested = threading.Event()
+        self._jobhunter_extra_args: list[str] = []
+
+    # ------------------------------------------------------------------
+    # Public API
+    # ------------------------------------------------------------------
+
+    def start(
+        self,
+        *,
+        mode: str | None = None,
+        fixture_html: str | None = None,
+        max_jobs: int = 10,
+        jobhunter_extra_args: list[str] | None = None,
+    ) -> dict[str, Any]:
+        """Start a new orchestration run in a background thread.
+
+        Returns immediately with the durable run state. The run executes in
+        a daemon thread; poll ``GET /api/orchestration/status`` for progress.
+
+        Raises:
+            OrchestrationConcurrentError: if a run is already active.
+            OrchestrationConfigurationError: if configuration is invalid.
+        """
+        resolved_mode = mode or self._settings.orchestration_mode
+        if resolved_mode not in ("sequential", "parallel"):
+            raise OrchestrationConfigurationError(
+                f"Invalid orchestration mode: {resolved_mode!r} (expected 'sequential' or 'parallel')"
+            )
+
+        with self._lock:
+            # Check DB for an active run.
+            with session_scope(self._session_factory) as session:
+                active = get_active_orchestration_run(session)
+            if active is not None:
+                raise OrchestrationConcurrentError(
+                    f"An orchestration run is already active: {active.run_id} ({active.status})"
+                )
+
+            # Validate configuration before creating the run row.
+            self._validate_config(resolved_mode)
+
+            run_id = str(uuid.uuid4())
+            with session_scope(self._session_factory) as session:
+                create_orchestration_run(session, run_id=run_id, mode=resolved_mode)
+
+            self._cancel_requested.clear()
+            self._jobhunter_extra_args = jobhunter_extra_args or []
+            # Wait for any previous orchestration thread to fully complete
+            # before starting a new one.
+            if self._thread is not None and self._thread.is_alive():
+                self._thread.join(timeout=30)
+            # Ensure the previous runner's subprocess has been waited on and
+            # its pipes closed before we discard the reference. This prevents
+            # Popen.__del__ from emitting ResourceWarning when the old runner
+            # is garbage-collected.
+            if self._runner is not None:
+                try:
+                    self._runner.close()
+                except Exception:  # noqa: BLE001
+                    logger.warning("[orchestration] error closing previous runner")
+            self._runner = None
+            self._thread = threading.Thread(
+                target=self._run,
+                args=(run_id, resolved_mode, fixture_html, max_jobs),
+                daemon=True,
+                name=f"orchestration-{run_id[:8]}",
+            )
+            self._thread.start()
+
+            with session_scope(self._session_factory) as session:
+                row = get_latest_orchestration_run(session)
+            return orchestration_run_to_dict(row)
+
+    def status(self) -> dict[str, Any]:
+        """Return the latest orchestration run state (durable, pollable)."""
+        with session_scope(self._session_factory) as session:
+            row = get_latest_orchestration_run(session)
+        return orchestration_run_to_dict(row)
+
+    def shutdown(self) -> None:
+        """Terminate the owned JobHunter subprocess (best-effort) on app shutdown.
+
+        Called on app shutdown. The run row is left in its current state —
+        startup recovery handles orphaned runs. Never kills based on a stale
+        PID — uses the owned :class:`Popen` handle via ``runner.close()``.
+
+        Guarantees after this returns:
+        - the JobHunter child has been waited on (returncode set);
+        - drain threads joined;
+        - ``proc.stdout`` / ``proc.stderr`` closed;
+        - the orchestration thread has finished (bounded wait).
+
+        Idempotent: safe to call multiple times.
+        """
+        runner = self._runner
+        if runner is not None:
+            try:
+                runner.close()
+            except Exception:  # noqa: BLE001 - shutdown must not crash
+                logger.warning("[orchestration] error closing JobHunter runner during shutdown")
+        # Wait for the orchestration thread to finish (bounded).
+        if self._thread is not None and self._thread.is_alive():
+            self._thread.join(timeout=10)
+        # Clear the runner reference so a subsequent start() begins cleanly.
+        self._runner = None
+
+    def cancel(self, *, reason: str = "User cancelled") -> dict[str, Any]:
+        """Request cancellation of the active orchestration run.
+
+        - Requests UAA pipeline cancellation safely (if a pipeline is running).
+        - Terminates only the owned JobHunter child process (graceful first).
+        - Never kills a process based solely on an unverified stale PID.
+        - Persists the final cancellation outcome.
+        """
+        with self._lock:
+            with session_scope(self._session_factory) as session:
+                active = get_active_orchestration_run(session)
+            if active is None:
+                return self.status()
+
+            self._cancel_requested.set()
+            run_id = active.run_id
+
+            # Update the run row to reflect cancellation is in progress.
+            with session_scope(self._session_factory) as session:
+                update_orchestration_run(
+                    session,
+                    run_id,
+                    status="cancelling",
+                    current_phase="cancelling",
+                    last_action=f"Cancel requested: {reason}",
+                    cancel_reason=reason,
+                )
+
+            # Cancel the UAA pipeline safely (if it is running).
+            try:
+                self._pipeline_worker.cancel(reason=reason)
+            except Exception:  # noqa: BLE001 - cancellation must not crash
+                logger.warning("[orchestration] pipeline cancel failed during orchestration cancel")
+
+            # Terminate the owned JobHunter subprocess (if it is running).
+            exit_code: int | None = None
+            if self._runner is not None and self._runner.is_alive:
+                exit_code = self._runner.cancel()
+                result = self._runner.collect_result(exit_code, cancelled=True)
+                with session_scope(self._session_factory) as session:
+                    update_orchestration_run(
+                        session,
+                        run_id,
+                        jobhunter_exit_code=exit_code,
+                        jobhunter_finished_at=_utcnow(),
+                        jobhunter_stdout=result.stdout,
+                        jobhunter_stderr=result.stderr,
+                    )
+
+            # Wait for the orchestration thread to finish (bounded).
+            if self._thread is not None and self._thread.is_alive():
+                self._thread.join(timeout=10)
+
+            with session_scope(self._session_factory) as session:
+                mark_orchestration_run_terminal(
+                    session,
+                    run_id,
+                    status="cancelled",
+                    last_action=f"Cancelled: {reason}",
+                    cancel_reason=reason,
+                )
+                row = get_latest_orchestration_run(session)
+            return orchestration_run_to_dict(row)
+
+    # ------------------------------------------------------------------
+    # Restart recovery
+    # ------------------------------------------------------------------
+
+    def recover_on_startup(self) -> dict[str, Any]:
+        """Reconcile durable state after a server restart.
+
+        - Detects orphaned active orchestration runs (the previous process died).
+        - For runs with a persisted JobHunter PID, conservatively checks PID
+          liveness. A PID that is alive (owned by this process or a child)
+          is kept active and blocks duplicate start. A dead/missing PID is
+          marked failed.
+        - Never launches a duplicate JobHunter or UAA run automatically.
+        - Marks orphaned runs as ``failed`` with a durable reason.
+        - Reuses WQ-5 recovery for stale UAA pipeline runs (already done in
+          the app lifespan before this service is called).
+        - Surfaces a safe manual recovery action in the run's last_error.
+        """
+        from universal_auto_applier.services.pipeline_recovery_service import pid_is_alive
+
+        recovered: list[str] = []
+        healthy_kept: list[str] = []
+        with session_scope(self._session_factory) as session:
+            active_runs = list_active_orchestration_runs(session)
+            for row in active_runs:
+                # If the run has a persisted JobHunter PID and it's alive,
+                # keep the run active (don't recover it). This is conservative:
+                # we can't verify we OWN the process, but we don't mark it
+                # failed either. The operator can cancel it manually.
+                if row.jobhunter_pid is not None and pid_is_alive(row.jobhunter_pid):
+                    healthy_kept.append(row.run_id)
+                    logger.info(
+                        "[orchestration] startup recovery: run %s has live PID %s; keeping active",
+                        row.run_id[:8],
+                        row.jobhunter_pid,
+                    )
+                    continue
+                reason = (
+                    f"Orchestration run {row.run_id[:8]} was interrupted by a "
+                    f"server restart. JobHunter child (pid={row.jobhunter_pid}) "
+                    f"is no longer alive. Manual recovery: "
+                    f"review the run state and start a new orchestration run "
+                    f"if needed. Nothing was auto-retried."
+                )
+                mark_orchestration_run_terminal(
+                    session,
+                    row.run_id,
+                    status="failed",
+                    last_action="Recovered after server restart; manual review required",
+                    last_error=reason,
+                )
+                recovered.append(row.run_id)
+        if recovered:
+            logger.warning(
+                "[orchestration] startup recovery: %d orphaned run(s) marked failed: %s",
+                len(recovered),
+                [run_id[:8] for run_id in recovered],
+            )
+        if healthy_kept:
+            logger.info(
+                "[orchestration] startup recovery: %d run(s) with live PID kept active: %s",
+                len(healthy_kept),
+                [run_id[:8] for run_id in healthy_kept],
+            )
+        # Clean up stale target manifest files left by crashed orchestration
+        # runs. Each manifest is a small JSON file in
+        # ``data_dir/target_ids/`` named ``target-{run_id_prefix}-{random}.json``.
+        # Stale manifests belong to runs that are no longer active (terminal or
+        # missing). Active runs' manifests are preserved. See
+        # :meth:`_cleanup_stale_manifests` for the full policy.
+        manifest_cleanup = self._cleanup_stale_manifests(healthy_kept + recovered)
+        return {
+            "recovered": recovered,
+            "healthy_kept": healthy_kept,
+            "manifests_removed": manifest_cleanup,
+        }
+
+    def _cleanup_stale_manifests(self, active_run_ids: list[str]) -> int:
+        """Remove stale target manifest files left by crashed orchestration runs.
+
+        Manifest files live in ``data_dir/target_ids/`` and are named
+        ``target-{run_id_prefix}-{random}.json``. Each manifest is created by
+        :meth:`PipelineWorkerService.start` when ``target_application_ids`` is
+        set, and is normally deleted by the pipeline worker after it reads
+        the IDs. If the orchestration process crashes between creation and
+        consumption, the manifest remains on disk.
+
+        Policy (bounded and deterministic):
+        - Only files inside ``data_dir/target_ids/`` are considered.
+        - Only files matching the naming pattern ``target-*.json`` are
+          candidates (owned by UAA/WQ-6).
+        - Files whose name contains a prefix of an ACTIVE run ID are
+          preserved (the run may still consume them).
+        - All other matching files are deleted (they belong to runs that are
+          terminal or no longer exist).
+        - Malformed files (not valid JSON, or JSON that is not a list) are
+          deleted (they cannot be useful and may indicate corruption).
+        - Files that cannot be read or deleted (permissions, locks) are
+          skipped with a warning — the cleanup is best-effort.
+        - Returns the count of deleted files.
+
+        This method is called from :meth:`recover_on_startup` so it runs on
+        every server start. It never raises.
+        """
+        target_root = self._settings.data_dir / "target_ids"
+        if not target_root.exists() or not target_root.is_dir():
+            return 0
+        import fnmatch
+
+        removed = 0
+        try:
+            candidates = sorted(target_root.iterdir())
+        except OSError:
+            return 0
+        for path in candidates:
+            if not path.is_file():
+                continue
+            if not fnmatch.fnmatch(path.name, "target-*.json"):
+                continue
+            # Check if this manifest belongs to an active run. The manifest
+            # name is ``target-{run_id_prefix}-{random}.json`` where
+            # ``run_id_prefix`` is the first 8 chars of the run UUID.
+            stem = path.stem  # e.g. "target-6777be08-abc123"
+            parts = stem.split("-", 1)
+            if len(parts) >= 2:
+                run_prefix = parts[1].split("-")[0]  # first 8 chars
+                # If any active run ID starts with this prefix, preserve.
+                if any(rid.startswith(run_prefix) for rid in active_run_ids):
+                    continue
+            # Stale or orphaned manifest — delete it.
+            try:
+                path.unlink()
+                removed += 1
+                logger.info(
+                    "[orchestration] startup cleanup: removed stale manifest %s",
+                    path.name,
+                )
+            except OSError:
+                logger.warning(
+                    "[orchestration] startup cleanup: could not remove %s",
+                    path.name,
+                )
+        return removed
+
+    # ------------------------------------------------------------------
+    # Internal: run loop
+    # ------------------------------------------------------------------
+
+    def _run(
+        self,
+        run_id: str,
+        mode: str,
+        fixture_html: str | None,
+        max_jobs: int,
+    ) -> None:
+        """Execute the orchestration run in a background thread.
+
+        The JobHunter runner is always closed in a ``finally`` block so the
+        child process is reaped and pipes are closed even on exception or
+        cancellation. This is the single source of truth for runner cleanup
+        — individual phase methods do not need to close the runner.
+        """
+        try:
+            if mode == "sequential":
+                self._run_sequential(run_id, fixture_html, max_jobs)
+            else:
+                self._run_parallel(run_id, fixture_html, max_jobs)
+        except Exception as exc:  # noqa: BLE001 - last-resort boundary
+            logger.exception("[orchestration] run %s failed: %s", run_id[:8], exc)
+            self._mark_failed(run_id, str(exc))
+            return
+        finally:
+            # Always close the runner so the child is reaped and pipes are
+            # closed, regardless of how the run ended (success, failure,
+            # cancellation, or exception). This is the only place that
+            # guarantees cleanup — phase methods may return early.
+            runner = self._runner
+            if runner is not None:
+                try:
+                    runner.close()
+                except Exception:  # noqa: BLE001 - cleanup must not mask errors
+                    logger.warning(
+                        "[orchestration] error closing runner in _run finally: %s",
+                        run_id[:8],
+                    )
+
+        # If cancellation was requested, the cancel() method handles terminal
+        # state. Otherwise mark completed (if not already terminal).
+        if self._cancel_requested.is_set():
+            return
+        with session_scope(self._session_factory) as session:
+            row = get_latest_orchestration_run(session)
+        if row is not None and row.status in ACTIVE_STATUSES:
+            self._mark_completed(run_id)
+
+    def _run_sequential(self, run_id: str, fixture_html: str | None, max_jobs: int) -> None:
+        """Sequential: JobHunter -> queue import -> UAA pipeline.
+
+        Proves this exact order:
+        1. validate configuration (done in start()).
+        2. start JobHunter (full workflow: scan → evaluate/tailor → export).
+        3. wait for successful exit.
+        4. verify queue file exists and is stable.
+        5. call the existing WQ-3 queue-import service.
+        6. start the existing WQ-4/WQ-5 safe browser pipeline.
+        7. expose final results in durable orchestration status.
+
+        If JobHunter fails or times out, no import occurs and no pipeline starts.
+        """
+        # Phase 1: JobHunter
+        self._set_phase(run_id, "jobhunter_running", "Starting JobHunter full workflow")
+        queue_path = self._resolve_queue_output()
+        # Capture queue signature BEFORE JobHunter for publication detection.
+        q_hash_before, q_mtime_before = self._queue_file_signature(queue_path)
+        with session_scope(self._session_factory) as session:
+            update_orchestration_run(
+                session,
+                run_id,
+                queue_hash_before=q_hash_before,
+                queue_mtime_ns_before=q_mtime_before,
+            )
+        self._runner = JobHunterRunner(
+            settings=self._settings,
+            queue_output_path=queue_path,
+            entry_point=self._settings.jobhunter_entry_point,
+            extra_args=self._jobhunter_extra_args,
+        )
+        pid = self._runner.launch()
+        with session_scope(self._session_factory) as session:
+            update_orchestration_run(
+                session,
+                run_id,
+                jobhunter_pid=pid,
+                jobhunter_started_at=_utcnow(),
+                last_action=f"JobHunter subprocess launched (pid={pid}, entry={self._settings.jobhunter_entry_point})",
+            )
+
+        if self._cancel_requested.is_set():
+            self._runner.cancel()
+            return
+
+        # Wait for JobHunter with the configured timeout.
+        timeout = self._settings.jobhunter_timeout_seconds or None
+        exit_code = self._runner.wait(timeout=timeout)
+        timed_out = self._runner.was_timed_out
+        result = self._runner.collect_result(exit_code, timed_out=timed_out)
+        with session_scope(self._session_factory) as session:
+            update_orchestration_run(
+                session,
+                run_id,
+                jobhunter_exit_code=exit_code,
+                jobhunter_finished_at=_utcnow(),
+                jobhunter_stdout=result.stdout,
+                jobhunter_stderr=result.stderr,
+                last_action=f"JobHunter exited with code {exit_code}"
+                + (" (timed out)" if timed_out else ""),
+            )
+
+        if self._cancel_requested.is_set():
+            return
+
+        # If JobHunter timed out or failed, do NOT import or start pipeline.
+        if timed_out:
+            self._mark_failed(
+                run_id,
+                f"JobHunter timed out after {timeout}s and was terminated. "
+                f"No queue import or pipeline started.",
+            )
+            return
+
+        if exit_code != 0:
+            self._mark_failed(
+                run_id,
+                f"JobHunter failed with exit code {exit_code}. "
+                f"No queue import or pipeline started.",
+            )
+            return
+
+        # Phase 2: verify queue file is stable and was actually published.
+        self._set_phase(run_id, "verifying_queue", "Verifying queue file")
+        q_hash_after, q_mtime_after = self._queue_file_signature(queue_path)
+        with session_scope(self._session_factory) as session:
+            update_orchestration_run(
+                session,
+                run_id,
+                queue_hash_after=q_hash_after,
+                queue_mtime_ns_after=q_mtime_after,
+            )
+        if not self._was_queue_published(run_id):
+            with session_scope(self._session_factory) as session:
+                update_orchestration_run(
+                    session,
+                    run_id,
+                    queue_published=False,
+                    last_action="JobHunter succeeded but no new queue was published; no import",
+                )
+            return
+        with session_scope(self._session_factory) as session:
+            update_orchestration_run(
+                session,
+                run_id,
+                queue_published=True,
+            )
+        if not self._wait_for_stable_queue(queue_path):
+            self._mark_failed(
+                run_id,
+                f"Queue file not stable at {queue_path}. No import or pipeline started.",
+            )
+            return
+
+        if self._cancel_requested.is_set():
+            return
+
+        # Phase 3: queue import
+        self._set_phase(run_id, "importing", "Importing queue")
+        try:
+            summary = self._queue_import_service.run(path=queue_path, trigger="orchestration")
+        except Exception as exc:  # noqa: BLE001 - import failure must not crash
+            self._mark_failed(run_id, f"Queue import failed: {exc}")
+            return
+
+        with session_scope(self._session_factory) as session:
+            update_orchestration_run(
+                session,
+                run_id,
+                queue_import_run_id=summary.run_id,
+                queue_import_state=summary.state,
+                queue_imported=summary.imported,
+                queue_skipped=summary.skipped,
+                last_action=f"Queue import: {summary.state} ({summary.imported} imported)",
+            )
+
+        if self._cancel_requested.is_set():
+            return
+
+        # Phase 4: UAA pipeline
+        self._set_phase(run_id, "pipeline_running", "Starting UAA pipeline")
+        try:
+            pipeline_state = self._pipeline_worker.start(
+                max_jobs=max_jobs,
+                fixture_html=fixture_html,
+            )
+        except RuntimeError as exc:
+            self._mark_failed(run_id, f"Pipeline start failed: {exc}")
+            return
+
+        with session_scope(self._session_factory) as session:
+            update_orchestration_run(
+                session,
+                run_id,
+                pipeline_run_id=pipeline_state.get("run_id"),
+                pipeline_state=pipeline_state.get("status"),
+                last_action=f"Pipeline started: {pipeline_state.get('status')}",
+            )
+
+        # Wait for the pipeline to reach a terminal state (poll durable state).
+        if not self._wait_for_pipeline(run_id):
+            return
+
+    def _run_parallel(self, run_id: str, fixture_html: str | None, max_jobs: int) -> None:
+        """Parallel: UAA pipeline (existing jobs) + JobHunter concurrently.
+
+        Required sequence:
+        1. Start UAA processing for jobs already eligible.
+        2. Start JobHunter concurrently.
+        3. Wait for JobHunter's successful exit and atomic queue publication.
+        4. Import the queue exactly once.
+        5. Wait for the initial UAA pipeline run to reach a terminal state.
+        6. If the import created newly eligible jobs, start exactly one second
+           safe UAA pipeline pass for those jobs.
+        7. Wait for that pass and persist its run id and outcome.
+        8. Do not start a second pass when the import produced zero new eligible jobs.
+        9. Do not reprocess jobs handled by the initial pass.
+        10. Remain dry-run/review-only.
+        """
+        queue_path = self._resolve_queue_output()
+        # Capture queue signature BEFORE JobHunter for publication detection.
+        q_hash_before, q_mtime_before = self._queue_file_signature(queue_path)
+        with session_scope(self._session_factory) as session:
+            update_orchestration_run(
+                session,
+                run_id,
+                queue_hash_before=q_hash_before,
+                queue_mtime_ns_before=q_mtime_before,
+            )
+        self._runner = JobHunterRunner(
+            settings=self._settings,
+            queue_output_path=queue_path,
+            entry_point=self._settings.jobhunter_entry_point,
+            extra_args=self._jobhunter_extra_args,
+        )
+
+        jh_thread = threading.Thread(
+            target=self._run_jobhunter,
+            args=(run_id,),
+            daemon=True,
+            name=f"orchestration-jh-{run_id[:8]}",
+        )
+
+        # Phase 1: start JobHunter
+        self._set_phase(run_id, "jobhunter_running", "Starting JobHunter full workflow (parallel)")
+        try:
+            pid = self._runner.launch()
+        except Exception as exc:  # noqa: BLE001
+            self._mark_failed(run_id, f"JobHunter launch failed: {exc}")
+            return
+
+        with session_scope(self._session_factory) as session:
+            update_orchestration_run(
+                session,
+                run_id,
+                jobhunter_pid=pid,
+                jobhunter_started_at=_utcnow(),
+                last_action=f"JobHunter subprocess launched (pid={pid}, entry={self._settings.jobhunter_entry_point})",
+            )
+
+        jh_thread.start()
+
+        if self._cancel_requested.is_set():
+            return
+
+        # Phase 2: start UAA pipeline for existing jobs (initial pass)
+        self._set_phase(run_id, "pipeline_running", "Starting UAA pipeline for existing jobs")
+        initial_pipeline_state: dict[str, Any] | None = None
+        try:
+            initial_pipeline_state = self._pipeline_worker.start(
+                max_jobs=max_jobs,
+                fixture_html=fixture_html,
+            )
+        except RuntimeError as exc:
+            # Pipeline couldn't start (maybe no eligible jobs). That's OK in
+            # parallel mode — we still wait for JobHunter and import.
+            initial_pipeline_state = None
+            with session_scope(self._session_factory) as session:
+                update_orchestration_run(
+                    session,
+                    run_id,
+                    last_action=f"Initial pipeline not started: {exc}",
+                )
+
+        if initial_pipeline_state is not None:
+            with session_scope(self._session_factory) as session:
+                update_orchestration_run(
+                    session,
+                    run_id,
+                    pipeline_run_id_initial=initial_pipeline_state.get("run_id"),
+                    pipeline_state_initial=initial_pipeline_state.get("status"),
+                )
+
+        # Wait for JobHunter to finish.
+        jh_timeout = self._settings.jobhunter_timeout_seconds or 600
+        jh_thread.join(timeout=jh_timeout + 30)
+        if jh_thread.is_alive():
+            logger.warning(
+                "[orchestration] JobHunter thread did not finish in %ss", jh_timeout + 30
+            )
+            self._runner.cancel()
+            jh_thread.join(timeout=30)
+
+        if self._cancel_requested.is_set():
+            return
+
+        # Check JobHunter exit code.
+        with session_scope(self._session_factory) as session:
+            row = get_latest_orchestration_run(session)
+        if row is None:
+            return
+        if row.jobhunter_exit_code != 0:
+            # JobHunter failed or timed out — do NOT import, do NOT erase UAA work.
+            # Wait for the initial pipeline to finish.
+            if initial_pipeline_state is not None:
+                if not self._wait_for_pipeline_initial(run_id):
+                    return
+            self._mark_failed(
+                run_id,
+                f"JobHunter failed (exit {row.jobhunter_exit_code}); no import. UAA initial pipeline completed.",
+            )
+            return
+
+        # Phase 3: Wait for the initial pipeline to reach terminal state.
+        if initial_pipeline_state is not None:
+            self._set_phase(run_id, "pipeline_running", "Waiting for initial UAA pipeline pass")
+            if not self._wait_for_pipeline_initial(run_id):
+                return
+
+        if self._cancel_requested.is_set():
+            return
+
+        # Phase 4: import the queue (JobHunter succeeded).
+        # Detect whether a new queue was actually published during this run.
+        q_hash_after, q_mtime_after = self._queue_file_signature(queue_path)
+        with session_scope(self._session_factory) as session:
+            update_orchestration_run(
+                session,
+                run_id,
+                queue_hash_after=q_hash_after,
+                queue_mtime_ns_after=q_mtime_after,
+            )
+
+        # Check if the queue was actually published (hash changed or file appeared).
+        if not self._was_queue_published(run_id):
+            with session_scope(self._session_factory) as session:
+                update_orchestration_run(
+                    session,
+                    run_id,
+                    queue_published=False,
+                    last_action="JobHunter succeeded but no new queue was published; no import",
+                )
+            return
+
+        with session_scope(self._session_factory) as session:
+            update_orchestration_run(
+                session,
+                run_id,
+                queue_published=True,
+            )
+
+        # Snapshot eligible IDs BEFORE import for exact newly-eligible computation.
+        eligible_before = self._snapshot_eligible_ids()
+
+        self._set_phase(run_id, "importing", "Importing queue (parallel)")
+        try:
+            summary = self._queue_import_service.run(path=queue_path, trigger="orchestration")
+        except Exception as exc:  # noqa: BLE001
+            self._mark_failed(run_id, f"Queue import failed: {exc}")
+            return
+
+        # Snapshot eligible IDs AFTER import and compute the exact newly eligible set.
+        eligible_after = self._snapshot_eligible_ids()
+        new_ids, new_count = self._compute_newly_eligible(eligible_before, eligible_after)
+
+        with session_scope(self._session_factory) as session:
+            update_orchestration_run(
+                session,
+                run_id,
+                queue_import_run_id=summary.run_id,
+                queue_import_state=summary.state,
+                queue_imported=summary.imported,
+                queue_skipped=summary.skipped,
+                newly_eligible_count=new_count,
+                newly_eligible_ids_json=new_ids,
+                last_action=f"Queue import: {summary.state} ({summary.imported} imported, {new_count} newly eligible)",
+            )
+
+        if self._cancel_requested.is_set():
+            return
+
+        # Phase 5: If the import created newly eligible jobs, start a second
+        # pipeline pass for those jobs. Do not start a second pass if zero
+        # new eligible jobs were imported.
+        if new_count == 0:
+            with session_scope(self._session_factory) as session:
+                update_orchestration_run(
+                    session,
+                    run_id,
+                    targeted_ids_json=list(new_ids),
+                    processed_ids_json=[],
+                    remaining_ids_json=[],
+                    targeted_count=new_count,
+                    processed_count=0,
+                    remaining_count=0,
+                    pipeline_run_ids_json=[],
+                    pass_count=0,
+                    last_action="No newly eligible jobs after import; no second pipeline pass",
+                )
+            return
+
+        # Phase 5: If the import created newly eligible jobs, process them
+        # in bounded batches of max_jobs until all target IDs leave
+        # READY_TO_APPLY/QUEUED. Durable batch evidence is persisted after
+        # every batch so the orchestration state remains truthful after
+        # restart or failure.
+        targeted_ids = list(new_ids)
+        processed_ids: list[str] = []
+        remaining_ids = list(targeted_ids)
+        pass_num = 0
+        pipeline_run_ids: list[str] = []
+        # ceiling of new_count / max_jobs, plus 1 safety margin for no-progress
+        # detection (the no-progress check fires before this is exceeded).
+        max_passes = max(1, (new_count + max_jobs - 1) // max_jobs + 1)
+
+        # Persist the initial targeted set once. ``remaining_ids`` starts as
+        # the full targeted set; ``processed_ids`` is empty.
+        with session_scope(self._session_factory) as session:
+            update_orchestration_run(
+                session,
+                run_id,
+                targeted_ids_json=list(targeted_ids),
+                processed_ids_json=[],
+                remaining_ids_json=list(remaining_ids),
+                targeted_count=len(targeted_ids),
+                processed_count=0,
+                remaining_count=len(remaining_ids),
+                pipeline_run_ids_json=[],
+                pass_count=0,
+                last_action=(
+                    f"Starting multi-batch continuation: {len(targeted_ids)} target IDs, "
+                    f"max_jobs={max_jobs}"
+                ),
+            )
+
+        while remaining_ids:
+            if self._cancel_requested.is_set():
+                # Persist the current batch state before returning so the
+                # durable evidence reflects the partial progress.
+                self._persist_batch_evidence(
+                    run_id,
+                    targeted_ids=targeted_ids,
+                    processed_ids=processed_ids,
+                    remaining_ids=remaining_ids,
+                    pipeline_run_ids=pipeline_run_ids,
+                    pass_num=pass_num,
+                    last_action=f"Cancelled during pass {pass_num + 1} (before batch start)",
+                )
+                return
+
+            pass_num += 1
+            if pass_num > max_passes:
+                # Persist the final state before failing.
+                self._persist_batch_evidence(
+                    run_id,
+                    targeted_ids=targeted_ids,
+                    processed_ids=processed_ids,
+                    remaining_ids=remaining_ids,
+                    pipeline_run_ids=pipeline_run_ids,
+                    pass_num=pass_num - 1,
+                    last_action=(
+                        f"Exceeded maximum pipeline passes ({max_passes}) for "
+                        f"{new_count} target IDs with max_jobs={max_jobs}. "
+                        f"{len(remaining_ids)} IDs remain eligible."
+                    ),
+                )
+                self._mark_failed(
+                    run_id,
+                    f"Exceeded maximum pipeline passes ({max_passes}) for "
+                    f"{new_count} target IDs with max_jobs={max_jobs}. "
+                    f"{len(remaining_ids)} IDs remain eligible.",
+                )
+                return
+            batch = remaining_ids[:max_jobs]
+            self._set_phase(
+                run_id,
+                "pipeline_running",
+                f"Starting pipeline pass {pass_num} for {len(batch)} targeted jobs "
+                f"({len(remaining_ids)} remaining)",
+            )
+            try:
+                pass_state = self._pipeline_worker.start(
+                    max_jobs=max_jobs,
+                    fixture_html=fixture_html,
+                    target_application_ids=batch,
+                )
+            except RuntimeError as exc:
+                # Persist the current batch state before failing.
+                self._persist_batch_evidence(
+                    run_id,
+                    targeted_ids=targeted_ids,
+                    processed_ids=processed_ids,
+                    remaining_ids=remaining_ids,
+                    pipeline_run_ids=pipeline_run_ids,
+                    pass_num=pass_num - 1,
+                    last_action=(
+                        f"Pipeline pass {pass_num} failed to start: {exc}. "
+                        f"{len(remaining_ids)} target IDs remain eligible for manual retry."
+                    ),
+                )
+                self._mark_failed(
+                    run_id,
+                    f"Import succeeded ({summary.imported} imported, {new_count} newly eligible) "
+                    f"but pipeline pass {pass_num} failed to start: {exc}. "
+                    f"{len(remaining_ids)} target IDs remain eligible for manual retry.",
+                )
+                return
+
+            run_id_str = pass_state.get("run_id")
+            if run_id_str:
+                pipeline_run_ids.append(run_id_str)
+            with session_scope(self._session_factory) as session:
+                update_orchestration_run(
+                    session,
+                    run_id,
+                    pipeline_run_id=run_id_str,
+                    pipeline_state=pass_state.get("status"),
+                    pipeline_run_ids_json=list(pipeline_run_ids),
+                    last_action=f"Pipeline pass {pass_num} started: {pass_state.get('status')}",
+                )
+
+            if not self._wait_for_pipeline(run_id):
+                # The wait method already marked the run failed and persisted
+                # the pipeline state. Persist the batch evidence too so the
+                # targeted/processed/remaining lists reflect partial progress.
+                self._persist_batch_evidence(
+                    run_id,
+                    targeted_ids=targeted_ids,
+                    processed_ids=processed_ids,
+                    remaining_ids=remaining_ids,
+                    pipeline_run_ids=pipeline_run_ids,
+                    pass_num=pass_num,
+                    last_action=f"Pipeline pass {pass_num} did not complete successfully",
+                )
+                return
+
+            # Recompute remaining eligible target IDs. An ID is "processed"
+            # if it is no longer in the eligible set (it left READY_TO_APPLY
+            # / QUEUED, regardless of the terminal state it reached).
+            current_eligible = self._snapshot_eligible_ids()
+            new_remaining = [tid for tid in remaining_ids if tid in current_eligible]
+            newly_processed = [tid for tid in remaining_ids if tid not in current_eligible]
+            # Preserve order: targeted order, then by removal from remaining.
+            processed_ids = processed_ids + newly_processed
+            remaining_ids = new_remaining
+
+            # Persist the durable batch evidence after every batch.
+            self._persist_batch_evidence(
+                run_id,
+                targeted_ids=targeted_ids,
+                processed_ids=processed_ids,
+                remaining_ids=remaining_ids,
+                pipeline_run_ids=pipeline_run_ids,
+                pass_num=pass_num,
+                last_action=(
+                    f"Pipeline pass {pass_num} completed; "
+                    f"{len(processed_ids)}/{len(targeted_ids)} processed, "
+                    f"{len(remaining_ids)} remaining"
+                ),
+            )
+
+            # No-progress detection: check if ANY ID from the current batch
+            # is still eligible. If so, the pass made no progress on those IDs.
+            batch_set = set(batch)
+            batch_still_eligible = [tid for tid in remaining_ids if tid in batch_set]
+            if batch_still_eligible:
+                self._mark_failed(
+                    run_id,
+                    f"Pipeline pass {pass_num} made no progress: "
+                    f"{len(batch_still_eligible)} of {len(batch)} batch IDs "
+                    f"still eligible after processing. "
+                    "The remaining jobs need manual review.",
+                )
+                return
+
+        # All target IDs processed. The newly_eligible_count and
+        # newly_eligible_ids_json remain at their original import-time values
+        # (the count of IDs that were newly eligible, and the list of those IDs).
+        # Final pass_count is the number of completed passes.
+        with session_scope(self._session_factory) as session:
+            update_orchestration_run(
+                session,
+                run_id,
+                pipeline_run_id=pipeline_run_ids[-1] if pipeline_run_ids else None,
+                targeted_ids_json=list(targeted_ids),
+                processed_ids_json=list(processed_ids),
+                remaining_ids_json=[],
+                targeted_count=len(targeted_ids),
+                processed_count=len(processed_ids),
+                remaining_count=0,
+                pipeline_run_ids_json=list(pipeline_run_ids),
+                pass_count=pass_num,
+                last_action=(f"All {new_count} target IDs processed in {pass_num} pass(es)"),
+            )
+
+    def _persist_batch_evidence(
+        self,
+        run_id: str,
+        *,
+        targeted_ids: list[str],
+        processed_ids: list[str],
+        remaining_ids: list[str],
+        pipeline_run_ids: list[str],
+        pass_num: int,
+        last_action: str,
+    ) -> None:
+        """Persist the durable batch evidence after every batch.
+
+        This is the single source of truth for the targeted/processed/remaining
+        ID lists and the ordered list of pipeline run IDs. Called after every
+        batch in the multi-batch continuation loop, and on every early-exit
+        path (cancellation, failure, no-progress). The data is bounded by the
+        number of newly imported jobs and contains only application_id hashes
+        (never candidate data).
+        """
+        with session_scope(self._session_factory) as session:
+            update_orchestration_run(
+                session,
+                run_id,
+                targeted_ids_json=list(targeted_ids),
+                processed_ids_json=list(processed_ids),
+                remaining_ids_json=list(remaining_ids),
+                targeted_count=len(targeted_ids),
+                processed_count=len(processed_ids),
+                remaining_count=len(remaining_ids),
+                pipeline_run_ids_json=list(pipeline_run_ids),
+                pass_count=pass_num,
+                last_action=last_action,
+            )
+
+    def _run_jobhunter(self, run_id: str) -> None:
+        """Run JobHunter and update the run row (used in parallel mode)."""
+        assert self._runner is not None
+        timeout = self._settings.jobhunter_timeout_seconds or None
+        exit_code = self._runner.wait(timeout=timeout)
+        timed_out = self._runner.was_timed_out
+        result = self._runner.collect_result(exit_code, timed_out=timed_out)
+        with session_scope(self._session_factory) as session:
+            update_orchestration_run(
+                session,
+                run_id,
+                jobhunter_exit_code=exit_code,
+                jobhunter_finished_at=_utcnow(),
+                jobhunter_stdout=result.stdout,
+                jobhunter_stderr=result.stderr,
+                last_action=f"JobHunter exited with code {exit_code}"
+                + (" (timed out)" if timed_out else ""),
+            )
+
+    def _count_newly_eligible_jobs(self) -> int:
+        """Count jobs in READY_TO_APPLY or QUEUED status (eligible for pipeline).
+
+        Deprecated: use ``_snapshot_eligible_ids`` + ``_compute_newly_eligible``
+        for exact evidence. This method is retained for backward compatibility.
+        """
+        return len(self._snapshot_eligible_ids())
+
+    def _snapshot_eligible_ids(self) -> set[str]:
+        """Snapshot the set of application IDs currently eligible for the pipeline.
+
+        Eligible = READY_TO_APPLY or QUEUED. Returns a set of application_id
+        strings (SHA-256 hashes, never candidate data).
+        """
+        from sqlalchemy import select
+
+        from universal_auto_applier.core.statuses import ApplicationStatus
+        from universal_auto_applier.persistence.models import ApplicationJobRow
+
+        with session_scope(self._session_factory) as session:
+            rows = (
+                session.execute(
+                    select(ApplicationJobRow.application_id).where(
+                        ApplicationJobRow.status.in_(
+                            [
+                                ApplicationStatus.READY_TO_APPLY.value,
+                                ApplicationStatus.QUEUED.value,
+                            ]
+                        )
+                    )
+                )
+                .scalars()
+                .all()
+            )
+        return set(rows)
+
+    @staticmethod
+    def _compute_newly_eligible(before: set[str], after: set[str]) -> tuple[list[str], int]:
+        """Compute the exact newly eligible application IDs from before/after snapshots.
+
+        Returns (sorted_list_of_new_ids, count).
+        """
+        new_ids = after - before
+        return sorted(new_ids), len(new_ids)
+
+    @staticmethod
+    def _hash_queue_file(path: Path) -> str | None:
+        """Return the SHA-256 hex digest of the queue file, or None if missing.
+
+        Uses the same algorithm as the queue-import service's fingerprint.
+        """
+        import hashlib
+
+        try:
+            if not path.exists() or not path.is_file():
+                return None
+            digest = hashlib.sha256()
+            with path.open("rb") as fh:
+                for chunk in iter(lambda: fh.read(1024 * 1024), b""):
+                    digest.update(chunk)
+            return digest.hexdigest()
+        except OSError:
+            return None
+
+    @staticmethod
+    def _queue_file_signature(path: Path) -> tuple[str | None, int | None]:
+        """Return (content_hash, mtime_ns) of the queue file, or (None, None).
+
+        The mtime_ns is used to detect whether the file was written during
+        the JobHunter run. ``os.replace`` always updates mtime, so a
+        re-exported identical queue is correctly detected as a publication.
+        A stale pre-existing file (JobHunter didn't export) has an unchanged
+        mtime and is NOT treated as a publication.
+        """
+        import hashlib
+
+        try:
+            if not path.exists() or not path.is_file():
+                return None, None
+            stat = path.stat()
+            digest = hashlib.sha256()
+            with path.open("rb") as fh:
+                for chunk in iter(lambda: fh.read(1024 * 1024), b""):
+                    digest.update(chunk)
+            return digest.hexdigest(), stat.st_mtime_ns
+        except OSError:
+            return None, None
+
+    def _was_queue_published(self, run_id: str) -> bool:
+        """Check whether the queue file was actually published during this run.
+
+        A publication is detected when:
+        - The mtime_ns after JobHunter differs from the mtime_ns before, OR
+        - The file did not exist before but exists after (hash None → not-None).
+
+        An unchanged pre-existing queue (same mtime_ns) is NOT a publication.
+        Content hash is recorded for durable evidence but mtime_ns is the
+        primary detector because ``os.replace`` always updates it, even for
+        identical content (idempotent re-export).
+        """
+        with session_scope(self._session_factory) as session:
+            row = get_latest_orchestration_run(session)
+        if row is None:
+            return False
+        before_hash = row.queue_hash_before
+        after_hash = row.queue_hash_after
+        before_mtime = row.queue_mtime_ns_before
+        after_mtime = row.queue_mtime_ns_after
+        # File appeared (was None before, exists after).
+        if before_hash is None and after_hash is not None:
+            return True
+        # mtime changed (file was written during this run, even with same content).
+        if before_mtime is not None and after_mtime is not None and before_mtime != after_mtime:
+            return True
+        return False
+
+    def _wait_for_stable_queue(self, path: Path, timeout: float = 5.0) -> bool:
+        """Wait until the queue file exists and its size is stable.
+
+        JobHunter writes the queue atomically (temp file + os.replace), so
+        the file should appear as a complete, valid JSONL. This check ensures
+        we never import a partially-written file.
+        """
+        import time
+
+        deadline = time.monotonic() + timeout
+        last_size: int = -1
+        while time.monotonic() < deadline:
+            if self._cancel_requested.is_set():
+                return False
+            if path.exists() and path.is_file():
+                size = path.stat().st_size
+                if size == last_size and size >= 0:
+                    return True
+                last_size = size
+            time.sleep(0.1)
+        return path.exists() and path.is_file()
+
+    def _wait_for_pipeline(self, run_id: str, timeout: float = 300.0) -> bool:
+        """Poll the pipeline worker until it reaches a terminal state.
+
+        Updates ``pipeline_state`` (the second-pass / sequential pipeline)
+        on the orchestration run row.
+
+        Returns True if the pipeline completed successfully (completed/idle).
+        Returns False if the pipeline failed, timed out, or was cancelled.
+        On failure/timeout, the orchestration run is marked ``failed``.
+        On cancellation, the caller handles the terminal state.
+
+        The caller MUST stop immediately after this returns False.
+        """
+        import time
+
+        deadline = time.monotonic() + timeout
+        final_status: str | None = None
+        while time.monotonic() < deadline:
+            if self._cancel_requested.is_set():
+                return False
+            state = self._pipeline_worker.get_state_dict()
+            status = state.get("status", "idle")
+            final_status = status
+            with session_scope(self._session_factory) as session:
+                update_orchestration_run(
+                    session,
+                    run_id,
+                    pipeline_state=status,
+                    last_action=f"Pipeline: {status}",
+                )
+            if status in ("idle", "completed", "cancelled", "failed", "recovered"):
+                break
+            time.sleep(0.5)
+
+        if self._cancel_requested.is_set():
+            return False
+
+        if final_status == "failed":
+            self._mark_failed(
+                run_id,
+                "Pipeline failed during orchestration. "
+                "Imported jobs remain safely eligible for manual retry.",
+            )
+            return False
+
+        if final_status == "recovered":
+            self._mark_failed(
+                run_id,
+                "Pipeline was recovered (interrupted) during orchestration. "
+                "Imported jobs remain safely eligible for manual retry.",
+            )
+            return False
+
+        if final_status not in ("idle", "completed", "cancelled"):
+            self._mark_failed(
+                run_id,
+                f"Pipeline did not reach a terminal state within {timeout}s. "
+                "The orchestration run is marked failed. "
+                "Imported jobs remain safely eligible for manual retry.",
+            )
+            return False
+
+        return True
+
+    def _wait_for_pipeline_initial(self, run_id: str, timeout: float = 300.0) -> bool:
+        """Poll the pipeline worker until it reaches a terminal state.
+
+        Updates ``pipeline_state_initial`` (the first-pass / initial pipeline)
+        on the orchestration run row.
+
+        Returns True if the pipeline completed successfully (completed/idle).
+        Returns False if the pipeline failed, timed out, or was cancelled.
+        On failure/timeout, the orchestration run is marked ``failed``.
+        On cancellation, the caller handles the terminal state.
+
+        The caller MUST stop immediately after this returns False.
+        """
+        import time
+
+        deadline = time.monotonic() + timeout
+        final_status: str | None = None
+        while time.monotonic() < deadline:
+            if self._cancel_requested.is_set():
+                return False
+            state = self._pipeline_worker.get_state_dict()
+            status = state.get("status", "idle")
+            final_status = status
+            with session_scope(self._session_factory) as session:
+                update_orchestration_run(
+                    session,
+                    run_id,
+                    pipeline_state_initial=status,
+                    last_action=f"Initial pipeline: {status}",
+                )
+            if status in ("idle", "completed", "cancelled", "failed", "recovered"):
+                break
+            time.sleep(0.5)
+
+        if self._cancel_requested.is_set():
+            return False
+
+        if final_status == "failed":
+            self._mark_failed(
+                run_id,
+                "Initial pipeline failed during orchestration. "
+                "Imported jobs remain safely eligible for manual retry.",
+            )
+            return False
+
+        if final_status == "recovered":
+            self._mark_failed(
+                run_id,
+                "Initial pipeline was recovered (interrupted) during orchestration. "
+                "Imported jobs remain safely eligible for manual retry.",
+            )
+            return False
+
+        if final_status not in ("idle", "completed", "cancelled"):
+            self._mark_failed(
+                run_id,
+                f"Initial pipeline did not reach a terminal state within {timeout}s. "
+                "The orchestration run is marked failed. "
+                "Imported jobs remain safely eligible for manual retry.",
+            )
+            return False
+
+        return True
+
+    def _set_phase(self, run_id: str, phase: str, action: str) -> None:
+        """Update the current phase and last action on the run row."""
+        with session_scope(self._session_factory) as session:
+            update_orchestration_run(
+                session,
+                run_id,
+                current_phase=phase,
+                status=phase if phase in ACTIVE_STATUSES else "running",
+                last_action=action,
+            )
+
+    def _mark_failed(self, run_id: str, error: str) -> None:
+        """Mark the run as failed with a durable error."""
+        with session_scope(self._session_factory) as session:
+            mark_orchestration_run_terminal(
+                session,
+                run_id,
+                status="failed",
+                last_action="Orchestration run failed",
+                last_error=error,
+            )
+
+    def _mark_completed(self, run_id: str) -> None:
+        """Mark the run as completed."""
+        with session_scope(self._session_factory) as session:
+            mark_orchestration_run_terminal(
+                session,
+                run_id,
+                status="completed",
+                last_action="Orchestration run completed",
+            )
+
+    def _validate_config(self, mode: str) -> None:
+        """Validate that all required configuration is present and consistent.
+
+        Always resolves JobHunter's actual queue path from config/profile.yml.
+        If UAA_JOBHUNTER_QUEUE_OUTPUT is set, it must exactly match.
+
+        Raises:
+            OrchestrationConfigurationError: if config is incomplete, the
+            JobHunter config is malformed, or the UAA override disagrees.
+        """
+        if self._settings.jobhunter_repo is None:
+            raise OrchestrationConfigurationError(
+                "JobHunter repo path is not configured (set UAA_JOBHUNTER_REPO)"
+            )
+        repo = self._settings.jobhunter_repo
+        if not repo.exists():
+            raise OrchestrationConfigurationError(f"JobHunter repo path does not exist: {repo}")
+        script = repo / self._settings.jobhunter_entry_point
+        if not script.exists():
+            raise OrchestrationConfigurationError(f"JobHunter entry point not found: {script}")
+
+        # Always read JobHunter's configured queue path.
+        jh_configured = self._read_jobhunter_queue_config(repo)
+
+        # If the user provided an explicit override, validate exact match.
+        if self._settings.jobhunter_queue_output is not None:
+            if jh_configured is not None:
+                jh_resolved = (
+                    (repo / jh_configured).resolve()
+                    if not Path(jh_configured).is_absolute()
+                    else Path(jh_configured)
+                )
+                uaa_resolved = Path(self._settings.jobhunter_queue_output).resolve()
+                if jh_resolved != uaa_resolved:
+                    raise OrchestrationConfigurationError(
+                        f"UAA queue output path ({uaa_resolved}) does not match "
+                        f"JobHunter's configured output path ({jh_resolved} from "
+                        f"config/profile.yml -> queue_export.output_path). "
+                        f"Set UAA_JOBHUNTER_QUEUE_OUTPUT to match, or remove the "
+                        f"override to use JobHunter's configured path."
+                    )
+        # _resolve_queue_output raises if no path is configured.
+        self._resolve_queue_output()
+
+    @staticmethod
+    def _read_jobhunter_queue_config(repo: Path) -> str | None:
+        """Read JobHunter's configured queue output path from config/profile.yml.
+
+        Returns the path string (may be relative), or None if the config
+        file is missing or the key is absent (JobHunter's documented default
+        applies).
+
+        Raises OrchestrationConfigurationError if:
+        - The file exists but contains malformed YAML.
+        - The root is not a mapping.
+        - ``queue_export`` is not a mapping.
+        - ``output_path`` is not a string or is blank.
+        """
+        import yaml
+
+        profile_path = repo / "config" / "profile.yml"
+        if not profile_path.exists():
+            return None
+
+        try:
+            with profile_path.open("r", encoding="utf-8") as f:
+                profile: Any = yaml.safe_load(f)
+        except yaml.YAMLError as exc:
+            raise OrchestrationConfigurationError(
+                f"JobHunter config/profile.yml contains malformed YAML: {exc}"
+            ) from exc
+        except OSError as exc:
+            raise OrchestrationConfigurationError(
+                f"Cannot read JobHunter config/profile.yml: {exc}"
+            ) from exc
+
+        if profile is None:
+            # Empty file → no queue_export key → use default.
+            return None
+
+        if not isinstance(profile, dict):
+            raise OrchestrationConfigurationError(
+                f"JobHunter config/profile.yml root must be a mapping, got {type(profile).__name__}"
+            )
+
+        profile_dict: dict[str, Any] = profile  # type: ignore[assignment]
+        queue_export: Any = profile_dict.get("queue_export")
+        if queue_export is None:
+            # No queue_export key → use default.
+            return None
+
+        if not isinstance(queue_export, dict):
+            raise OrchestrationConfigurationError(
+                f"JobHunter config/profile.yml -> queue_export must be a mapping, "
+                f"got {type(queue_export).__name__}"
+            )
+
+        queue_export_dict: dict[str, Any] = queue_export  # type: ignore[assignment]
+        configured: Any = queue_export_dict.get("output_path")
+        if configured is None:
+            # Key absent → use default.
+            return None
+
+        if not isinstance(configured, str):
+            raise OrchestrationConfigurationError(
+                f"JobHunter config/profile.yml -> queue_export.output_path "
+                f"must be a string, got {type(configured).__name__}"
+            )
+
+        stripped = configured.strip()
+        if not stripped:
+            raise OrchestrationConfigurationError(
+                "JobHunter config/profile.yml -> queue_export.output_path is a blank string"
+            )
+
+        return stripped
+
+    def _resolve_queue_output(self) -> Path:
+        """Resolve the queue output path from JobHunter's config/profile.yml.
+
+        Priority:
+        1. If UAA_JOBHUNTER_QUEUE_OUTPUT is set and matches JH config → use it.
+        2. Read JobHunter's config/profile.yml → queue_export.output_path,
+           resolve relative to the JH repo root.
+        3. If config is missing or key absent → use JobHunter's documented
+           default: <jobhunter_repo>/data/application_queue.jsonl.
+
+        ``run_all.py`` writes to the path configured in JobHunter's
+        ``config/profile.yml`` → ``queue_export.output_path``.
+        """
+        repo = self._settings.jobhunter_repo
+        if repo is None:
+            if self._settings.queue_path is not None:
+                return self._settings.queue_path
+            raise OrchestrationConfigurationError(
+                "Queue output path is not configured (set UAA_JOBHUNTER_REPO)"
+            )
+        # If explicit override is set, use it (validation already checked match).
+        if self._settings.jobhunter_queue_output is not None:
+            return self._settings.jobhunter_queue_output
+        # Read from JobHunter's config.
+        jh_configured = self._read_jobhunter_queue_config(repo)
+        if jh_configured is not None:
+            p = Path(jh_configured)
+            if not p.is_absolute():
+                p = repo / p
+            return p
+        # Default: <jobhunter_repo>/data/application_queue.jsonl
+        return repo / "data" / "application_queue.jsonl"
+
+
+__all__ = [
+    "OrchestrationConfigurationError",
+    "OrchestrationConcurrentError",
+    "OrchestrationService",
+]
