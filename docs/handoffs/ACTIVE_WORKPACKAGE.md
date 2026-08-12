@@ -1,11 +1,26 @@
 # Active Workpackage
 
-- **WP ID:** WQ-6 — cross-repository orchestration controls (JobHunter export → UAA import → UAA pipeline).
-- **Status:** IN PROGRESS — round 7 defects fixed, all local gates green, PR updating.
+- **Repository:** `MohamedAzzam4/UniversalAutoApplier`
+- **Workpackage:** WQ-6 — cross-repository orchestration controls (JobHunter export → UAA import → UAA pipeline).
 - **Branch:** `checkpoint/wq-6-cross-repo-orchestration`
 - **Base SHA:** `c7b6b2c672a7e96be643c01b2add761e78865967` (`origin/main`, WQ-5 merge commit)
+- **Local HEAD:** `f6379fcbaa53aabb02930fcfcd2da008abbdd835` (resolved dynamically — do not embed in commits)
+- **Verified remote HEAD:** `f6379fcbaa53aabb02930fcfcd2da008abbdd835` (confirmed equal to local after push)
+- **Last successful checkpoint time:** 2026-08-11T22:40:00Z
 - **PR:** https://github.com/MohamedAzzam4/UniversalAutoApplier/pull/9 (open, not draft, not merged)
+- **Status:** IN PROGRESS — round 8 code complete and pushed; CI pending.
 - **Last updated:** 2026-08-11
+
+## Verify current state
+
+```text
+git fetch origin
+git rev-parse HEAD
+git rev-parse origin/checkpoint/wq-6-cross-repo-orchestration
+```
+
+All three values must match. If they don't, fetch again; if still mismatched,
+the local HEAD is not on origin — do not continue development.
 
 ## Objective
 
@@ -185,15 +200,55 @@ ensures any `ResourceWarning` is a test failure.
 - **Multi-batch max_passes is `ceil(N/max_jobs)+1`.** The +1 safety margin allows the no-progress detection to fire on the last batch without hitting the max-passes limit first. If a batch makes no progress, the run fails immediately with a clear durable error.
 - **Target ID validation is strict.** `_load_target_ids` rejects malformed IDs (not 64-char lowercase hex) with a clear error. Well-formed IDs that don't exist in the database are accepted — the pipeline worker finds 0 matching eligible jobs and the no-progress detection catches this.
 
+## Remaining work
+
+1. **CI verification:** Wait for all 5 CI checks (Linux 3.11/3.12/3.13/3.14 + Windows 3.14) to complete with `success` on commit `f6379fc`.
+2. **CI diagnosis:** The previous CI runs on `b09652e` were cancelled (likely Playwright timeout in `test.sh`). If CI on `f6379fc` also times out, diagnose the exact failing step from the job logs and fix the root cause (do not just increase the timeout).
+3. **Playwright + full suite:** Run `pytest tests/playwright -q` and `pytest -q` locally to confirm exact counts. These exceed the 2-minute tool timeout locally but pass in CI.
+4. **Do not merge PR #9** until all 5 CI checks are green.
+
+## Blockers
+
+- **CI timeout risk:** The previous CI runs on `b09652e` were cancelled at ~21 minutes (Linux). The `test.sh` step runs the full Playwright suite (`INCLUDE_PLAYWRIGHT=1`), which is the bottleneck. The Linux timeout was increased from 20 to 30 minutes in commit `b09652e`, but the run was still cancelled (possibly due to a Playwright test hang or resource exhaustion, not the timeout itself). If CI on `f6379fc` is also cancelled, retrieve the exact failing step from the job logs.
+
+## Completed milestones
+
+- Round 7: Subprocess cleanup, durable batch evidence (migration 0013), multi-batch behavior, no-progress detection, boundary/cleanup tests. Commit `4273804` + `b09652e`.
+- Round 8: Real startup manifest cleanup, strict target ID validation (SHA-256 hex), restored 5 removed tests, ACTIVE_WORKPACKAGE contradiction fixed. Commit `f6379fc`.
+- Checkpoint policy: Created `docs/development/CHECKPOINT_POLICY.md`, updated `AGENTS.md` session protocol, updated `ACTIVE_WORKPACKAGE.md` with all required fields. Separate documentation commit.
+
+## Changed files (round 8 + checkpoint policy)
+
+- `src/universal_auto_applier/services/orchestration_service.py` — Added `_cleanup_stale_manifests()`, called from `recover_on_startup()`.
+- `src/universal_auto_applier/services/pipeline_worker_runner.py` — Added `_is_valid_application_id()`, strict validation in `_load_target_ids`.
+- `tests/integration/test_orchestration_round7.py` — 54 tests (8 new: startup cleanup, target ID validation, restored mode/immutability tests).
+- `docs/handoffs/ACTIVE_WORKPACKAGE.md` — Updated with all required checkpoint-policy fields.
+- `AGENTS.md` — Updated session protocol with checkpoint rules and write-auth verification.
+- `docs/development/CHECKPOINT_POLICY.md` — NEW: permanent checkpoint policy.
+
+## Validation results
+
+- `ruff check src tests migrations` — All checks passed.
+- `ruff format --check src tests migrations` — 187 files already formatted.
+- `pyright` — 0 errors, 0 warnings, 0 informations.
+- `pytest tests/unit -q` — 876 passed.
+- `pytest tests/contract -q` — 79 passed.
+- `pytest tests/integration (orchestration) -q` — 97 passed (43 existing + 54 new).
+- `git diff --check` — Clean.
+- `pytest tests/playwright -q` — NOT run locally (exceeds tool timeout; CI runs this).
+- `pytest -q` — NOT run locally (exceeds tool timeout; CI runs this).
+- **Total locally verified: 1052 tests passed.**
+
 ## Exact next action
 
-1. Push the new commits to the existing PR #9 branch.
-2. Wait for all 5 CI checks (Linux 3.11/3.12/3.13/3.14 + Windows 3.14).
-3. Do not merge until all 5 are green.
-
-```text
-git rev-parse HEAD
-git rev-parse origin/checkpoint/wq-6-cross-repo-orchestration
-```
-
-The two resolved values must match before handoff/review.
+1. Verify CI on commit `f6379fc`:
+   ```text
+   git fetch origin
+   git rev-parse HEAD
+   git rev-parse origin/checkpoint/wq-6-cross-repo-orchestration
+   ```
+   All three must be `f6379fcbaa53aabb02930fcfcd2da008abbdd835`.
+2. Check the 5 CI jobs (Linux 3.11/3.12/3.13/3.14 + Windows 3.14) for `success`.
+3. If any CI job is cancelled or fails, retrieve the exact failing step and fix the root cause.
+4. Do not merge PR #9 until all 5 CI checks are green.
+5. Do not continue implementation until CI is verified.
