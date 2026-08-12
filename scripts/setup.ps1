@@ -93,9 +93,9 @@ Invoke-NativeCommand {
     & $py -c "import os; from pathlib import Path; from universal_auto_applier.persistence.migrations import apply_migrations; from universal_auto_applier.persistence.db import build_engine_url; data_dir = Path(os.environ['UAA_DATA_DIR']); print('head=', apply_migrations(build_engine_url(data_dir / 'uaa.sqlite')))"
 } -Description "Apply Alembic migrations to head"
 
-Write-Host "==> Running smoke tests (unit + integration, no Playwright)" -ForegroundColor Cyan
+Write-Host "==> Running smoke tests (unit + integration, no Playwright, no live)" -ForegroundColor Cyan
 Invoke-NativeCommand {
-    & $py -m pytest tests/unit tests/integration -q
+    & $py -m pytest tests/unit tests/integration -m "not playwright and not live" -q
 } -Description "Smoke tests"
 
 Write-Host ""

@@ -43,8 +43,8 @@ mkdir -p "$UAA_DATA_DIR"
 # source string — backslashes in Windows paths trigger SyntaxWarning.
 python -c "import os; from pathlib import Path; from universal_auto_applier.persistence.migrations import apply_migrations; from universal_auto_applier.persistence.db import build_engine_url; data_dir = Path(os.environ['UAA_DATA_DIR']); print('head=', apply_migrations(build_engine_url(data_dir / 'uaa.sqlite')))"
 
-echo "==> Running smoke tests (unit + integration, no Playwright)"
-python -m pytest tests/unit tests/integration -q
+echo "==> Running smoke tests (unit + integration, no Playwright, no live)"
+python -m pytest tests/unit tests/integration -m "not playwright and not live" -q
 
 echo ""
 echo "Bootstrap complete."
