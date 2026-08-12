@@ -10,6 +10,16 @@ name: verify-windows-py314
 #   - push to checkpoint/bootstrap-phase-0 (the branch under review)
 #   - pull_request targeting main (so the gate runs before any merge)
 #   - manual dispatch (workflow_dispatch) for re-runs on demand
+#
+# Design note (WQ-6 post-merge hotfix):
+# Previously this workflow called `test.ps1 -All -IncludePlaywright` (which
+# runs ruff + pyright + pytest internally) and THEN re-ran ruff, pyright, and
+# the full pytest suite as direct steps. Each expensive suite ran twice,
+# causing the 65-minute job timeout to be hit on the second pytest run.
+# The workflow now uses a single authoritative orchestration path: each gate
+# runs exactly once as a dedicated step with step-level visibility. The
+# `test.ps1` script remains available for local use but is not invoked in CI
+# to avoid duplication.
 
 "on":
   push:
@@ -27,12 +37,10 @@ jobs:
   verify-windows-py314:
     name: Windows + Python 3.14 bootstrap gate
     runs-on: windows-latest
-    # The gate intentionally runs the full pytest suite TWICE (once inside
-    # test.ps1 -All -IncludePlaywright, once as the direct pytest step) to
-    # mirror a manual reviewer run. With the Playwright suite that takes
-    # ~52 minutes on the hosted runner, so a 45-minute cap cancelled the job
-    # mid-run; 65 minutes leaves headroom.
-    timeout-minutes: 65
+    # Each gate runs exactly once. The heaviest step (pytest with Playwright)
+    # takes ~30-35 minutes on the hosted runner. 45 minutes provides ample
+    # headroom without encouraging runaway suites.
+    timeout-minutes: 45
 
     steps:
       - name: Checkout
@@ -93,35 +101,56 @@ jobs:
         run: |
           .\scripts\setup.ps1 -PythonExecutable python
 
-      - name: Run test.ps1 -All -IncludePlaywright
-        shell: pwsh
-        run: |
-          .\scripts\test.ps1 -All -IncludePlaywright
+      # ------------------------------------------------------------------
+      # Quality gates — each runs exactly once.
+      # ------------------------------------------------------------------
 
-      - name: Run direct ruff check
+      - name: Ruff check (src tests migrations)
         shell: pwsh
         run: |
           .\.venv\Scripts\python.exe -m ruff check src tests migrations
 
-      - name: Run direct ruff format --check
+      - name: Ruff format --check (src tests migrations)
         shell: pwsh
         run: |
           .\.venv\Scripts\python.exe -m ruff format --check src tests migrations
 
-      - name: Run direct pyright
+      - name: Pyright
         shell: pwsh
         run: |
           .\.venv\Scripts\python.exe -m pyright
 
-      - name: Run direct pytest (full suite)
+      # ------------------------------------------------------------------
+      # Test suites — each runs exactly once.
+      # The pytest step uses -m "not live" to include Playwright while
+      # excluding live (real ATS) tests. This is the single authoritative
+      # full-suite run; no second pytest invocation follows.
+      # ------------------------------------------------------------------
+
+      - name: Pytest (full suite, not live, including Playwright)
         shell: pwsh
         run: |
-          .\.venv\Scripts\python.exe -m pytest
+          .\.venv\Scripts\python.exe -m pytest -m "not live" -q
 
-      - name: Run contract tests specifically (ResourceWarning gate)
+      # ------------------------------------------------------------------
+      # ResourceWarning contract gate — a focused re-run of the contract
+      # tests to prove the filterwarnings = ["error"] config is wired
+      # correctly. This is lightweight (contract tests run in seconds)
+      # and distinct from the full suite above.
+      # ------------------------------------------------------------------
+
+      - name: Contract tests (ResourceWarning gate)
         shell: pwsh
         run: |
           .\.venv\Scripts\python.exe -m pytest tests\contract\test_migrations.py -q
+
+      # ------------------------------------------------------------------
+      # Deliberate ResourceWarning proof — writes a temp test that emits
+      # a ResourceWarning, asserts pytest FAILS (proving the filter is
+      # active), then cleans up the temp file. This is distinct from the
+      # contract gate above: it proves the filter catches ANY
+      # ResourceWarning, not just those in existing tests.
+      # ------------------------------------------------------------------
 
       - name: Prove ResourceWarning is treated as error
         shell: pwsh
