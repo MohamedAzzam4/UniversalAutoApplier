@@ -29,6 +29,7 @@
 [CmdletBinding()]
 param(
     [switch]$SkipBrowser,
+    [switch]$SkipSmokeTests,
     [string]$PythonExecutable = "python"
 )
 
@@ -93,10 +94,14 @@ Invoke-NativeCommand {
     & $py -c "import os; from pathlib import Path; from universal_auto_applier.persistence.migrations import apply_migrations; from universal_auto_applier.persistence.db import build_engine_url; data_dir = Path(os.environ['UAA_DATA_DIR']); print('head=', apply_migrations(build_engine_url(data_dir / 'uaa.sqlite')))"
 } -Description "Apply Alembic migrations to head"
 
-Write-Host "==> Running smoke tests (unit + integration, no Playwright, no live)" -ForegroundColor Cyan
-Invoke-NativeCommand {
-    & $py -m pytest tests/unit tests/integration -m "not playwright and not live" -q
-} -Description "Smoke tests"
+if (-not $SkipSmokeTests) {
+    Write-Host "==> Running smoke tests (unit + integration, no Playwright, no live)" -ForegroundColor Cyan
+    Invoke-NativeCommand {
+        & $py -m pytest tests/unit tests/integration -m "not playwright and not live" -q
+    } -Description "Smoke tests"
+} else {
+    Write-Host "==> Skipping smoke tests (SkipSmokeTests flag set)" -ForegroundColor DarkGray
+}
 
 Write-Host ""
 Write-Host "Bootstrap complete." -ForegroundColor Green

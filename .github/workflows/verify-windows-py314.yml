@@ -109,10 +109,10 @@ jobs:
           if (Test-Path .venv) { Remove-Item -Recurse -Force .venv }
           if (Test-Path .uaa_data) { Remove-Item -Recurse -Force .uaa_data }
 
-      - name: Run setup.ps1 (skip Playwright browser install)
+      - name: Run setup.ps1 (skip Playwright browser install, skip smoke tests)
         shell: pwsh
         run: |
-          .\scripts\setup.ps1 -PythonExecutable python -SkipBrowser
+          .\scripts\setup.ps1 -PythonExecutable python -SkipBrowser -SkipSmokeTests
 
       # ------------------------------------------------------------------
       # Quality gates — each runs exactly once.
@@ -233,34 +233,7 @@ jobs:
       - name: Run setup.ps1 (with Playwright, skip smoke tests)
         shell: pwsh
         run: |
-          # Create venv and install deps + Chromium, but skip the smoke tests
-          # (they overlap with the core job's test run).
-          # We inline the setup steps to avoid running smoke tests.
-          $ErrorActionPreference = "Stop"
-          Set-Location -Path $env:GITHUB_WORKSPACE
-
-          Write-Host "==> Creating virtual environment (.venv)"
-          & python -m venv .venv
-          if ($LASTEXITCODE -ne 0) { throw "venv creation failed" }
-
-          $py = ".\.venv\Scripts\python.exe"
-
-          & $py -m pip install --upgrade pip
-          if ($LASTEXITCODE -ne 0) { throw "pip upgrade failed" }
-
-          & $py -m pip install -e ".[dev]"
-          if ($LASTEXITCODE -ne 0) { throw "pip install failed" }
-
-          & $py -m playwright install chromium
-          if ($LASTEXITCODE -ne 0) { throw "playwright install failed" }
-
-          Write-Host "==> Applying database migrations"
-          $env:UAA_DATA_DIR = ".\.uaa_data"
-          New-Item -ItemType Directory -Force -Path $env:UAA_DATA_DIR | Out-Null
-          & $py -c "import os; from pathlib import Path; from universal_auto_applier.persistence.migrations import apply_migrations; from universal_auto_applier.persistence.db import build_engine_url; data_dir = Path(os.environ['UAA_DATA_DIR']); print('head=', apply_migrations(build_engine_url(data_dir / 'uaa.sqlite')))"
-          if ($LASTEXITCODE -ne 0) { throw "migrations failed" }
-
-          Write-Host "Setup complete (smoke tests skipped — covered by windows-core job)"
+          .\scripts\setup.ps1 -PythonExecutable python -SkipSmokeTests
 
       # ------------------------------------------------------------------
       # Playwright test suite — the complete Playwright collection.
