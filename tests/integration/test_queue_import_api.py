@@ -219,6 +219,13 @@ class TestPostImport:
             assert response_b.status_code == 409
             assert "already running" in response_b.json()["detail"]
 
+            # B's 409 rejection must NOT release A's lock. A is still inside
+            # _run_import (blocked on block_event), so it still owns the lock;
+            # a non-blocking acquire from this thread must therefore fail.
+            assert not service._lock.acquire(blocking=False), (  # noqa: SLF001
+                "B's 409 rejection released A's lock"
+            )
+
             # Release A.
             block_event.set()
             thread_a.join(timeout=30)
@@ -230,11 +237,22 @@ class TestPostImport:
             response_c = queue_client.post("/api/queue/import")
             assert response_c.status_code == 200
             assert response_c.json()["run"]["state"] == "success"
+
+            # Lock is not left acquired after A and C both completed: a
+            # non-blocking acquire from this thread must succeed, then we
+            # release it again to leave the service in a clean state.
+            assert service._lock.acquire(blocking=False), "Lock was left acquired after C"  # noqa: SLF001
+            service._lock.release()  # noqa: SLF001
         finally:
             service._run_import = original_run_import  # type: ignore[method-assign]  # noqa: SLF001
             block_event.set()
             if thread_a.is_alive():
                 thread_a.join(timeout=5)
+
+        # Monkeypatch was restored in the finally block above.
+        assert service._run_import is original_run_import, (  # noqa: SLF001
+            "Monkeypatch was not restored in finally"
+        )
 
 
 class TestGetStatus:
