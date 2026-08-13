@@ -57,12 +57,21 @@ WQ-7 uses entirely synthetic candidate data. The user accepts that:
 
 ## Remaining work
 
-- Stage 1: Navigation reconnaissance — discover 5 real ATS targets, navigate
-  to forms, observe controls. No data entry.
-- Stage 2: Synthetic fill-only dry run — fill safe fields with synthetic
-  profile, upload synthetic documents, stop before final submit.
+- Stage 1: Navigation reconnaissance — **BLOCKED by sandbox network limitation.**
+  The sandbox cannot reach JavaScript-rendered Greenhouse/Lever/Workday
+  application forms. Must be run from an environment with full network access.
+- Stage 2: Synthetic fill-only dry run — **BLOCKED by Stage 1.**
 - Phase 7: UI integration (dashboard "Real-site dry run" view).
 - Phase 8: Full validation + CI.
+
+## Blockers
+
+- **Sandbox network limitation:** The sandbox's browser can reach some sites
+  (e.g., job-boards.greenhouse.io/gitlab) but cannot render JavaScript-heavy
+  application form widgets. Lever boards return 404. This prevents target
+  discovery and navigation reconnaissance from this environment.
+- **Requires operator environment:** Stages 1 and 2 must be run from the
+  operator's machine or a CI environment with full network access.
 
 ## Changed files
 
