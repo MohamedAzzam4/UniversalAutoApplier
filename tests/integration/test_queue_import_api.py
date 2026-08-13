@@ -12,6 +12,7 @@ import json
 from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
+from typing import Any
 
 import pytest
 from fastapi.testclient import TestClient
@@ -166,45 +167,69 @@ class TestPostImport:
         finally:
             service._lock.release()
 
-    @pytest.mark.skip(
-        reason=(
-            "Nondeterministic: uses threading.Barrier with TestClient which "
-            "serializes requests through a portal, making overlap unreliable. "
-            "Replaced by deterministic tests in "
-            "test_queue_import_concurrency.py::TestDeterministicConcurrency."
-        )
-    )
     def test_concurrent_import_returns_409_when_started_by_other_request(
         self, queue_client: TestClient
     ) -> None:
         """Two overlapping requests: only one wins, the other gets 409.
 
-        SKIPPED: This test was nondeterministic because ``TestClient`` processes
-        requests through an async portal that may serialize them. The barrier
-        synchronization does not guarantee overlap — both requests can complete
-        sequentially, producing [200, 200] instead of [200, 409].
+        This test uses ``threading.Event`` to deterministically guarantee
+        that request A owns the production lock before request B is sent.
 
-        The deterministic replacement is in
-        ``test_queue_import_concurrency.py::TestDeterministicConcurrency::test_request_b_gets_409_while_a_holds_lock``
-        which uses ``threading.Event`` to block request A inside ``_run_import``
-        after lock acquisition, then sends request B while A is blocked.
+        The old test synchronized thread launch but did not guarantee that
+        request A owned the production lock while request B executed.
+        Therefore both requests could execute sequentially and legitimately
+        return 200.
         """
         import threading
 
-        results: list[int] = []
-        barrier = threading.Barrier(2)
+        # Trigger lazy service creation to get the shared lock-bearing service.
+        queue_client.get("/api/queue/status")
+        service = queue_client.app.state.queue_import_service
+        original_run_import = service._run_import  # noqa: SLF001
 
-        def _post() -> None:
-            barrier.wait()
-            results.append(queue_client.post("/api/queue/import").status_code)
+        block_event = threading.Event()
+        acquired_event = threading.Event()
 
-        threads = [threading.Thread(target=_post) for _ in range(2)]
-        for t in threads:
-            t.start()
-        for t in threads:
-            t.join(timeout=30)
+        def blocking_run_import(source: Path, trigger: str) -> Any:  # noqa: ARG001
+            """Block inside _run_import after the lock is acquired."""
+            acquired_event.set()
+            block_event.wait(timeout=10)
+            return original_run_import(source, trigger)
 
-        assert sorted(results) == [200, 409]
+        service._run_import = blocking_run_import  # type: ignore[method-assign]  # noqa: SLF001
+
+        result_a: list[int] = []
+        error_a: list[Exception] = []
+
+        def _post_a() -> None:
+            try:
+                result_a.append(queue_client.post("/api/queue/import").status_code)
+            except Exception as exc:  # noqa: BLE001
+                error_a.append(exc)
+
+        thread_a = threading.Thread(target=_post_a, daemon=True)
+        thread_a.start()
+
+        try:
+            # Wait until A has acquired the lock (inside _run_import).
+            assert acquired_event.wait(timeout=10), "Request A did not acquire lock in time"
+
+            # Request B: must get 409 because A holds the lock.
+            response_b = queue_client.post("/api/queue/import")
+            assert response_b.status_code == 409
+            assert "already running" in response_b.json()["detail"]
+
+            # Release A.
+            block_event.set()
+            thread_a.join(timeout=30)
+            assert not thread_a.is_alive(), "Request A did not complete"
+            assert len(error_a) == 0, f"Request A raised: {error_a}"
+            assert result_a == [200]
+        finally:
+            service._run_import = original_run_import  # type: ignore[method-assign]  # noqa: SLF001
+            block_event.set()
+            if thread_a.is_alive():
+                thread_a.join(timeout=5)
 
 
 class TestGetStatus:
