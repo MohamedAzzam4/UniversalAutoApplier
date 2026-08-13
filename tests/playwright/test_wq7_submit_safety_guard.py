@@ -25,6 +25,8 @@ from universal_auto_applier.execution_mode import (
     create_wq7_guard,
 )
 
+pytestmark = pytest.mark.playwright
+
 # Fixture HTML with counters for every submit-capable action.
 _COUNTER_FIXTURE = """<!DOCTYPE html>
 <html>

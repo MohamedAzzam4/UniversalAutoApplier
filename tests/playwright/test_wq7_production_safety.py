@@ -48,6 +48,8 @@ from universal_auto_applier.browser.submit_interlock import (
     read_counters,
 )
 
+pytestmark = pytest.mark.playwright
+
 # ---------------------------------------------------------------------------
 # Fixture HTML: a page with every submit vector and JavaScript counters.
 # ---------------------------------------------------------------------------
