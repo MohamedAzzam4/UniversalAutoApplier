@@ -173,6 +173,19 @@ class LiveBrowserRunner:
         trace_started = False
         seen_actions: set[tuple[str, str, str]] = set()
 
+        # WQ-7: Install the browser-side submit interlock BEFORE any page
+        # is created. This intercepts submit events, form.submit(),
+        # requestSubmit(), and dispatched SubmitEvents at the capture phase,
+        # before any site JavaScript can process them.
+        from universal_auto_applier.browser.submit_interlock import (
+            install_interlock,
+            read_counters,
+        )
+
+        if self._config.hard_submit_block:
+            install_interlock(context)
+            logger.info("[%s] WQ-7 submit interlock installed on context", job.application_id[:12])
+
         if self._config.capture_trace:
             try:
                 context.tracing.start(screenshots=True, snapshots=True, sources=False)
@@ -334,6 +347,28 @@ class LiveBrowserRunner:
             report.errors.append(f"{type(exc).__name__}: {exc}")
             logger.exception("[%s] live browser run failed", job.application_id[:12])
         finally:
+            # WQ-7: Read the browser-side interlock counters to record
+            # truthful evidence of what happened (not what we hope happened).
+            if self._config.hard_submit_block and page is not None and not page.is_closed():
+                try:
+                    counters = read_counters(page)
+                    if counters.get("blocked_submissions", 0) > 0:
+                        report.errors.append(
+                            f"wq7_interlock: blocked {counters['blocked_submissions']} "
+                            f"submission attempt(s) — "
+                            f"submit_events={counters['submit_events']}, "
+                            f"form_submit={counters['form_submit_calls']}, "
+                            f"request_submit={counters['request_submit_calls']}, "
+                            f"dispatch={counters['dispatch_submit_events']}"
+                        )
+                        logger.warning(
+                            "[%s] WQ-7 interlock blocked %d submission(s)",
+                            job.application_id[:12],
+                            counters["blocked_submissions"],
+                        )
+                except Exception:  # noqa: BLE001
+                    pass  # Counter reading is best-effort
+
             if page is not None and not page.is_closed():
                 report.final_url = page.url
                 self._screenshot(page, run_dir, "final.png", report)
@@ -346,7 +381,14 @@ class LiveBrowserRunner:
                 except PlaywrightError as exc:
                     report.errors.append(f"trace_stop_failed: {exc}")
             report.finished_at = datetime.now(UTC)
-            report.submitted = False
+            # WQ-7: report.submitted reflects what actually happened.
+            # The interlock blocks all submit events, so submitted should
+            # always be False. But we don't force it — we read the truth
+            # from the interlock counters. If the interlock was not installed
+            # (non-WQ-7 mode), submitted remains False because the runner
+            # never calls submit.
+            if not self._config.hard_submit_block:
+                report.submitted = False
             self._write_report(report, run_dir)
 
         return report
