@@ -209,31 +209,31 @@ class TestPlatformUrlConfig:
 class TestSyntheticJobCreation:
     """Synthetic jobs are created correctly for platform dry-runs."""
 
-    def test_synthetic_job_has_wq7_marker(self) -> None:
+    def test_synthetic_job_has_wq7_marker(self, tmp_path: Path) -> None:
         """The synthetic job is marked with wq7_synthetic=True."""
-        job = _make_synthetic_job("https://boards.greenhouse.io/test", "greenhouse")
-        assert job.metadata.get("wq7_synthetic") is True
+        job = _make_synthetic_job("https://boards.greenhouse.io/test", "greenhouse", tmp_path)
+        assert job.metadata["candidate_profile"].get("wq7_synthetic") is True
 
-    def test_synthetic_job_has_correct_url(self) -> None:
+    def test_synthetic_job_has_correct_url(self, tmp_path: Path) -> None:
         """The synthetic job uses the provided URL."""
         url = "https://jobs.lever.co/test-company/12345"
-        job = _make_synthetic_job(url, "lever")
+        job = _make_synthetic_job(url, "lever", tmp_path)
         assert job.url == url
 
-    def test_synthetic_job_has_deterministic_id(self) -> None:
+    def test_synthetic_job_has_deterministic_id(self, tmp_path: Path) -> None:
         """The same platform+URL produces the same application_id."""
         url = "https://boards.greenhouse.io/test"
-        job1 = _make_synthetic_job(url, "greenhouse")
-        job2 = _make_synthetic_job(url, "greenhouse")
+        job1 = _make_synthetic_job(url, "greenhouse", tmp_path)
+        job2 = _make_synthetic_job(url, "greenhouse", tmp_path)
         assert job1.application_id == job2.application_id
 
-    def test_synthetic_job_has_synthetic_candidate(self) -> None:
+    def test_synthetic_job_has_synthetic_candidate(self, tmp_path: Path) -> None:
         """The synthetic job has a synthetic candidate profile (not real)."""
-        job = _make_synthetic_job("https://example.com", "greenhouse")
+        job = _make_synthetic_job("https://example.com", "greenhouse", tmp_path)
         profile = job.metadata["candidate_profile"]
         assert profile["first_name"] == "Test"
-        assert profile["last_name"] == "User"
-        assert profile["email"] == "test@example.com"
+        assert profile["last_name"] == "Automation"
+        assert profile["email"] == "test.automation@example.com"
 
 
 class TestLinkedInExclusion:

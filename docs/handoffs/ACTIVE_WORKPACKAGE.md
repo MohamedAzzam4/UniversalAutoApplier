@@ -6,10 +6,10 @@
 - **Base SHA:** `2733a1a1da082946857692e0902b21f81033a685` (`origin/main`, WQ-6 merge commit)
 - **Local HEAD:** Resolved dynamically — run `git rev-parse HEAD`
 - **Verified remote HEAD:** Resolved dynamically — run `git rev-parse origin/checkpoint/wq-7-real-ats-dry-runs`
-- **Last successful checkpoint time:** 2026-08-12
+- **Last successful checkpoint time:** 2026-08-13
 - **PR:** To be created
-- **Status:** IN PROGRESS — Safety guard + counter tests complete. Phases 1, 2, 5, 7, 8 pending.
-- **Last updated:** 2026-08-12
+- **Status:** IN PROGRESS — Synthetic profile + submit interlock complete. Navigation reconnaissance pending.
+- **Last updated:** 2026-08-13
 
 ## Verify current state
 
@@ -19,61 +19,70 @@ git rev-parse HEAD
 git rev-parse origin/checkpoint/wq-7-real-ats-dry-runs
 ```
 
-All three values must match. If they don't, fetch again; if still mismatched,
-the local HEAD is not on origin — do not continue development.
-
 ## Objective
 
-Implement Level-2 dry-runs against real Greenhouse/Lever/Workday/SmartRecruiters
-sites with evidence capture. Never performs final submission. LinkedIn Easy Apply
+Level-2 dry-runs against real Greenhouse/Lever/Workday/SmartRecruiters sites
+with evidence capture. Never performs final submission. LinkedIn Easy Apply
 is excluded.
+
+## Accepted-risk decision (2026-08-13)
+
+WQ-7 uses entirely synthetic candidate data. The user accepts that:
+
+- Synthetic data, synthetic documents, autosave requests, uploads, or drafts
+  may reach the ATS server.
+- Blocking all mutation traffic (fetch, XHR, sendBeacon, POST/PUT/PATCH) would
+  break realistic ATS behavior and is NOT implemented.
+- The form-submit interlock (JavaScript init-script) blocks ordinary form
+  submit events, form.submit, requestSubmit, Enter-based submission, and
+  recognized final-submit controls. It is defense in depth, NOT a universal
+  guarantee against every custom network submission mechanism.
+- WQ-7 accepts this residual risk because all live-test data is synthetic.
+- Never claim a mathematical guarantee of zero outbound requests.
 
 ## Completed milestones
 
 - Phase 0: Startup verification, branch creation, push auth verified.
-- Phase 3+4 (initial): Implemented `live_dry_run_platforms.py` service,
-  `hard_submit_block` flag in `LiveBrowserConfig`, `attempt_submit()` method,
-  CLI `live-dry-run-platforms` subcommand, WQ-7 config settings, 20 unit tests.
-- Safety audit: Comprehensive call-path audit of every submit-capable code path.
-  Found one residual gap: `set_input_files` and `change`-event mutations could
-  auto-submit on pages with `onchange="this.form.submit()"` handlers.
-- Safety guard: Implemented `ExecutionMode` enum and `SubmitSafetyGuard` class
-  with authoritative enforcement at the lowest browser-action layer. Closes the
-  residual gap by pre-screening file inputs for auto-submit handlers. Added 30
-  counter-based Playwright tests proving zero submit events in all paths.
-
-## Corrected changed-file list (8 files from milestones 1+2, +2 new = 10 total)
-
-1. `src/universal_auto_applier/config.py` — WQ-7 settings
-2. `src/universal_auto_applier/browser/live_runner.py` — hard_submit_block flag
-3. `src/universal_auto_applier/services/live_dry_run_platforms.py` — per-platform orchestrator
-4. `src/universal_auto_applier/cli.py` — live-dry-run-platforms subcommand
-5. `tests/unit/test_wq7_live_dry_run_platforms.py` — 20 unit tests
-6. `tests/live/test_live_platform_dry_runs.py` — opt-in live test
-7. `.env.example` — WQ-7 env vars section
-8. `docs/handoffs/ACTIVE_WORKPACKAGE.md` — Updated for WQ-7
-9. `src/universal_auto_applier/execution_mode.py` — NEW: ExecutionMode + SubmitSafetyGuard
-10. `tests/playwright/test_wq7_submit_safety_guard.py` — NEW: 30 counter-based tests
+- Phase 3+4 (initial): Implemented live_dry_run_platforms.py service,
+  hard_submit_block flag, attempt_submit() method, CLI subcommand, config.
+- Safety audit: Comprehensive call-path audit of submit-capable code paths.
+- Safety guard: ExecutionMode enum and SubmitSafetyGuard class.
+- Submit interlock: Browser-side JavaScript interlock installed via
+  page.add_init_script() before site scripts. Blocks submit events,
+  form.submit(), requestSubmit(), dispatched SubmitEvents. 23 production-path
+  tests prove zero form submissions across all vectors.
+- Synthetic profile: SyntheticProfile class with example.com email, 555 phone,
+  TEST DATA marking. Synthetic CV/cover letter PDFs generated with visible
+  "TEST DATA — AUTOMATION DRY RUN — NOT A REAL APPLICATION" watermark.
 
 ## Remaining work
 
-- Phase 1: Discover 5 real ATS job URLs (will search, not ask user)
-- Phase 2: Data preflight (check candidate data, documents, API config)
-- Phase 5: Run live dry-runs on selected jobs (requires opt-in + real URLs)
-- Phase 6: Regression fixtures for any defects found (NOT complete — no live-derived fixtures exist yet)
-- Phase 7: UI integration (dashboard "Real-site dry run" view)
-- Phase 8: Full validation + CI
+- Stage 1: Navigation reconnaissance — discover 5 real ATS targets, navigate
+  to forms, observe controls. No data entry.
+- Stage 2: Synthetic fill-only dry run — fill safe fields with synthetic
+  profile, upload synthetic documents, stop before final submit.
+- Phase 7: UI integration (dashboard "Real-site dry run" view).
+- Phase 8: Full validation + CI.
 
-## Blockers
+## Changed files
 
-- **Live URLs needed:** Phase 5 requires real ATS URLs. Phase 1 will discover them.
-- **Candidate data:** Synthetic candidate data is used by default. Real candidate
-  data (CV, cover letter, profile) must be provided by the operator for real form fills.
-- **WQ-7 hard-submit safety:** Now proven with counter-based tests. The
-  `SubmitSafetyGuard` blocks all submit-capable actions at the lowest layer.
+1. `src/universal_auto_applier/config.py` — WQ-7 settings
+2. `src/universal_auto_applier/browser/live_runner.py` — hard_submit_block, interlock
+3. `src/universal_auto_applier/browser/submit_interlock.py` — JS interlock
+4. `src/universal_auto_applier/services/live_dry_run_platforms.py` — orchestrator
+5. `src/universal_auto_applier/cli.py` — live-dry-run-platforms subcommand
+6. `src/universal_auto_applier/execution_mode.py` — ExecutionMode + SubmitSafetyGuard
+7. `src/universal_auto_applier/synthetic_profile.py` — SyntheticProfile + document generation
+8. `tests/unit/test_wq7_live_dry_run_platforms.py` — 20 unit tests
+9. `tests/unit/test_wq7_synthetic_profile.py` — synthetic profile tests
+10. `tests/playwright/test_wq7_submit_safety_guard.py` — 30 guard tests
+11. `tests/playwright/test_wq7_production_safety.py` — 23 production-path tests
+12. `tests/live/test_live_platform_dry_runs.py` — opt-in live test
+13. `.env.example` — WQ-7 env vars
+14. `docs/handoffs/ACTIVE_WORKPACKAGE.md` — this file
 
 ## Exact next action
 
-1. Wait for operator to provide real ATS URLs and candidate data.
-2. Implement Phase 7 (UI integration) — can proceed without live URLs.
-3. Run full validation (Phase 8) and open PR.
+1. Run full deterministic validation (ruff, pyright, pytest).
+2. Begin Stage 1 (navigation reconnaissance) — requires network access.
+3. Open PR after validation passes.

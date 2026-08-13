@@ -144,17 +144,29 @@ def _filter_platforms(urls: dict[str, str], platforms_filter: str | None) -> dic
     return {k: v for k, v in urls.items() if k in requested}
 
 
-def _make_synthetic_job(url: str, platform_name: str) -> ApplicationJob:
+def _make_synthetic_job(
+    url: str, platform_name: str, artifacts_dir: Path | None = None
+) -> ApplicationJob:
     """Create a synthetic ApplicationJob for a platform dry-run.
 
-    Uses a deterministic application_id derived from the URL. The job has
-    a synthetic candidate profile — real candidate data must be provided
-    separately by the operator.
+    Uses a deterministic application_id derived from the URL. The job uses
+    the SyntheticProfile (no real candidate PII) and generates synthetic
+    CV/cover letter PDFs marked as TEST DATA.
     """
+    from universal_auto_applier.synthetic_profile import (
+        SyntheticProfile,
+        create_synthetic_documents,
+    )
+
     application_id = compute_application_id(
         platform=platform_name, external_job_id=f"wq7-dry-run-{platform_name}", url=url
     )
-    # Create synthetic CV and cover letter paths (operator must provide real ones)
+    profile = SyntheticProfile()
+
+    # Generate synthetic documents in the artifacts directory
+    doc_dir = (artifacts_dir or Path("/tmp")) / "wq7-documents"
+    cv_path, cover_path = create_synthetic_documents(doc_dir)
+
     return ApplicationJob(
         application_id=application_id,
         platform=Platform(platform_name)
@@ -165,21 +177,11 @@ def _make_synthetic_job(url: str, platform_name: str) -> ApplicationJob:
         title=f"Real ATS Dry-Run ({platform_name.title()})",
         url=url,
         verdict="apply",
-        cv_pdf="/tmp/wq7-synthetic-cv.pdf",
-        cover_letter_pdf="/tmp/wq7-synthetic-cover.pdf",
+        cv_pdf=str(cv_path),
+        cover_letter_pdf=str(cover_path),
         status=ApplicationStatus.READY_TO_APPLY,
         external_job_id=f"wq7-dry-run-{platform_name}",
-        metadata={
-            "candidate_profile": {
-                "first_name": "Test",
-                "last_name": "User",
-                "full_name": "Test User",
-                "email": "test@example.com",
-                "phone": "+49 123 456789",
-                "requires_sponsorship": False,
-            },
-            "wq7_synthetic": True,
-        },
+        metadata=profile.to_metadata(),
     )
 
 
@@ -263,7 +265,7 @@ def run_platform_dry_runs(
         try:
             logger.info("[wq7] Starting dry-run for %s: %s", platform_name, url)
 
-            job = _make_synthetic_job(url, platform_name)
+            job = _make_synthetic_job(url, platform_name, art_root)
             config = LiveBrowserConfig(
                 artifacts_root=art_root / platform_name,
                 profile_dir=effective_profile,
