@@ -166,10 +166,29 @@ class TestPostImport:
         finally:
             service._lock.release()
 
+    @pytest.mark.skip(
+        reason=(
+            "Nondeterministic: uses threading.Barrier with TestClient which "
+            "serializes requests through a portal, making overlap unreliable. "
+            "Replaced by deterministic tests in "
+            "test_queue_import_concurrency.py::TestDeterministicConcurrency."
+        )
+    )
     def test_concurrent_import_returns_409_when_started_by_other_request(
         self, queue_client: TestClient
     ) -> None:
-        """Two overlapping requests: only one wins, the other gets 409."""
+        """Two overlapping requests: only one wins, the other gets 409.
+
+        SKIPPED: This test was nondeterministic because ``TestClient`` processes
+        requests through an async portal that may serialize them. The barrier
+        synchronization does not guarantee overlap — both requests can complete
+        sequentially, producing [200, 200] instead of [200, 409].
+
+        The deterministic replacement is in
+        ``test_queue_import_concurrency.py::TestDeterministicConcurrency::test_request_b_gets_409_while_a_holds_lock``
+        which uses ``threading.Event`` to block request A inside ``_run_import``
+        after lock acquisition, then sends request B while A is blocked.
+        """
         import threading
 
         results: list[int] = []
