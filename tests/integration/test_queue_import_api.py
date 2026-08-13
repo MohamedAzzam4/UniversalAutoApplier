@@ -225,6 +225,11 @@ class TestPostImport:
             assert not thread_a.is_alive(), "Request A did not complete"
             assert len(error_a) == 0, f"Request A raised: {error_a}"
             assert result_a == [200]
+
+            # Request C: sent after A finishes, must get 200 (lock released).
+            response_c = queue_client.post("/api/queue/import")
+            assert response_c.status_code == 200
+            assert response_c.json()["run"]["state"] == "success"
         finally:
             service._run_import = original_run_import  # type: ignore[method-assign]  # noqa: SLF001
             block_event.set()
