@@ -64,7 +64,7 @@ class SyntheticProfile:
     phone: str = "+1 555 0100"
     city: str = "Test City"
     country: str = "United States"
-    linkedin: str = "https://www.linkedin.com/in/test-automation-dry-run"
+    linkedin: str = ""  # Empty — no real LinkedIn profile is used in WQ-7
     website: str = "https://example.com/test-automation"
     requires_sponsorship: bool = False
     years_of_experience: str = "5"

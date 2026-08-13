@@ -44,9 +44,9 @@ class TestSyntheticProfile:
         assert metadata["candidate_profile"]["wq7_synthetic"] is True
 
     def test_no_real_linkedin_account(self) -> None:
-        """The LinkedIn URL is clearly synthetic."""
+        """No real LinkedIn profile is used — LinkedIn is empty."""
         profile = SyntheticProfile()
-        assert "test-automation-dry-run" in profile.linkedin
+        assert profile.linkedin == ""  # No LinkedIn URL in synthetic profile
 
     def test_no_sensitive_answers(self) -> None:
         """No salary, legal, or demographic answers are fabricated."""
