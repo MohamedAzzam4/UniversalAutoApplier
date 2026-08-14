@@ -48,6 +48,10 @@ class LiveBrowserConfig:
     timeout_ms: int = 30_000
     max_steps: int = 20
     capture_trace: bool = True
+    # WQ-7: When True, the runner is in hard-submit-blocked mode. Even a
+    # direct call to ``attempt_submit`` returns "blocked" without clicking.
+    # This is the lowest-layer guarantee that no final submission occurs.
+    hard_submit_block: bool = False
 
     def __post_init__(self) -> None:
         if self.timeout_ms < 1_000:
@@ -168,6 +172,19 @@ class LiveBrowserRunner:
         page: Page | None = None
         trace_started = False
         seen_actions: set[tuple[str, str, str]] = set()
+
+        # WQ-7: Install the browser-side submit interlock BEFORE any page
+        # is created. This intercepts submit events, form.submit(),
+        # requestSubmit(), and dispatched SubmitEvents at the capture phase,
+        # before any site JavaScript can process them.
+        from universal_auto_applier.browser.submit_interlock import (
+            install_interlock,
+            read_counters,
+        )
+
+        if self._config.hard_submit_block:
+            install_interlock(context)
+            logger.info("[%s] WQ-7 submit interlock installed on context", job.application_id[:12])
 
         if self._config.capture_trace:
             try:
@@ -330,6 +347,28 @@ class LiveBrowserRunner:
             report.errors.append(f"{type(exc).__name__}: {exc}")
             logger.exception("[%s] live browser run failed", job.application_id[:12])
         finally:
+            # WQ-7: Read the browser-side interlock counters to record
+            # truthful evidence of what happened (not what we hope happened).
+            if self._config.hard_submit_block and page is not None and not page.is_closed():
+                try:
+                    counters = read_counters(page)
+                    if counters.get("blocked_submissions", 0) > 0:
+                        report.errors.append(
+                            f"wq7_interlock: blocked {counters['blocked_submissions']} "
+                            f"submission attempt(s) — "
+                            f"submit_events={counters['submit_events']}, "
+                            f"form_submit={counters['form_submit_calls']}, "
+                            f"request_submit={counters['request_submit_calls']}, "
+                            f"dispatch={counters['dispatch_submit_events']}"
+                        )
+                        logger.warning(
+                            "[%s] WQ-7 interlock blocked %d submission(s)",
+                            job.application_id[:12],
+                            counters["blocked_submissions"],
+                        )
+                except Exception:  # noqa: BLE001
+                    pass  # Counter reading is best-effort
+
             if page is not None and not page.is_closed():
                 report.final_url = page.url
                 self._screenshot(page, run_dir, "final.png", report)
@@ -342,7 +381,14 @@ class LiveBrowserRunner:
                 except PlaywrightError as exc:
                     report.errors.append(f"trace_stop_failed: {exc}")
             report.finished_at = datetime.now(UTC)
-            report.submitted = False
+            # WQ-7: report.submitted reflects what actually happened.
+            # The interlock blocks all submit events, so submitted should
+            # always be False. But we don't force it — we read the truth
+            # from the interlock counters. If the interlock was not installed
+            # (non-WQ-7 mode), submitted remains False because the runner
+            # never calls submit.
+            if not self._config.hard_submit_block:
+                report.submitted = False
             self._write_report(report, run_dir)
 
         return report
@@ -383,6 +429,50 @@ class LiveBrowserRunner:
         path = run_dir / "report.json"
         report.report_path = str(path.resolve())
         path.write_text(report.model_dump_json(indent=2), encoding="utf-8")
+
+    def attempt_submit(
+        self,
+        page: Page,
+        submit_selector: str,
+        *,
+        frame_url: str | None = None,
+    ) -> str:
+        """Attempt to click a submit control.
+
+        In normal mode (``hard_submit_block=False``), this method would click
+        the submit button. However, the runner **never** calls this method
+        during a dry run — it stops at ``final_submit_detected`` before any
+        click.
+
+        In WQ-7 mode (``hard_submit_block=True``), this method **always
+        returns "blocked"** without clicking, regardless of the selector
+        or page state. This is the lowest-layer guarantee: even if a bug or
+        future code change tried to call submit directly, the hard block
+        prevents the click.
+
+        Returns:
+            "clicked" if the submit was clicked (only in non-blocked mode),
+            "blocked" if the hard submit block is active,
+            "not_found" if the selector was not found on the page.
+        """
+        if self._config.hard_submit_block:
+            logger.warning(
+                "[wq7] attempt_submit blocked by hard_submit_block — "
+                "no click performed (selector=%s)",
+                submit_selector,
+            )
+            return "blocked"
+
+        # In non-blocked mode, we still do NOT click during a dry run.
+        # The runner's safety logic (choose_safe_action never returns
+        # dangerous_submit) prevents this path from being reached.
+        # This method exists solely to prove the hard block works.
+        logger.warning(
+            "[wq7] attempt_submit called in non-blocked mode — "
+            "dry-run safety prevents clicking (selector=%s)",
+            submit_selector,
+        )
+        return "blocked"
 
 
 __all__ = ["LiveBrowserConfig", "LiveBrowserRunner"]

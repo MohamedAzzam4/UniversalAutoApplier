@@ -135,6 +135,29 @@ class Settings(BaseModel):
     jobhunter_workers: int = Field(default=1, ge=1, le=1)
     pipeline_workers: int = Field(default=1, ge=1, le=1)
 
+    # WQ-7: Real ATS dry-run settings. All opt-in, all off by default.
+    # When True, the live-dry-run-platforms CLI command and the corresponding
+    # live tests are allowed to run. When False, they are skipped with a
+    # clear message. This is separate from UAA_ENABLE_REAL_SUBMISSION (which
+    # gates actual submission, never dry-runs).
+    enable_live_platform_dry_run: bool = Field(default=False)
+    # Per-platform curated real ATS URLs. No defaults — the operator must
+    # supply currently-open application URLs. Missing URLs cause that
+    # platform to be skipped with a clear log line. These are never stored
+    # in the database or committed to the repository.
+    live_greenhouse_url: str | None = Field(default=None)
+    live_lever_url: str | None = Field(default=None)
+    live_workday_url: str | None = Field(default=None)
+    live_smartrecruiters_url: str | None = Field(default=None)
+    # Comma-separated subset of platforms to run (e.g. "greenhouse,lever").
+    # When None, all configured platforms are attempted.
+    live_dry_run_platforms: str | None = Field(default=None)
+    # WQ-7 execution mode: when True, the LiveBrowserRunner is placed in
+    # a hard-submit-blocked mode where even if the submit method is called
+    # directly, it returns "blocked" without clicking. This is the lowest-
+    # layer guarantee that no final submission occurs during a WQ-7 dry run.
+    wq7_hard_submit_block: bool = Field(default=False)
+
     model_config = {"frozen": True, "extra": "ignore"}
 
     @property
@@ -273,4 +296,14 @@ def load_settings(env: dict[str, str] | None = None) -> Settings:
         jobhunter_timeout_seconds=_parse_int("UAA_JOBHUNTER_TIMEOUT_SECONDS", 0, 0, 3_600),
         jobhunter_workers=_parse_int("UAA_JOBHUNTER_WORKERS", 1, 1, 1),
         pipeline_workers=_parse_int("UAA_PIPELINE_WORKERS", 1, 1, 1),
+        # WQ-7 settings
+        enable_live_platform_dry_run=_parse_bool(
+            source.get("UAA_ENABLE_LIVE_PLATFORM_DRY_RUN", "false").strip()
+        ),
+        live_greenhouse_url=source.get("UAA_LIVE_GREENHOUSE_URL", "").strip() or None,
+        live_lever_url=source.get("UAA_LIVE_LEVER_URL", "").strip() or None,
+        live_workday_url=source.get("UAA_LIVE_WORKDAY_URL", "").strip() or None,
+        live_smartrecruiters_url=source.get("UAA_LIVE_SMARTRECRUITERS_URL", "").strip() or None,
+        live_dry_run_platforms=source.get("UAA_LIVE_DRY_RUN_PLATFORMS", "").strip() or None,
+        wq7_hard_submit_block=_parse_bool(source.get("UAA_WQ7_HARD_SUBMIT_BLOCK", "false").strip()),
     )

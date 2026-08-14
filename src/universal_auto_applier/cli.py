@@ -117,6 +117,31 @@ def _build_parser() -> argparse.ArgumentParser:
     submit.add_argument("--channel", help="Playwright browser channel, e.g. chrome or msedge.")
     submit.add_argument("--timeout-ms", type=int)
     submit.add_argument("--artifacts-dir", type=Path)
+
+    # WQ-7: Per-platform real ATS dry-run
+    platforms = subparsers.add_parser(
+        "live-dry-run-platforms",
+        help=(
+            "Run live dry-runs across configured ATS platforms (Greenhouse, "
+            "Lever, Workday, SmartRecruiters). Requires "
+            "UAA_ENABLE_LIVE_PLATFORM_DRY_RUN=true and per-platform URL "
+            "env vars. Never submits."
+        ),
+    )
+    platforms.add_argument("--artifacts-dir", type=Path)
+    platforms.add_argument("--profile-dir", type=Path)
+    platforms.add_argument(
+        "--ephemeral-profile",
+        action="store_true",
+        help="Do not reuse saved browser cookies/login state.",
+    )
+    display_p = platforms.add_mutually_exclusive_group()
+    display_p.add_argument("--headless", action="store_true", default=None)
+    display_p.add_argument("--headed", action="store_false", dest="headless")
+    platforms.add_argument("--channel", help="Playwright browser channel, e.g. chrome or msedge.")
+    platforms.add_argument("--timeout-ms", type=int)
+    platforms.add_argument("--max-steps", type=int)
+
     return parser
 
 
@@ -513,6 +538,73 @@ def _queue_import(settings: Settings, args: argparse.Namespace) -> int:
     return 0
 
 
+def _live_dry_run_platforms(settings: Settings, args: argparse.Namespace) -> int:
+    """Run live dry-runs across configured ATS platforms (WQ-7)."""
+    from universal_auto_applier.services.live_dry_run_platforms import (
+        run_platform_dry_runs,
+    )
+
+    if not settings.enable_live_platform_dry_run:
+        print(
+            "Live platform dry-run is not enabled.\n"
+            "Set UAA_ENABLE_LIVE_PLATFORM_DRY_RUN=true to opt in.\n"
+            "Also set UAA_LIVE_GREENHOUSE_URL, UAA_LIVE_LEVER_URL, "
+            "UAA_LIVE_WORKDAY_URL, UAA_LIVE_SMARTRECRUITERS_URL to specify real ATS URLs."
+        )
+        return 2
+
+    # Resolve profile dir
+    profile_dir = None
+    if getattr(args, "ephemeral_profile", False):
+        profile_dir = None
+    elif getattr(args, "profile_dir", None):
+        profile_dir = args.profile_dir
+    else:
+        profile_dir = settings.browser_profile_dir
+
+    headless = args.headless if args.headless is not None else settings.browser_headless
+
+    try:
+        summary = run_platform_dry_runs(
+            settings,
+            artifacts_dir=getattr(args, "artifacts_dir", None),
+            headless=headless,
+            profile_dir=profile_dir,
+            max_steps=getattr(args, "max_steps", None),
+            timeout_ms=getattr(args, "timeout_ms", None),
+        )
+    except Exception as exc:  # noqa: BLE001
+        print(f"Error: {exc}")
+        return 2
+
+    print("\n=== WQ-7 Platform Dry-Run Summary ===")
+    print(f"  Total platforms: {summary.total_platforms}")
+    print(f"  Total run: {summary.total_run}")
+    print(f"  Total skipped: {summary.total_skipped}")
+    print(f"  Review ready: {summary.total_review_ready}")
+    print(f"  Needs user input: {summary.total_needs_user_input}")
+    print(f"  Failed: {summary.total_failed}")
+    print(f"  Submitted: {summary.total_submitted} (must be 0)")
+    print()
+    for r in summary.results:
+        status = "SKIPPED" if r.skipped else r.status
+        reason = r.skip_reason if r.skipped else r.stopped_reason
+        submitted = r.submitted
+        print(f"  {r.platform:20s} status={status:20s} reason={reason} submitted={submitted}")
+        if r.report and r.report.errors:
+            for err in r.report.errors:
+                print(f"    error: {err}")
+
+    # Exit code: 0 if at least one review_ready and zero submissions
+    if summary.total_submitted > 0:
+        return 1  # Should never happen
+    if summary.total_review_ready > 0:
+        return 0
+    if summary.total_needs_user_input > 0:
+        return 3
+    return 1
+
+
 def run_command(argv: list[str], settings: Settings) -> int:
     """Run a non-server CLI command and return its process exit code."""
     parser = _build_parser()
@@ -527,6 +619,8 @@ def run_command(argv: list[str], settings: Settings) -> int:
         return _live_dry_run(settings, args)
     if args.command == "live-submit":
         return _live_submit(settings, args)
+    if args.command == "live-dry-run-platforms":
+        return _live_dry_run_platforms(settings, args)
     parser.error(f"unknown command: {args.command}")
     return 2
 
