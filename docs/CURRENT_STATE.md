@@ -122,6 +122,14 @@ in production; none of them are unimplemented core phases. See
 5. **Real external ATS execution is unverified.** All real-platform behavior
    is gated by the controlled test plan on the user's machine; no real ATS
    submission has been executed from CI or a sandbox. (WQ-7/WQ-8)
+6. **Queue-import concurrency lock is process-local.** The
+   `QueueImportService` uses a `threading.Lock` stored on
+   `app.state.queue_import_service`. This is safe for the current
+   local single-process deployment (one Uvicorn worker). Multiple
+   Uvicorn workers or separate UAA processes do not share this lock,
+   so concurrent imports from different processes are not rejected.
+   Multi-process deployment would require database-backed or
+   distributed locking.
 
 ## Environment
 
