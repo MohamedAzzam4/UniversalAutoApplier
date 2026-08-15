@@ -43,6 +43,20 @@ _SAFE_APPLY_TERMS: frozenset[str] = frozenset(
     }
 )
 
+# Phrase-level apply CTAs that must match the EXACT normalized label only.
+# These must never be substring-matched, otherwise unrelated controls such
+# as "I'm interested in your newsletter" would be misclassified as apply
+# actions. SmartRecruiters renders its application CTA as exactly
+# "I'm interested" (straight apostrophe); the curly-apostrophe and
+# no-apostrophe equivalents are included because sites may embed either.
+_EXACT_SAFE_APPLY_TERMS: frozenset[str] = frozenset(
+    {
+        "i'm interested",
+        "i\u2019m interested",
+        "im interested",
+    }
+)
+
 # Safe continue terms.
 _SAFE_CONTINUE_TERMS: frozenset[str] = frozenset(
     {
@@ -214,6 +228,12 @@ def classify_clickable(
             continue
         # Check safe apply.
         if source in _SAFE_APPLY_TERMS:
+            return ClassificationResult(
+                classification=ClickableClassification.SAFE_APPLY,
+                confidence=_CONFIDENCE_HIGH,
+            )
+        # Phrase CTAs match the exact normalized label only (no substring).
+        if source in _EXACT_SAFE_APPLY_TERMS:
             return ClassificationResult(
                 classification=ClickableClassification.SAFE_APPLY,
                 confidence=_CONFIDENCE_HIGH,

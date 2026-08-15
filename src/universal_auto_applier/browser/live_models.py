@@ -81,6 +81,10 @@ class LiveFormObservation(BaseModel):
     has_dangerous_submit: bool = False
     field_labels: list[str] = Field(default_factory=list[str])
     detected_at: datetime
+    # Present when the reached form embeds an anti-bot widget (for example
+    # an hCaptcha/reCAPTCHA challenge). Recon only observes the structure; it
+    # never interacts with the widget. Kept as evidence, not as a bypass.
+    embedded_blocker: str | None = None
 
 
 class LiveRunReport(BaseModel):

@@ -30,6 +30,45 @@ class TestSafeApply:
         result = classify_clickable(text="", aria_label="Apply now", tag="button")
         assert result.classification == ClickableClassification.SAFE_APPLY
 
+    @pytest.mark.parametrize(
+        "text",
+        [
+            "I'm interested",
+            "i'm interested",
+            "Im interested",
+            "I'm Interested",
+            "I\u2019m interested",
+            "IM INTERESTED",
+        ],
+    )
+    def test_interested_is_safe_apply(self, text: str) -> None:
+        """SmartRecruiters' exact 'I'm interested' CTA is safe apply."""
+        result = classify_clickable(text=text, tag="a")
+        assert result.classification == ClickableClassification.SAFE_APPLY
+
+    @pytest.mark.parametrize(
+        "text",
+        [
+            "I'm interested in your newsletter",
+            "Are you interested?",
+            "Interested in learning more about our team",
+            "I'm interested in this position at a different company",
+            "Interested candidates should email HR",
+        ],
+    )
+    def test_interested_substring_is_not_safe_apply(self, text: str) -> None:
+        """'interested' inside unrelated prose must NOT be a safe apply."""
+        result = classify_clickable(text=text, tag="a")
+        assert result.classification != ClickableClassification.SAFE_APPLY
+
+    def test_interested_does_not_override_dangerous_submit(self) -> None:
+        result = classify_clickable(text="I'm interested, but submit later", tag="button")
+        assert result.classification == ClickableClassification.DANGEROUS_SUBMIT
+
+    def test_interested_does_not_override_login(self) -> None:
+        result = classify_clickable(text="Sign in if you're interested", tag="a")
+        assert result.classification == ClickableClassification.LOGIN
+
 
 class TestSafeContinue:
     @pytest.mark.parametrize("text", ["next", "Next", "Continue", "continue", "Save and Continue"])

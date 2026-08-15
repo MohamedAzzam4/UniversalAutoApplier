@@ -212,6 +212,84 @@ class TestReconStopsAtFirstForm:
             "recon mode should not attempt submissions the interlock must block"
         )
 
+    def test_form_with_embedded_captcha_is_still_recorded(
+        self, context: BrowserContext, recon_server: str, tmp_path: Path
+    ) -> None:
+        """A real form that embeds an anti-bot widget is still observed.
+
+        Real ATS forms (for example Lever's application form) render an
+        hCaptcha widget inside the form. Recon must record the form's
+        structure and note the embedded widget as evidence — it never
+        interacts with the widget and still stops at the first form.
+        """
+        url = f"{recon_server}/job_hcaptcha.html"
+        job = _make_job(url, tmp_path)
+        runner = LiveBrowserRunner(_make_recon_config(tmp_path))
+        report = runner.run_in_context(
+            context,
+            job,
+            candidate=CandidateProfile(
+                first_name="Recon",
+                last_name="Observer",
+                full_name="Recon Observer",
+                email="recon.observer@example.com",
+                phone="+49 000",
+            ),
+            artifact_dir=tmp_path / "run-recon-hcaptcha",
+        )
+
+        assert report.status == "recon_complete", (
+            "a form containing an embedded captcha widget must still be recorded"
+        )
+        assert report.stopped_reason == "first_application_form_reached"
+        obs = report.recon_observation
+        assert obs is not None
+        assert obs.embedded_blocker == "captcha_detected"
+        assert obs.visible_control_count >= 3
+        assert obs.file_input_count >= 1
+        assert report.fields == [], "recon still never fills on a captcha form"
+        assert report.uploads == []
+        assert report.submitted is False
+        # The widget was never touched: no value, no checkbox click.
+        assert report.dom_snapshot_path is not None
+        dom = Path(report.dom_snapshot_path).read_text(encoding="utf-8")
+        assert 'data-submitted="false"' in dom
+
+    def test_fill_mode_still_blocks_before_fill_on_captcha_form(
+        self, context: BrowserContext, recon_server: str, tmp_path: Path
+    ) -> None:
+        """WQ-7A fill mode keeps blocker-before-fill even on a captcha form.
+
+        The recon-only exception (record a form that embeds a captcha) must
+        apply ONLY to reconnaissance/observation. In fill mode the captcha
+        must stop the run BEFORE any field is touched.
+        """
+        url = f"{recon_server}/job_hcaptcha.html"
+        job = _make_job(url, tmp_path)
+        runner = LiveBrowserRunner(_make_recon_config(tmp_path, recon_only=False))
+        report = runner.run_in_context(
+            context,
+            job,
+            candidate=CandidateProfile(
+                first_name="Recon",
+                last_name="Observer",
+                full_name="Recon Observer",
+                email="recon.observer@example.com",
+                phone="+49 000",
+            ),
+            artifact_dir=tmp_path / "run-fill-captcha",
+        )
+
+        assert report.status == "needs_user_input"
+        assert report.stopped_reason == "captcha_detected"
+        assert report.fields == [], "fill mode must not touch a captcha form"
+        assert report.uploads == []
+        assert report.submitted is False
+        # The form's onsubmit marker stays untouched: nothing was submitted.
+        assert report.dom_snapshot_path is not None
+        dom = Path(report.dom_snapshot_path).read_text(encoding="utf-8")
+        assert 'data-submitted="false"' in dom
+
 
 class TestReconConfigFlag:
     def test_recon_only_defaults_false(self, tmp_path: Path) -> None:

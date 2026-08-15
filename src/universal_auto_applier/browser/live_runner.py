@@ -228,7 +228,9 @@ class LiveBrowserRunner:
                     analysis.blocker,
                 )
 
-                if analysis.blocker:
+                if analysis.blocker and not (
+                    self._config.recon_only and analysis.is_application_form
+                ):
                     report.status = "needs_user_input"
                     report.stopped_reason = analysis.blocker
                     break
@@ -470,6 +472,7 @@ class LiveBrowserRunner:
             has_dangerous_submit=analysis.has_dangerous_submit,
             field_labels=labels,
             detected_at=datetime.now(UTC),
+            embedded_blocker=analysis.blocker,
         )
 
     def _screenshot(
