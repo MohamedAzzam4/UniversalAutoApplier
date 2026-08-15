@@ -1,0 +1,29 @@
+<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8"><title>Company Careers | Login</title></head>
+<body>
+  <main>
+    <h1>Login / Create Account</h1>
+    <p>Returning candidate? Log back in.</p>
+    <form action="/login" method="post">
+      <label for="your_name">First name</label>
+      <input id="your_name" name="your_name" type="text">
+      <label for="last_name">Last name</label>
+      <input id="last_name" name="last_name" type="text">
+      <label for="your_email">Email</label>
+      <input id="your_email" name="your_email" type="email">
+      <input type="hidden" name="cf-turnstile-response" value="">
+      <button type="submit">Submit</button>
+    </form>
+    <div class="g-recaptcha" data-sitekey="fixture">CAPTCHA</div>
+  </main>
+  <script>
+    var form = document.querySelector('form');
+    form.addEventListener('submit', function (e) {
+      e.preventDefault();
+      document.body.setAttribute('data-submitted', 'true');
+    });
+    document.body.setAttribute('data-submitted', 'false');
+  </script>
+</body>
+</html>

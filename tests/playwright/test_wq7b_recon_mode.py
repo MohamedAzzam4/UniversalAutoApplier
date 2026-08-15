@@ -290,6 +290,81 @@ class TestReconStopsAtFirstForm:
         dom = Path(report.dom_snapshot_path).read_text(encoding="utf-8")
         assert 'data-submitted="false"' in dom
 
+    def test_login_gate_with_captcha_stops_recon_not_recorded(
+        self, context: BrowserContext, recon_server: str, tmp_path: Path
+    ) -> None:
+        """A login/account-creation gate that embeds a CAPTCHA still stops.
+
+        Real ATS auth gates (for example iCIMS's ``/login`` account-creation
+        page) pair a CAPTCHA/Turnstile challenge with the auth form. Even in
+        recon mode the gate must be reported as ``login_required`` and must
+        NOT be recorded as a reached application form, because WQ-7B forbids
+        account login and account creation.
+        """
+        url = f"{recon_server}/login_captcha.html"
+        job = _make_job(url, tmp_path)
+        runner = LiveBrowserRunner(_make_recon_config(tmp_path))
+        report = runner.run_in_context(
+            context,
+            job,
+            candidate=CandidateProfile(
+                first_name="Recon",
+                last_name="Observer",
+                full_name="Recon Observer",
+                email="recon.observer@example.com",
+                phone="+49 000",
+            ),
+            artifact_dir=tmp_path / "run-recon-login-captcha",
+        )
+
+        assert report.status == "needs_user_input", (
+            "an auth gate must never be recorded as recon_complete"
+        )
+        assert report.stopped_reason == "login_required"
+        assert report.recon_observation is None, (
+            "a login/account-creation gate is not an application form"
+        )
+        assert report.fields == [], "recon never fills on an auth gate"
+        assert report.uploads == []
+        assert report.submitted is False
+        assert report.dom_snapshot_path is not None
+        dom = Path(report.dom_snapshot_path).read_text(encoding="utf-8")
+        assert 'data-submitted="false"' in dom
+
+    def test_login_gate_with_captcha_blocks_fill_mode_before_fill(
+        self, context: BrowserContext, recon_server: str, tmp_path: Path
+    ) -> None:
+        """Fill mode also stops at an auth gate even when it embeds a CAPTCHA.
+
+        The recon-only exception applies only to genuine application forms
+        that embed an anti-bot widget; an auth gate is never exempt, so fill
+        mode stops at ``login_required`` before touching any field.
+        """
+        url = f"{recon_server}/login_captcha.html"
+        job = _make_job(url, tmp_path)
+        runner = LiveBrowserRunner(_make_recon_config(tmp_path, recon_only=False))
+        report = runner.run_in_context(
+            context,
+            job,
+            candidate=CandidateProfile(
+                first_name="Recon",
+                last_name="Observer",
+                full_name="Recon Observer",
+                email="recon.observer@example.com",
+                phone="+49 000",
+            ),
+            artifact_dir=tmp_path / "run-fill-login-captcha",
+        )
+
+        assert report.status == "needs_user_input"
+        assert report.stopped_reason == "login_required"
+        assert report.fields == []
+        assert report.uploads == []
+        assert report.submitted is False
+        assert report.dom_snapshot_path is not None
+        dom = Path(report.dom_snapshot_path).read_text(encoding="utf-8")
+        assert 'data-submitted="false"' in dom
+
 
 class TestReconConfigFlag:
     def test_recon_only_defaults_false(self, tmp_path: Path) -> None:

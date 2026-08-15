@@ -119,7 +119,7 @@ class PlatformDryRunSummary:
                     "clicks_count": len(r.report.click_path) if r.report else 0,
                     "errors": r.report.errors if r.report else [],
                     "recon_observation": (
-                        r.report.recon_observation.model_dump()
+                        r.report.recon_observation.model_dump(mode="json")
                         if r.report and r.report.recon_observation
                         else None
                     ),

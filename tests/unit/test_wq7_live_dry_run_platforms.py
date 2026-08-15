@@ -338,6 +338,41 @@ class TestSummaryAggregation:
         assert "total_submitted" in json_str
         assert '"total_submitted": 0' in json_str
 
+    def test_summary_to_dict_with_recon_observation_serializable(
+        self, tmp_path: Path
+    ) -> None:
+        """A recon observation (with datetime) must serialize cleanly to JSON."""
+        import json
+        from datetime import UTC, datetime
+
+        from universal_auto_applier.browser.live_models import LiveFormObservation
+
+        settings = _make_settings(
+            enable_live_platform_dry_run=True,
+            data_dir=tmp_path,
+            live_greenhouse_url="https://boards.greenhouse.io/test",
+        )
+        report = _make_report(status="recon_complete", stopped_reason="recon_done")
+        report.recon_observation = LiveFormObservation(
+            page_url="https://boards.greenhouse.io/test",
+            title="Apply for this job",
+            visible_control_count=4,
+            file_input_count=1,
+            field_labels=["first_name", "last_name"],
+            detected_at=datetime.now(UTC),
+            embedded_blocker="captcha_detected",
+        )
+        with patch.object(LiveBrowserRunner, "run") as mock_run:
+            mock_run.return_value = report
+            summary = run_platform_dry_runs(settings)
+
+        d = summary.to_dict()
+        assert json.dumps(d) == json.dumps(json.loads(json.dumps(d)))
+        recon = next(r["recon_observation"] for r in d["results"] if r["recon_observation"])
+        assert isinstance(recon["detected_at"], str)
+        assert recon["embedded_blocker"] == "captcha_detected"
+        assert recon["visible_control_count"] == 4
+
 
 class TestReconOnlyMode:
     """WQ-7B navigation/observation-only mode."""
