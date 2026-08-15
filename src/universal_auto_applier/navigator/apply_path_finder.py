@@ -272,8 +272,7 @@ def _detect_blocker(page: Page, text: str) -> str | None:
     )
     title = (page.title() or "").lower()
     login_heading = any(
-        term in text
-        for term in ("sign in to continue", "log in to continue", "login required")
+        term in text for term in ("sign in to continue", "log in to continue", "login required")
     )
     if (
         password_visible

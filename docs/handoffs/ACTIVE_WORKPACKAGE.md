@@ -1,11 +1,16 @@
 # Active Workpackage
 
 - **WP ID:** WQ-7B — Real ATS Navigation Reconnaissance.
-- **Status:** IN PROGRESS — initial handoff checkpoint (post branch creation, pre live navigations).
+- **Status:** BLOCKED — acceptance criterion (≥3 distinct ATS reaching a
+  real public application form) not met after exhausting all permitted
+  replacements. Final deliverable: evidence manifest + this handoff.
+  No PR, no READY FOR REVIEW.
 - **Branch:** `checkpoint/wq-7b-real-ats-navigation`
 - **Base SHA:** `6326e4e0815d2d325eccc5bf3671afefd8e5bc8b` (`origin/main`, WQ-7A squash)
-- **PR:** none yet (to be opened at the end of the workpackage)
-- **Last completed/checkpoint SHA:** base `6326e4e` + initial handoff commit (this file). Resolve the head dynamically.
+- **PR:** none (blocked outcome; reviewer decides whether the ≥3-distinct
+  acceptance criterion should later be amended).
+- **Last completed/checkpoint SHA:** `a71525e6e6f2551612b181a16181c723262e27bf`
+  (fix commit, pushed and verified against origin). Resolve the head dynamically.
 - **Branch-head verification (run dynamically; do not trust an embedded SHA):**
 
   ```text
@@ -15,7 +20,7 @@
   ```
 
   The two values must match before handoff/review.
-- **Last updated:** 2026-08-15
+- **Last updated:** 2026-08-16
 
 ## Objective
 
@@ -25,86 +30,111 @@ infrastructure — **navigation and observation only**. Never fill fields,
 never upload documents, never log into accounts, never submit applications,
 never bypass CAPTCHA/anti-bot.
 
-## Safety rules (non-negotiable for this workpackage)
+## Acceptance criterion (unchanged, per reviewer)
 
-- No typing into application fields. No autofill. No file uploads.
-- No account login. No LinkedIn Easy Apply or other authenticated
-  in-platform applications. No CAPTCHA/anti-bot bypass.
-- No clicking final submit/review/continue controls once an application
-  form is reached — the reconnaissance STOPS at first application-form
-  detection.
-- No use of the user's real CV, profile, cookies, browser profile, or
-  personal data. Synthetic/recon-only identity is used for the job record.
-- No real application submission. Submit interlocks and network safety
-  controls are never weakened.
-- Never store cookies, authorization headers, session tokens, browser
-  profiles, user data, or full third-party HTML with sensitive content.
+At least five real-job attempts; every supported ATS attempted; **at least
+three distinct ATS platforms must reach a real public application form**.
+Unsuccessful platforms get exact evidence and classification.
 
-## Planned targets (one currently-open public job per supported ATS)
+## Outcome — BLOCKED
 
-- Greenhouse (`job-boards.greenhouse.io/<company>`)
-- Lever (`jobs.lever.co/<company>`)
-- Workday (`myworkdayjobs.com` / Workday ATS-hosted job pages)
-- SmartRecruiters (`careers.smartrecruiters.com/<company>`)
-- iCIMS (iCIMS-hosted or branded career pages)
+All five supported ATS platforms were attempted (≥5 real-job attempts: 7
+total target runs incl. replacements). Only **two** distinct ATS platforms
+prove reachable to a real public application form without forbidden bypasses:
 
-At least five real-job attempts; every supported ATS attempted; at least
-three distinct ATS platforms must reach a real public application form.
-Unsuccessful platforms get exact evidence and classification. Zero values
-typed, zero files uploaded, zero final submit clicks; submit interlock stays
-active through every run.
+- **greenhouse** — FORM REACHED (Anthropic, 31 controls / 1 file,
+  `recon_complete`)
+- **lever** — FORM REACHED (Apply Digital, 24 controls / 2 files,
+  `recon_complete`; interlock blocked 1 form_submit, `submitted=false`)
 
-## Implementation approach (per the prompt's policy)
+The other three are externally gated, each verified across multiple tenants
+with all permitted replacements exhausted (max 2 per platform):
 
-1. First try WQ-7A exactly as implemented (reuse `analyze_page`,
-   `click_action`, `choose_safe_action`, `SubmitSafetyGuard`
-   `REAL_SITE_DRY_RUN`, `install_interlock`/`read_counters`,
-   `LiveBrowserRunner` fixture behavior).
-2. WQ-7B scope difference: the WQ-7A fill path (`execute_live_form`) types
-   into fields and uploads files once a form is detected. WQ-7B forbids
-   that, so a **navigation/observation-only reconnaissance mode** is being
-   added (a real WQ-7B capability, not a "make it pass" change): it opens,
-   follows the apply path, and stops at the first application form, typed=0,
-   uploaded=0, submit clicks=0, interlock armed.
-3. iCIMS is not yet a WQ-7A configured platform; it is being added to this
-   branch's recon matrix (+ unit/playwright fixture coverage, opt-in live).
-4. Only send at most up to two replacement URLs per platform when a real
-   recorded URL is closed/inaccessible/login-only.
-5. No default-CI test depends on internet access. Live recon tests are
-   marked `live` and skipped unless explicitly enabled.
+- **workday** — account-creation gate on 3/3 tenants (Company JR-0108019,
+  US Bank, Baltimore City Fire Press Officer R0018870).
+- **smartrecruiters** — anti-bot/security wall on its one-click UI on 3/3
+  tenants (Eurofins, Pilot Company, IT TrailBlazers); SPA boots for normal
+  browsers but reproducibly fails automation contexts; WQ-7B forbids
+  anti-bot bypass, so none was attempted.
+- **icims** — login/account-creation gate on 2/2 tenants (LMI, MBP) plus
+  the platform's own careers hub (`hrjobs.icims.com`), whose every "Apply
+  Now" links to a `/login` URL; a third replacement (KCI) failed earlier at
+  click resolution (UAA observation on an iframe layout; `click_failed`,
+  still no form reached).
 
-## Initial verification (2026-08-15)
+Every run: `fields=[]`, `uploads=[]`, `submitted=false`, hard submit block
+armed, ephemeral profile, `UAA_LIVE_RECON_ONLY=true`.
 
-- `origin/main` == `6326e4e...` (exact, matches the required base).
-- Branch created from `origin/main`; untracked debug artifacts preserved and
-  never staged (`tmp_debug_status.py`, `tmp_debug_status/`,
-  `tmp_final_pipeline/`).
-- WQ-7A infra reviewed: `live_dry_run_platforms`, `live_runner`,
-  `execution_mode` (`SubmitSafetyGuard`), `submit_interlock`, `live_models`,
-  `apply_path_finder` (`analyze_page`/`choose_safe_action`/`click_action`),
-  `config` (WQ-7 env settings), `cli` (`live-dry-run-platforms`).
-- No documented WQ-7B requirement conflicts with this prompt
-  (`DRY_RUN_LEVELS.md` Level 2 = live external dry-run, never submits;
-  `WQ7_LOCAL_LIVE_RUN.md` Stage 1 = navigation-only reconnaissance).
-- Network reachability spot check from this machine: greenhouse 200, icims
-  200, lever 308 (redirect), smartrecruiters root 404 (platform-normal for
-  root path).
+## Safety verification
+
+- Zero typed values, zero uploads, zero UAA submit clicks in all runs.
+- Login-only pages reported as `login_required`, never treated as
+  application forms (`is_application_form` excludes auth gates).
+- The recon-only captcha exception stays narrowly scoped
+  (`recon_only and analysis.is_application_form` and no auth gate).
+- Lever run captured `wq7_interlock: blocked 1 submission attempt(s)`
+  (`submit_events=0, form_submit=1, request_submit=0, dispatch=0`).
+
+## Completed work
+
+- Implemented navigation-only recon mode (`UAA_LIVE_RECON_ONLY`),
+  iCIMS support, auth-gate-first `_detect_blocker`, serialization fixes,
+  and hermetic tests (committed as `9f56b19`, `a71525e`).
+- Ran live recons of every supported ATS against real public jobs,
+  exhausting replacements per the original WQ-7B prompt.
+- Captured full evidence (`uaa_wq7b_final`, `uaa_wq7b_icims_kci`,
+  `uaa_wq7b_rerun*` under the temp opencode output dirs; not committed).
+- Wrote `docs/evidence/wq-7b/MANIFEST.md` (sanitized).
+
+## Changed files
+
+- `src/universal_auto_applier/navigator/apply_path_finder.py` (auth-gate-first)
+- `src/universal_auto_applier/services/live_dry_run_platforms.py` (json mode dict)
+- `tests/playwright/test_wq7b_recon_mode.py` (recon tests, incl. new login+captcha precedence)
+- `tests/unit/test_wq7_live_dry_run_platforms.py` (serialization regression)
+- `tests/fixtures/recon/login_captcha.html` (new fixture for gate-vs-captcha precedence)
+- `docs/evidence/wq-7b/MANIFEST.md` (final evidence)
+
+## Tests and exact results
+
+- Non-live suite: 1208 passed (ruff + pyright + pytest available).
+- Playwright suite: 253 passed.
+- Recon/blocker modules: 112 passed (incl. new login_captcha precedence tests).
+- WQ-7B recon-mode tests: 13 passed.
+- `git diff --check`: clean. `ruff check`, `ruff format --check`, `pyright`: pass.
+- Live recon runs (opt-in, not in CI): as recorded in MANIFEST and thumbnails above.
+
+## Decisions made
+
+- Do not bypass account creation, anti-bot, or login walls — WQ-7B forbids
+  this; SmartRecruiters failures are reported as externally blocked.
+- Do not amend the acceptance gate; finalize BLOCKED and let the reviewer
+  decide the criterion's future.
+- Never commit live-run artifacts (screenshots, traces, HTML, PDFs).
+- Fabricated job URLs were rejected (both a SmartRecruiters 400 and a
+  Workday 404 case proved this wastes time); real public jobs only, verified
+  before each run.
+
+## Blockers / risks
+
+- **Acceptance gate unmet:** 2 of 5 supported ATS platforms reach real
+  forms; mean, non-Greenhouse/Lever candidates are externally gated.
+- All allowed replacements (2 per platform) are exhausted.
+- A working guest-apply Workday/iCIMS tenant or bypass-free SmartRecruiters
+  posting is not available within the WQ-7B target pool.
 
 ## Exact next action
 
-1. Identify a real, currently-open public job per ATS (web; prefer employer
-   or ATS-hosted URLs over aggregators).
-2. Implement the navigation-only recon mode + iCIMS support + tests.
-3. Register the recon targets in env and run the opt-in live navigation
-   command; record evidence; write `docs/evidence/wq-7b/`.
-4. Run the full validation gate; push checkpoints after each milestone.
-5. Open one PR against `main`; wait for the six CI checks.
+1. Reviewer decides whether the ≥3-distinct acceptance criterion is amended.
+2. If amended to ≥2 distinct + evidence of external gating, re-open the PR on
+   this branch and run the six CI checks.
+3. If not amended, WQ-7B stays BLOCKED; document the outcome (this handoff +
+   MANIFEST) and close no PR.
 
 ## Rules
 
 - Never merge or push to `main` directly. Preserve all `checkpoint/*`
   branches. No reset/clean/rebase/amend/force-push.
 - Only commit reviewed WQ-7B files; never commit live-runs data, `.uaa_data`,
-  `.env`, browsers/databases, screenshots with real data, or the tmp debug
-  dirs. `git diff --check` before committing.
+  `.env`, browsers/databases, screenshots, traces, or HTML snapshots.
 - Do not embed a "current HEAD" SHA in this file; resolve it dynamically.

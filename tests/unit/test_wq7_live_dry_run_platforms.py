@@ -338,9 +338,7 @@ class TestSummaryAggregation:
         assert "total_submitted" in json_str
         assert '"total_submitted": 0' in json_str
 
-    def test_summary_to_dict_with_recon_observation_serializable(
-        self, tmp_path: Path
-    ) -> None:
+    def test_summary_to_dict_with_recon_observation_serializable(self, tmp_path: Path) -> None:
         """A recon observation (with datetime) must serialize cleanly to JSON."""
         import json
         from datetime import UTC, datetime
