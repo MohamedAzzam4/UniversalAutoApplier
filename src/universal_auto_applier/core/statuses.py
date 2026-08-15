@@ -129,6 +129,7 @@ class Platform(StrEnum):
     LEVER = "lever"
     WORKDAY = "workday"
     SMARTRECRUITERS = "smartrecruiters"
+    ICIMS = "icims"
     LINKEDIN_EASY_APPLY = "linkedin_easy_apply"
     GENERIC = "generic"
     UNKNOWN = "unknown"

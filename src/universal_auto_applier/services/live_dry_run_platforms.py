@@ -87,6 +87,7 @@ class PlatformDryRunSummary:
     total_review_ready: int = 0
     total_needs_user_input: int = 0
     total_failed: int = 0
+    total_recon_complete: int = 0
     total_submitted: int = 0  # Must always be 0
 
     def to_dict(self) -> dict[str, Any]:
@@ -99,6 +100,7 @@ class PlatformDryRunSummary:
             "total_review_ready": self.total_review_ready,
             "total_needs_user_input": self.total_needs_user_input,
             "total_failed": self.total_failed,
+            "total_recon_complete": self.total_recon_complete,
             "total_submitted": self.total_submitted,
             "results": [
                 {
@@ -116,6 +118,11 @@ class PlatformDryRunSummary:
                     "uploads_count": len(r.report.uploads) if r.report else 0,
                     "clicks_count": len(r.report.click_path) if r.report else 0,
                     "errors": r.report.errors if r.report else [],
+                    "recon_observation": (
+                        r.report.recon_observation.model_dump()
+                        if r.report and r.report.recon_observation
+                        else None
+                    ),
                 }
                 for r in self.results
             ],
@@ -133,6 +140,8 @@ def _get_platform_urls(settings: Settings) -> dict[str, str]:
         urls["workday"] = settings.live_workday_url
     if settings.live_smartrecruiters_url:
         urls["smartrecruiters"] = settings.live_smartrecruiters_url
+    if settings.live_icims_url:
+        urls["icims"] = settings.live_icims_url
     return urls
 
 
@@ -194,6 +203,7 @@ def run_platform_dry_runs(
     max_steps: int | None = None,
     timeout_ms: int | None = None,
     qa_service: Any = None,
+    recon_only: bool | None = None,
 ) -> PlatformDryRunSummary:
     """Run live dry-runs across configured platforms.
 
@@ -206,6 +216,9 @@ def run_platform_dry_runs(
         max_steps: Override for max navigation steps.
         timeout_ms: Override for the page timeout.
         qa_service: Optional LLM QA service for question resolution.
+        recon_only: WQ-7B navigation/observation-only mode. Overrides
+            ``settings.live_recon_only`` — the live runner then never fills,
+            never uploads, and stops at the first application form.
 
     Returns:
         A summary of all platform dry-run results.
@@ -228,7 +241,8 @@ def run_platform_dry_runs(
         logger.warning(
             "[wq7] No platform URLs configured. Set UAA_LIVE_GREENHOUSE_URL, "
             "UAA_LIVE_LEVER_URL, UAA_LIVE_WORKDAY_URL, "
-            "UAA_LIVE_SMARTRECRUITERS_URL to specify real ATS URLs."
+            "UAA_LIVE_SMARTRECRUITERS_URL, UAA_LIVE_ICIMS_URL "
+            "to specify real ATS URLs."
         )
         summary.finished_at = datetime.now(UTC).isoformat()
         return summary
@@ -266,6 +280,10 @@ def run_platform_dry_runs(
             logger.info("[wq7] Starting dry-run for %s: %s", platform_name, url)
 
             job = _make_synthetic_job(url, platform_name, art_root)
+            if recon_only is not None:
+                effective_recon = recon_only
+            else:
+                effective_recon = settings.live_recon_only
             config = LiveBrowserConfig(
                 artifacts_root=art_root / platform_name,
                 profile_dir=effective_profile,
@@ -275,12 +293,15 @@ def run_platform_dry_runs(
                 max_steps=effective_max_steps,
                 capture_trace=True,
                 hard_submit_block=True,  # WQ-7 hard submit block
+                recon_only=effective_recon,
             )
             runner = LiveBrowserRunner(config)
             report = runner.run(job, candidate=None, qa_service=qa_service)
             result.report = report
 
-            if report.status == "review_ready":
+            if report.status == "recon_complete" and effective_recon:
+                summary.total_recon_complete += 1
+            elif report.status == "review_ready":
                 summary.total_review_ready += 1
             elif report.status == "needs_user_input":
                 summary.total_needs_user_input += 1
@@ -323,12 +344,14 @@ def run_platform_dry_runs(
     summary_path.write_text(json.dumps(summary.to_dict(), indent=2), encoding="utf-8")
     logger.info(
         "[wq7] All platforms complete: %d run, %d skipped, %d review_ready, "
-        "%d needs_user_input, %d failed, %d submitted (must be 0)",
+        "%d needs_user_input, %d failed, %d recon_complete, %d submitted "
+        "(must be 0)",
         summary.total_run,
         summary.total_skipped,
         summary.total_review_ready,
         summary.total_needs_user_input,
         summary.total_failed,
+        summary.total_recon_complete,
         summary.total_submitted,
     )
 

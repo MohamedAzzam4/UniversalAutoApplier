@@ -123,7 +123,7 @@ def _build_parser() -> argparse.ArgumentParser:
         "live-dry-run-platforms",
         help=(
             "Run live dry-runs across configured ATS platforms (Greenhouse, "
-            "Lever, Workday, SmartRecruiters). Requires "
+            "Lever, Workday, SmartRecruiters, iCIMS). Requires "
             "UAA_ENABLE_LIVE_PLATFORM_DRY_RUN=true and per-platform URL "
             "env vars. Never submits."
         ),
@@ -134,6 +134,14 @@ def _build_parser() -> argparse.ArgumentParser:
         "--ephemeral-profile",
         action="store_true",
         help="Do not reuse saved browser cookies/login state.",
+    )
+    platforms.add_argument(
+        "--recon-only",
+        action="store_true",
+        help=(
+            "WQ-7B navigation/observation-only: never fill, never upload, "
+            "stop at the first application form."
+        ),
     )
     display_p = platforms.add_mutually_exclusive_group()
     display_p.add_argument("--headless", action="store_true", default=None)
@@ -549,7 +557,8 @@ def _live_dry_run_platforms(settings: Settings, args: argparse.Namespace) -> int
             "Live platform dry-run is not enabled.\n"
             "Set UAA_ENABLE_LIVE_PLATFORM_DRY_RUN=true to opt in.\n"
             "Also set UAA_LIVE_GREENHOUSE_URL, UAA_LIVE_LEVER_URL, "
-            "UAA_LIVE_WORKDAY_URL, UAA_LIVE_SMARTRECRUITERS_URL to specify real ATS URLs."
+            "UAA_LIVE_WORKDAY_URL, UAA_LIVE_SMARTRECRUITERS_URL, "
+            "UAA_LIVE_ICIMS_URL to specify real ATS URLs."
         )
         return 2
 
@@ -562,6 +571,10 @@ def _live_dry_run_platforms(settings: Settings, args: argparse.Namespace) -> int
     else:
         profile_dir = settings.browser_profile_dir
 
+    recon_only = getattr(args, "recon_only", False)
+    if not recon_only:
+        recon_only = settings.live_recon_only
+
     headless = args.headless if args.headless is not None else settings.browser_headless
 
     try:
@@ -572,6 +585,7 @@ def _live_dry_run_platforms(settings: Settings, args: argparse.Namespace) -> int
             profile_dir=profile_dir,
             max_steps=getattr(args, "max_steps", None),
             timeout_ms=getattr(args, "timeout_ms", None),
+            recon_only=recon_only,
         )
     except Exception as exc:  # noqa: BLE001
         print(f"Error: {exc}")
@@ -584,21 +598,29 @@ def _live_dry_run_platforms(settings: Settings, args: argparse.Namespace) -> int
     print(f"  Review ready: {summary.total_review_ready}")
     print(f"  Needs user input: {summary.total_needs_user_input}")
     print(f"  Failed: {summary.total_failed}")
+    print(f"  Recon complete: {summary.total_recon_complete}")
     print(f"  Submitted: {summary.total_submitted} (must be 0)")
     print()
     for r in summary.results:
         status = "SKIPPED" if r.skipped else r.status
         reason = r.skip_reason if r.skipped else r.stopped_reason
         submitted = r.submitted
-        print(f"  {r.platform:20s} status={status:20s} reason={reason} submitted={submitted}")
+        recon_label = ""
+        if r.report and r.report.recon_observation:
+            obs = r.report.recon_observation
+            recon_label = f" controls={obs.visible_control_count} files={obs.file_input_count}"
+        print(
+            f"  {r.platform:20s} status={status:20s} reason={reason}"
+            f" submitted={submitted}{recon_label}"
+        )
         if r.report and r.report.errors:
             for err in r.report.errors:
                 print(f"    error: {err}")
 
-    # Exit code: 0 if at least one review_ready and zero submissions
+    # Exit code: 0 if at least one review_ready or recon_complete and zero submissions
     if summary.total_submitted > 0:
         return 1  # Should never happen
-    if summary.total_review_ready > 0:
+    if summary.total_review_ready > 0 or summary.total_recon_complete > 0:
         return 0
     if summary.total_needs_user_input > 0:
         return 3
