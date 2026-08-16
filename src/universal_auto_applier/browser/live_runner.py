@@ -21,7 +21,11 @@ from playwright.sync_api import (
     sync_playwright,
 )
 
-from universal_auto_applier.browser.live_models import LiveClickRecord, LiveRunReport
+from universal_auto_applier.browser.live_models import (
+    LiveClickRecord,
+    LiveFormObservation,
+    LiveRunReport,
+)
 from universal_auto_applier.candidate_profile_loader import resolve_candidate_profile
 from universal_auto_applier.core.models import ApplicationJob, CandidateProfile
 from universal_auto_applier.form_engine.live_executor import (
@@ -29,6 +33,7 @@ from universal_auto_applier.form_engine.live_executor import (
     execute_live_form_with_llm,
 )
 from universal_auto_applier.navigator.apply_path_finder import (
+    LivePageAnalysis,
     analyze_page,
     choose_safe_action,
     click_action,
@@ -52,6 +57,12 @@ class LiveBrowserConfig:
     # direct call to ``attempt_submit`` returns "blocked" without clicking.
     # This is the lowest-layer guarantee that no final submission occurs.
     hard_submit_block: bool = False
+    # WQ-7B: When True, the runner is in navigation/observation-only
+    # reconnaissance mode. It follows safe apply/continue actions but NEVER
+    # fills fields, uploads documents, or clicks submit. It stops at the
+    # first application form it detects and records a structural observation
+    # of that form. This is a stricter superset of the WQ-7A dry-run posture.
+    recon_only: bool = False
 
     def __post_init__(self) -> None:
         if self.timeout_ms < 1_000:
@@ -217,7 +228,9 @@ class LiveBrowserRunner:
                     analysis.blocker,
                 )
 
-                if analysis.blocker:
+                if analysis.blocker and not (
+                    self._config.recon_only and analysis.is_application_form
+                ):
                     report.status = "needs_user_input"
                     report.stopped_reason = analysis.blocker
                     break
@@ -231,6 +244,22 @@ class LiveBrowserRunner:
                     break
 
                 if analysis.is_application_form:
+                    if self._config.recon_only:
+                        # WQ-7B: navigation/observation-only. Stop at the
+                        # first application form; record its structure
+                        # without touching it. Nothing is filled, uploaded,
+                        # or submitted.
+                        report.status = "recon_complete"
+                        report.stopped_reason = "first_application_form_reached"
+                        report.recon_observation = self._observe_form(page, analysis)
+                        self._screenshot(
+                            page,
+                            run_dir,
+                            f"step-{step_number:02d}-recon-form.png",
+                            report,
+                        )
+                        break
+
                     # Use LLM-enhanced execution when a QA service is
                     # provided; otherwise fall back to deterministic-only.
                     if qa_service is not None:
@@ -398,6 +427,53 @@ class LiveBrowserRunner:
             page.wait_for_load_state("networkidle", timeout=min(self._config.timeout_ms, 5_000))
         except PlaywrightTimeoutError:
             pass
+
+    def _observe_form(
+        self,
+        page: Page,
+        analysis: LivePageAnalysis,
+    ) -> LiveFormObservation:
+        """Collect the structural observation of the reached application form.
+
+        Reads only — never fills, selects, checks, or uploads. Labels are
+        gathered from ``name``/``id``/``placeholder``/``aria-label`` of
+        visible controls so the recon evidence shows what the form looks
+        like without any candidate data in it.
+        """
+        labels: list[str] = []
+        controls = page.locator(
+            "input:not([type='hidden']):not([type='button']):not([type='submit'])"
+            ":not([type='reset']):not([type='image']), textarea, select"
+        )
+        try:
+            count = min(controls.count(), 250)
+        except PlaywrightError:
+            count = 0
+        for index in range(count):
+            locator = controls.nth(index)
+            try:
+                if not locator.is_visible():
+                    continue
+            except PlaywrightError:
+                continue
+            label = (
+                (locator.get_attribute("name") or "")
+                or (locator.get_attribute("id") or "")
+                or (locator.get_attribute("placeholder") or "")
+                or (locator.get_attribute("aria-label") or "")
+            ).strip()
+            if label and label not in labels:
+                labels.append(label[:120])
+        return LiveFormObservation(
+            page_url=page.url,
+            title=analysis.title,
+            visible_control_count=analysis.visible_control_count,
+            file_input_count=analysis.file_input_count,
+            has_dangerous_submit=analysis.has_dangerous_submit,
+            field_labels=labels,
+            detected_at=datetime.now(UTC),
+            embedded_blocker=analysis.blocker,
+        )
 
     def _screenshot(
         self,

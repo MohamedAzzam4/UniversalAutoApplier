@@ -1,163 +1,331 @@
 # Active Workpackage
 
-- **WP ID:** WQ-7A — live dry-run infrastructure PR refresh against merged main (PR #12 consumed).
-- **Status:** IN PROGRESS — PR #12 merged to `main` (`6828f1a`); PR #11 refreshed by merging new `main` no-ff and pushed; awaiting final 6-check CI on the refreshed head.
-- **Branch:** `checkpoint/wq-7-real-ats-dry-runs` (actual PR #11 head ref)
-- **Base SHA:** `2733a1a1da082946857692e0902b21f81033a685` (pre-task `origin/main`) → new main `6828f1a5f5ed36bc630cb5c7b7ef43b346845ae2` (PR #12 squash `test(queue-import): make concurrent import verification deterministic`)
-- **PR:** https://github.com/MohamedAzzam4/UniversalAutoApplier/pull/11 (open, not draft, not merged)
-- **Original PR head SHA:** `76b7eeae95c5e0aed4048e1eb85eaafd19aee568`
-- **Refresh merge commit:** `6bd8687789768f208ffbae7e61a43f58aed55e90` (`git merge --no-ff origin/main`, message `chore: refresh WQ-7A checkpoint from latest main`; parents `76b7eea` + `6828f1a`). The subsequent handoff commit advances HEAD past this merge.
+- **WP ID:** WQ-7B — Real ATS Navigation Reconnaissance.
+- **Status:** ACCEPTED — owner amendment applied; final local validation
+  green; PR opened against `main` for the final CI pass. No merge performed;
+  WQ-7C not started.
+- **Branch:** `checkpoint/wq-7b-real-ats-navigation`
+- **Base SHA:** `6326e4e0815d2d325eccc5bf3671afefd8e5bc8b` (`origin/main`, WQ-7A squash)
+- **PR:** one PR opened against `main` (number recorded in the PR section)
+- **Last completed/checkpoint SHA:** resolve dynamically (see command block).
+  The amendment/finalization commits are pushed; do not trust an embedded SHA.
 - **Branch-head verification (run dynamically; do not trust an embedded SHA):**
 
   ```text
   git fetch origin
   git rev-parse HEAD
-  git rev-parse origin/checkpoint/wq-7-real-ats-dry-runs
-  git rev-parse origin/main
+  git rev-parse origin/checkpoint/wq-7b-real-ats-navigation
   ```
 
-  Local PR head must equal remote PR head before handoff/review.
-- **Last updated:** 2026-08-15
+  The two values must match before handoff/review.
+- **Last updated:** 2026-08-16 (owner amendment + PR pass)
 
 ## Objective
 
-Merge the already-approved deterministic concurrency-test PR #12 (squash once
-through the GitHub REST API), then refresh WQ-7A PR #11 against the new `main`
-using a normal `--no-ff` merge pushed to the existing checkpoint branch. Do NOT
-start WQ-7B, do NOT merge PR #11, do NOT modify JobHunter/SiemensAutoApplier/
-ERP-Yarn. Windows-only dispatch of the Windows CI workflow on `main` is
-expected because `verify-windows-py314.yml` does not run on `main` pushes.
+Prove that UAA can safely navigate from real public job-detail pages to real
+ATS application forms and observe their structure using the WQ-7A
+infrastructure — **navigation and observation only**. Never fill fields,
+never upload documents, never log into accounts, never submit applications,
+never bypass CAPTCHA/anti-bot.
 
-## Rules (from the task and repo doctrine)
+## Acceptance criterion history
 
-- Never `reset --hard` / `clean` / force-push / rewrite history. Preserve all
-  pre-existing untracked files. Keep checkpoint branches permanently.
-- Use only the GitHub REST API with the PAT from the credential store (env
-  var absent). `gh` is a browser-opener shim — never use it. Never print,
-  log, commit, or persist the PAT; never put the PAT in `remote.origin.url`.
-- Merge PR #12 exactly once via REST squash; never locally, never force-push.
-- If the PR #12 pre-merge gates or post-merge CI fail → STOP (BLOCKED). If the
-  PR #11 refresh conflicts → STOP and report exact files; never guess-resolve.
-- PR #11 must stay unmerged and open at the end.
+### Original criterion
+
+At least five real-job attempts; every supported ATS attempted; **at least
+three distinct ATS platforms must reach a real public application form**.
+Unsuccessful platforms get exact evidence and classification.
+
+### Original result — BLOCKED
+
+Evaluating the original criterion after exhaustion of all permitted
+replacement targets: only **two** distinct ATS platforms reached a real
+public application form (greenhouse, lever); workday, smartrecruiters and
+icims were externally gated with replacements exhausted. Result recorded as
+**BLOCKED** with a full evidence manifest (see manifest and
+`docs/evidence/wq-7b/MANIFEST.md`). This historical record is preserved and
+**not** rewritten.
+
+### Reviewer closure
+
+A reviewer-closure pass on `cc79959` resolved every open item: the iCIMS/KCI
+shell-vs-widget apply defect was root-caused, regression-tested, and fixed;
+real KCI was rerun post-fix to `login_required`; attempt counts and
+validation counts were reconciled; the Lever `form_submit=1` interlock event
+was attributed to page/third-party JS, not UAA. Outcome remained BLOCKED
+under the unchanged original criterion; no PR was opened.
+
+### Reason for owner amendment
+
+Real-world reconnaissance demonstrated that reaching ≥3 distinct ATS
+application forms depends partly on external ATS availability, login policy,
+and anti-automation/security behavior that UAA is explicitly forbidden to
+bypass. The owner therefore approved an amendment after the completed real
+reconnaissance and reviewer closure.
+
+### Owner amendment (APPROVED)
+
+Replacing the single original criterion with:
+
+1. At least **TWO** distinct supported ATS platforms reach a real public
+   application form.
+2. Every supported ATS platform that does NOT reach a real public
+   application form must: have the permitted replacement-target budget
+   exhausted, have an evidence-backed external gate or externally imposed
+   unsupported condition, and have **no unresolved UAA-caused defect**
+   contributing to the failure.
+3. An externally blocked platform MUST NOT count as successfully classified
+   if an unresolved UAA defect prevents UAA from reaching or observing the
+   external blocker.
+
+All other original WQ-7B acceptance criteria remain unchanged (every
+supported ATS attempted; ≥5 real-job attempts; zero typed field values; zero
+uploads; zero UAA submit clicks; submit interlock active; no account login;
+no CAPTCHA/anti-bot bypass; no real personal data; no secret/session
+artifacts committed; truthful classification; no default CI internet
+dependency).
+
+### Decision record
+
+| Item | Recorded |
+| --- | --- |
+| Original criterion | ≥3 distinct ATS reaching a real public application form |
+| Original result | BLOCKED |
+| Reviewer closure | `cc79959` — all closure items resolved; BLOCKED retained |
+| Reason for amendment | external availability/login/anti-bot dependence outside UAA control |
+| Amended criterion | ≥2 distinct reached + exhaustion/evidence/no-UAA-defect per remaining platform |
+| Amended outcome | **SATISFIED** — see evaluation below |
+
+## Objective
+
+Prove that UAA can safely navigate from real public job-detail pages to real
+ATS application forms and observe their structure using the WQ-7A
+infrastructure — **navigation and observation only**. Never fill fields,
+never upload documents, never log into accounts, never submit applications,
+never bypass CAPTCHA/anti-bot.
+
+## Acceptance criterion (unchanged, per reviewer)
+
+At least five real-job attempts; every supported ATS attempted; **at least
+three distinct ATS platforms must reach a real public application form**.
+Unsuccessful platforms get exact evidence and classification.
+
+## Outcome — BLOCKED under original criterion; SATISFIED under owner amendment
+
+### Results (unchanged evidenced facts)
+
+All five supported ATS platforms were attempted (authoritative detail in the
+reconciliation block below). Only **two** distinct ATS platforms prove
+reachable to a real public application form without forbidden bypasses:
+
+- **greenhouse** — FORM REACHED (Anthropic, 31 controls / 1 file,
+  `recon_complete`)
+- **lever** — FORM REACHED (Apply Digital, 24 controls / 2 files,
+  `recon_complete`; interlock blocked 1 programmatic `form_submit`
+  (`submit_events=0`), `submitted=false`)
+
+The other three are externally gated, each verified across multiple tenants
+with all permitted replacements exhausted (max 2 per platform):
+
+- **workday** — account-creation gate on 3/3 tenants (Company JR-0108019,
+  US Bank `2026-0024161`, Baltimore City Fire Press Officer R0018870).
+- **smartrecruiters** — anti-bot/security wall on its one-click UI on 3/3
+  tenants (Eurofins, Pilot Company, IT TrailBlazers); SPA boots for normal
+  browsers but reproducibly fails automation contexts; WQ-7B forbids
+  anti-bot bypass, so none was attempted.
+- **icims** — login/account-creation gate on 3/3 tenants (LMI, MBP, **KCI**)
+  plus the platform's own careers hub (`hrjobs.icims.com`), whose every
+  "Apply Now" links to a `/login` URL. KCI was previously `click_failed`
+  (page-shell Apply vs widget competition); the reviewer-closure pass fixed
+  and live-verified it (`login_required` post-fix). No UAA-caused
+  navigation failure remains on iCIMS.
+
+Every run: `fields=[]`, `uploads=[]`, `submitted=false`, hard submit block
+armed, ephemeral profile, `UAA_LIVE_RECON_ONLY=true`.
+
+### Evaluation under the amended criterion — SATISFIED
+
+- **Criterion 1 (≥2 distinct reached):** MET — greenhouse and lever both
+  reached a real public application form (2 distinct).
+- **Criterion 2 (each non-reaching platform: budget exhausted + evidence-backed
+  external gate + no UAA defect):** MET —
+  - workday: 2 replacements exhausted (3 tenants), evidence-backed account
+    creation gate, no UAA defect.
+  - smartrecruiters: 2 replacements exhausted (3 tenants), evidence-backed
+    anti-bot/security wall (DataDome one-click UI), no UAA defect.
+  - icims: 2 replacements exhausted (3 tenants), evidence-backed
+    login/account-creation gate. The KCI apply-path UAA defect that was
+    originally exposed was given a hermetic regression test and a minimal
+    fix; real navigation was rerun after the fix and reached the external
+    `login_required` state. Therefore **no unresolved UAA defect remains
+    responsible for the iCIMS failure**.
+- **Criterion 3 (no blocked platform counted while an unresolved UAA defect
+  blocks observation):** MET — the one case with a UAA-facing defect (KCI)
+  was fixed and re-verified live; its external blocker was then reached and
+  observed (`login_required`). No platform is classified "externally blocked"
+  while a UAA defect prevents reaching that blocker.
+
+History of KCI (preserved): reproduced defect → hermetic regression test →
+minimal `embed_rank` fix → real rerun post-fix → `login_required` → no
+unresolved UAA defect.
+
+## Attempt-count reconciliation (reviewer-closure pass)
+
+The earlier "7 real-job target runs" figure was an undercount inconsistent
+with the 11-row evidence matrix. Authoritative figures (see MANIFEST):
+
+- **Distinct target URLs executed by the runner: 12** (14 unique URL
+  strings minus the duplicate US Bank `2026-0024161` and LMI `14407` form
+  variants).
+- **Distinct real public jobs observed (runner + MCP-only spot checks): 15**
+  (adds Pilot Company SR, MBP iCIMS, Baltimore City WD).
+- **Evidence rows (per-platform block outcome): 11** (greenhouse 1, lever 1,
+  workday 3, smartrecruiters 3, icims 3).
+- **Runner invocations:** 10 summary-producing runs (5-platform `final` +
+  targeted reruns); 1 chrome-profile probe without a summary; **total 11
+  invocations including the probe**.
+
+**"7" is superseded and must not be carried forward.** Formal ≥5 real-job
+attempts criterion is met under every authoritative measure (12/15/11).
+
+## Lever interlock event attribution (reviewer-closure pass)
+
+The `form_submit=1, submit_events=0, dispatch_submit_events=0` signature on
+Lever means a site script called `HTMLFormElement.prototype.submit()`
+programmatically (no submit event, no click, no dispatched SubmitEvent).
+Proof it is not UAA-initiated:
+
+- The run trace contains exactly one `page.evaluate` call — UAA's own final
+  counters read (`call@1266`). UAA never evaluated a script containing
+  `submit()`, never filled a field (`fields=[]`), and its only action was
+  clicking "APPLY FOR THIS JOB" (a link navigation).
+- It is deterministic: identical counters across all 4 Lever invocations
+  (liveruns, rerun, rerun2, final).
+
+Classification: **page/third-party-initiated programmatic form submit,
+blocked by interlock with `submitted=false`**. Separate counters stay
+reported: UAA submit clicks = 0, `submitted=false`.
+
+## Safety verification
+
+- Zero typed values, zero uploads, zero UAA submit clicks in all runs.
+- Login-only pages reported as `login_required`, never treated as
+  application forms (`is_application_form` excludes auth gates).
+- The recon-only captcha exception stays narrowly scoped
+  (`recon_only and analysis.is_application_form` and no auth gate).
+- Lever run captured `wq7_interlock: blocked 1 submission attempt(s)`
+  (`submit_events=0, form_submit=1, request_submit=0, dispatch=0`) —
+  attributed to page/third-party JS `form.submit()`, not UAA (see above).
+- KCI widget-selection fix is covered by a hermetic regression test; real
+  KCI rerun post-fix reached `login_required` with `submitted=false`.
 
 ## Completed work
 
-- Startup verified: repo toplevel correct; branch under check was
-  `checkpoint/wq-5-stale-run-recovery` (head `cdec5e6`); untracked debug
-  artifacts (`tmp_debug_status.py`, `tmp_debug_status/`, `tmp_final_pipeline/`)
-  preserved and never staged. Read AGENTS.md, CURRENT_STATE.md,
-  NEXT_WORKPACKAGES.md, ACTIVE_WORKPACKAGE.md. Remote URL has no PAT.
-- PAT availability: no named env var set; token supplied by the wincred
-  credential-manager entry for `github.com` (40-char secret, used only in an
-  in-memory variable, header `Authorization: Bearer`, never persisted).
-- **Part A — PR #12** verified via REST API before merge: state=open,
-  merged=false, head SHA `82347a6c4edbe7b31495ce1121f12a4e67c2d5b3` (exact),
-  base=main `2733a1a1da082946857692e0902b21f81033a685` (exact),
-  mergeable=true, mergeable_state=clean, diff = exactly the 3 reviewed files
-  (`docs/CURRENT_STATE.md` +8, `tests/integration/test_queue_import_api.py`
-  +79/-12, `tests/integration/test_queue_import_concurrency.py` +292), and all
-  6 head checks completed/success (Linux 3.11/3.12/3.13/3.14, Windows Core,
-  Windows Playwright).
-- **Part A merge:** squash-merge PR #12 once via REST `PUT /pulls/12/merge`
-  with `merge_method=squash`, `commit_title=test(queue-import): make
-  concurrent import verification deterministic`. Result SHA
-  `6828f1a5f5ed36bc630cb5c7b7ef43b346845ae2` (merged=true; single parent
-  2733a1a; stat = exactly the 3 files, +379/-12). Confirm PR #12 state=closed,
-  merged=true, merged_commit_sha=6828f1a. Checkpoint branch
-  `checkpoint/concurrent-import-deterministic-test` preserved at `82347a6`.
-- **Part A main CI:** verify-linux push on 6828f1a (run 31847561183) →
-  success; verify-windows-py314 dispatched via REST
-  `workflow_dispatch ref=main` (it has no `push: main` trigger) → run
-  31847583442 → success.
-- **Part B — PR #11 inspected:** API state=open, merged=false, draft=false,
-  base=main `2733a1a` (pre-merge), head ref `checkpoint/wq-7-real-ats-dry-runs`
-  (NOT the name in the task text, but head SHA `76b7eea...` matches the
-  reported PR head exactly — same PR, unambiguous). `merge-tree --write-tree
-  --name-only` on (PR head, new main) = clean (rc=0, no conflicted files).
-- **Part B refresh:** created local
-  `checkpoint/wq-7-real-ats-dry-runs` from `origin/...` (76b7eea) and ran
-  `git merge --no-ff origin/main -m "chore: refresh WQ-7A checkpoint from
-  latest main"` → merge commit `6bd8687` (clean, ort strategy; only PR #12's 3
-  files flowed in). Pushed to the existing checkpoint branch (see push note).
-- **Part B net diff vs new main** (`git diff origin/main...HEAD`), 15 files —
-  all WQ-7A content; PR #12 files NOT present: `.env.example` (M, purely
-  additive opt-in WQ-7A settings), `docs/handoffs/ACTIVE_WORKPACKAGE.md` (M),
-  `docs/handoffs/WQ7_LOCAL_LIVE_RUN.md` (A),
-  `src/universal_auto_applier/browser/live_runner.py` (M),
-  `src/universal_auto_applier/browser/submit_interlock.py` (A),
-  `src/universal_auto_applier/cli.py` (M), `config.py` (M),
-  `execution_mode.py` (A), `services/live_dry_run_platforms.py` (A),
-  `synthetic_profile.py` (A), `tests/live/test_live_platform_dry_runs.py` (A),
-  `tests/playwright/test_wq7_production_safety.py` (A),
-  `tests/playwright/test_wq7_submit_safety_guard.py` (A),
-  `tests/unit/test_wq7_live_dry_run_platforms.py` (A),
-  `tests/unit/test_wq7_synthetic_profile.py` (A). No `.github/workflows`,
-  `pyproject.toml`, pytest config, conftest, or migration changes → no
-  workflow/setup overlap and no mode-only changes.
+- Implemented navigation-only recon mode (`UAA_LIVE_RECON_ONLY`),
+  iCIMS support, auth-gate-first `_detect_blocker`, serialization fixes,
+  and hermetic tests (committed as `9f56b19`, `a71525e`, `563a653`).
+- Ran live recons of every supported ATS against real public jobs,
+  exhausting replacements per the original WQ-7B prompt.
+- Captured full evidence (`uaa_wq7b_final`, `uaa_wq7b_icims_kci`,
+  `uaa_wq7b_icims_kci_fix`, `uaa_wq7b_rerun*` under the temp opencode
+  output dirs; not committed).
+- Wrote `docs/evidence/wq-7b/MANIFEST.md` (sanitized).
+- **Reviewer-closure pass (2026-08-16):**
+  - Root-caused and fixed the iCIMS/KCI shell-vs-widget apply ambiguity
+    (`embed_rank` key in `choose_safe_action`).
+  - Added hermetic fixtures + failing regression test, then verified the
+    test passes post-fix and re-ran real KCI to `login_required`
+    (`uaa_wq7b_icims_kci_fix`).
+  - Reconciled attempt counts (7 → authoritative 15/12/11 per MANIFEST) and
+    re-ran the full validation gates after the fix.
+  - Attributed the Lever `form_submit=1` interlock event
+    (page/third-party-initiated; deterministic).
+  - Updated MANIFEST + this handoff.
 
-## Tests and results (2026-08-15, refreshed working tree)
+## Changed files
 
-- `ruff check src tests migrations` → all checks passed.
-- `ruff format --check src tests migrations` → 197 files already formatted.
-- `pyright` → 0 errors, 0 warnings, 0 informations.
-- `pytest -m "not live and not playwright" -q` → **1191 passed, 244 deselected**
-  (separate run; respected the sandbox memory cap).
-- `pytest tests/playwright -q` → **242 passed** (separate run).
-- `git diff --check` → clean. Untracked debug artifacts untouched.
+- `src/universal_auto_applier/navigator/apply_path_finder.py` — auth-gate
+  first; **added `embed_rank` to prefer child-frame (widget) SAFE_APPLY**
+- `src/universal_auto_applier/services/live_dry_run_platforms.py` (json mode dict)
+- `tests/playwright/test_wq7b_recon_mode.py` (recon tests; **new
+  `TestReconWidgetApplyPreference::test_prefers_widget_apply_over_shell_apply`**)
+- `tests/unit/test_wq7_live_dry_run_platforms.py` (serialization regression)
+- `tests/fixtures/recon/login_captcha.html` (new fixture for gate-vs-captcha precedence)
+- `tests/fixtures/recon/icims_outside.html`, `icims_widget.html`,
+  `agency_landing.html` (new hermetic shell-vs-widget apply fixtures)
+- `docs/evidence/wq-7b/MANIFEST.md` (final evidence)
+
+## Tests and exact results
+
+- Contract suite (`pytest -m "not live and not playwright"`): **1209 passed,
+  259 deselected**.
+- Playwright suite (`pytest tests/playwright`): **256 passed** (authoritative
+  re-run at the final amendment SHA; a first full-suite run showed 1 failure
+  in the pre-existing load-timing-sensitive `TestAllowedBehavior`
+  interlock test which passed in isolation and on re-run — unrelated to
+  WQ-7B code).
+- Aggregate reference (historical, superseded by the split): `pytest -m "not
+  live"` = 1465 passed, 3 deselected (1209 + 256).
+- Recon/blocker modules: pass (incl. login_captcha precedence).
+- WQ-7B recon-mode tests: 14 passed (13 existing + 1 new widget-preference
+  regression).
+- `git diff --check`: clean. `ruff check`, `ruff format --check` (198/198),
+  `pyright` (0/0/0): pass.
+- Live recon runs (opt-in, not in CI): as recorded in MANIFEST and thumbnails above.
+- Owner-amendment pass (2026-08-16): all six contract gates re-run and
+  green at the final SHA (see MANIFEST validation section).
 
 ## Decisions made
 
-- PR #11 head ref is `checkpoint/wq-7-real-ats-dry-runs`, not
-  `checkpoint/wq-7a-live-dry-run-infrastructure` as stated in the task; the
-  confirmed head SHA `76b7eea` matches, so no ambiguity — operated on the real
-  PR branch and its PR head.
-- Refresh via a plain `--no-ff` merge of `origin/main` (no rebase, no
-  force-push), exactly as instructed; merge-tree pre-check proved it clean.
-- Windows main CI dispatched manually (`workflow_dispatch ref=main`) because
-  `verify-windows-py314.yml` does not trigger on `main` pushes.
-- Only the GitHub REST API was used for all remote mutations; the token lived
-  in one PowerShell session variable and was nulled after use.
+- Do not bypass account creation, anti-bot, or login walls — WQ-7B forbids
+  this; SmartRecruiters failures are reported as externally blocked.
+- **Owner amendment accepted 2026-08-16:** the original ≥3-distinct
+  criterion was replaced by the two-platforms-plus-external-gate criterion
+  described above; history of the original criterion and BLOCKED result is
+  preserved, not rewritten.
+- Do not open the PR or start WQ-7C until the amended acceptance is evaluated
+  and final gates pass.
+- Only make a production fix when deterministically reproduced: the KCI
+  shell-vs-widget ambiguity was reproduced with a hermetic failing test
+  before editing `choose_safe_action` (fix: `embed_rank` preference, not a
+  live-site-only change). The fix does not alter `allow_apply` /
+  `allow_continue` priorities or submit safety.
+- Never commit live-run artifacts (screenshots, traces, HTML, PDFs).
+- Fabricated job URLs were rejected (both a SmartRecruiters 400 and a
+  Workday 404 case proved this wastes time); real public jobs only, verified
+  before each run.
+- Attack-count terminology is exact in the manifest: target attempts
+  (distinct URLs, 12 via runner / 15 incl. MCP checks) vs runner
+  invocations (10) vs evidence rows (11). "7" is retired.
 
 ## Blockers / risks
 
-- None. PR #12 merged; main CI green on both workflows; PR #11 refreshed
-  cleanly with all local gates green. Awaiting final 6-check CI result on the
-  refreshed PR #11 head before the report decision.
-- Reminder: do NOT merge PR #11 and do NOT start WQ-7B. Keep
-  `checkpoint/concurrent-import-deterministic-test` and all other checkpoint
-  branches.
-
-## CI results (2026-08-15)
-
-- `main` after PR #12: Linux `verify-linux` (run 31847561183) → success;
-  Windows `verify-windows-py314` (run 31847583442, manually dispatched) →
-  success.
-- PR #11 refreshed head: six checks (Linux 3.11/3.12/3.13/3.14, Windows Core,
-  Windows Playwright) pending after the handoff+refresh push; resolve run IDs
-  from https://github.com/MohamedAzzam4/UniversalAutoApplier/actions and
-  verify final mergeability (open, merged=false, mergeable=true,
-  mergeable_state=clean, local==remote==PR head).
+- **Accepted-platform constraint:** 2 of 5 supported ATS platforms reach real
+  forms; the other three are externally gated despite exhausted replacements.
+  This is the explicit reason for the owner amendment and remains a
+  documented limitation of live ATS reachability — not an unresolved UAA
+  defect.
+- A working guest-apply Workday/iCIMS tenant or bypass-free SmartRecruiters
+  posting is not available within the WQ-7B target pool (forbidden to
+  bypass, so none attempted).
+- No objectionable production risk: the embed_rank fix was regression-tested
+  and validated by the full gate suite.
 
 ## Exact next action
 
-1. Confirm the refreshed head push updated PR #11.
-2. Poll the six PR #11 checks on the final head to terminal.
-3. Verify PR open / merged=false / mergeable=true / mergeable_state=clean and
-   local==remote==PR head.
-4. Write the final two-part report with the single decision (READY FOR MERGE
-   REVIEW / NEEDS CHANGES / BLOCKED).
-
-  ```text
-  git fetch origin
-  git rev-parse HEAD
-  git rev-parse origin/checkpoint/wq-7-real-ats-dry-runs
-  ```
+1. Push the owner-amendment/finalization commit so CI runs on the final SHA.
+2. Open ONE PR against `main` (REST API) with the required description;
+   do NOT merge.
+3. Collect the six required CI conclusions (Linux 3.11/3.12/3.13/3.14,
+   Windows Core, Windows Playwright) on the final PR SHA.
+4. Do NOT call WQ-7B READY while CI is pending; fix only a genuine WQ-7B
+   defect if one appears.
+5. Do **not** start WQ-7C until WQ-7B reaches final review on origin.
 
 ## Rules
 
-- Never merge or push to `main` directly — only through the reviewed PR,
-  exactly once. Preserve all `checkpoint/*` branches.
-- Only commit what the workpackage asked for; never commit live-runs data,
-  `.uaa_data`, `.env`, browsers/databases, screenshots, or the tmp debug
-  dirs. `git diff --check` before committing.
+- Never merge or push to `main` directly. Preserve all `checkpoint/*`
+  branches. No reset/clean/rebase/amend/force-push.
+- Only commit reviewed WQ-7B files; never commit live-runs data, `.uaa_data`,
+  `.env`, browsers/databases, screenshots, traces, or HTML snapshots.
 - Do not embed a "current HEAD" SHA in this file; resolve it dynamically.

@@ -11,7 +11,7 @@ from typing import Literal
 
 from pydantic import BaseModel, Field
 
-LiveRunStatus = Literal["review_ready", "needs_user_input", "failed"]
+LiveRunStatus = Literal["review_ready", "needs_user_input", "failed", "recon_complete"]
 
 
 class LiveClickRecord(BaseModel):
@@ -66,6 +66,27 @@ class LiveUploadRecord(BaseModel):
     message: str = ""
 
 
+class LiveFormObservation(BaseModel):
+    """Structural observation of an application form reached in recon mode.
+
+    WQ-7B records what the form looks like WITHOUT touching it: counts of
+    visible controls and file inputs, submit-handler presence, and field
+    labels. No values are ever written to the page.
+    """
+
+    page_url: str
+    title: str = ""
+    visible_control_count: int = 0
+    file_input_count: int = 0
+    has_dangerous_submit: bool = False
+    field_labels: list[str] = Field(default_factory=list[str])
+    detected_at: datetime
+    # Present when the reached form embeds an anti-bot widget (for example
+    # an hCaptcha/reCAPTCHA challenge). Recon only observes the structure; it
+    # never interacts with the widget. Kept as evidence, not as a bypass.
+    embedded_blocker: str | None = None
+
+
 class LiveRunReport(BaseModel):
     """Complete machine-readable report for one live browser dry-run."""
 
@@ -85,11 +106,13 @@ class LiveRunReport(BaseModel):
     report_path: str | None = None
     errors: list[str] = Field(default_factory=list[str])
     submitted: bool = False
+    recon_observation: LiveFormObservation | None = None
 
 
 __all__ = [
     "LiveClickRecord",
     "LiveFieldRecord",
+    "LiveFormObservation",
     "LiveRunReport",
     "LiveRunStatus",
     "LiveUploadRecord",

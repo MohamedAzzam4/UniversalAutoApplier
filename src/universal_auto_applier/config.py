@@ -149,9 +149,16 @@ class Settings(BaseModel):
     live_lever_url: str | None = Field(default=None)
     live_workday_url: str | None = Field(default=None)
     live_smartrecruiters_url: str | None = Field(default=None)
+    live_icims_url: str | None = Field(default=None)
     # Comma-separated subset of platforms to run (e.g. "greenhouse,lever").
     # When None, all configured platforms are attempted.
     live_dry_run_platforms: str | None = Field(default=None)
+    # WQ-7B: navigation/observation-only reconnaissance mode. When True, the
+    # live runner NEVER fills fields, NEVER uploads documents, and stops at
+    # the first application form it detects. Typed=0, uploaded=0, submit
+    # clicks=0, interlock stays armed. This is a stricter superset of the
+    # WQ-7A dry-run safety posture.
+    live_recon_only: bool = Field(default=False)
     # WQ-7 execution mode: when True, the LiveBrowserRunner is placed in
     # a hard-submit-blocked mode where even if the submit method is called
     # directly, it returns "blocked" without clicking. This is the lowest-
@@ -304,6 +311,8 @@ def load_settings(env: dict[str, str] | None = None) -> Settings:
         live_lever_url=source.get("UAA_LIVE_LEVER_URL", "").strip() or None,
         live_workday_url=source.get("UAA_LIVE_WORKDAY_URL", "").strip() or None,
         live_smartrecruiters_url=source.get("UAA_LIVE_SMARTRECRUITERS_URL", "").strip() or None,
+        live_icims_url=source.get("UAA_LIVE_ICIMS_URL", "").strip() or None,
         live_dry_run_platforms=source.get("UAA_LIVE_DRY_RUN_PLATFORMS", "").strip() or None,
+        live_recon_only=_parse_bool(source.get("UAA_LIVE_RECON_ONLY", "false").strip()),
         wq7_hard_submit_block=_parse_bool(source.get("UAA_WQ7_HARD_SUBMIT_BLOCK", "false").strip()),
     )

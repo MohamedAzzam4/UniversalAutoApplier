@@ -9,6 +9,7 @@ proves:
 - At least one Workday or SmartRecruiters attempt has a truthful result.
 - Zero submissions occur across all platforms.
 - LinkedIn Easy Apply is excluded.
+- WQ-7B recon mode navigates and never fills/uploads/submits.
 """
 
 from __future__ import annotations
@@ -93,3 +94,55 @@ def test_platform_dry_runs_stop_before_submit(tmp_path) -> None:  # type: ignore
     for r in summary.results:
         if "linkedin" in r.url.lower():
             assert r.skipped, f"LinkedIn URL was not skipped: {r.url}"
+
+
+def test_platform_recon_navigation_only(tmp_path) -> None:  # type: ignore[no-untyped-def]
+    """WQ-7B: recon mode navigates to forms without any interaction.
+
+    Asserts:
+    - Zero submissions across all platforms.
+    - No field fills and no uploads in any recon report.
+    - Every terminal state is truthful (recon_complete/needs_user_input/failed).
+    - At least one configured platform ran.
+    """
+    settings = load_settings().model_copy(
+        update={
+            "data_dir": tmp_path / "uaa_wq7b_live",
+            "browser_headless": True,
+        }
+    )
+
+    summary = run_platform_dry_runs(
+        settings,
+        artifacts_dir=tmp_path / "live-runs",
+        headless=True,
+        recon_only=True,
+    )
+
+    # Zero submissions — the most critical assertion.
+    assert summary.total_submitted == 0, (
+        f"FAIL: {summary.total_submitted} submissions occurred — WQ-7B recon must never submit"
+    )
+    for r in summary.results:
+        assert not r.submitted, f"FAIL: platform {r.platform} reported submitted=True"
+
+    # At least one platform must have run.
+    assert summary.total_run > 0, "No platforms ran — check URL env vars"
+
+    # Recon mode must never fill or upload anything.
+    for r in summary.results:
+        if r.report is not None:
+            assert r.report.fields == [], (
+                f"FAIL: recon mode filled {len(r.report.fields)} fields on {r.platform}"
+            )
+            assert r.report.uploads == [], (
+                f"FAIL: recon mode uploaded {len(r.report.uploads)} files on {r.platform}"
+            )
+
+    # Every terminal state must be truthful and safe.
+    for r in summary.results:
+        if r.skipped:
+            continue
+        assert r.status in ("recon_complete", "needs_user_input", "failed"), (
+            f"FAIL: platform {r.platform} reached unexpected status {r.status}"
+        )

@@ -240,24 +240,11 @@ def _has_visible(frame: Frame, selector: str) -> bool:
 
 def _detect_blocker(page: Page, text: str) -> str | None:
     frames = page.frames
-    if any(term in text for term in _CAPTCHA_TERMS) or any(
-        _has_visible(
-            frame,
-            "iframe[src*='recaptcha'], iframe[src*='hcaptcha'], "
-            ".g-recaptcha, .h-captcha, [data-sitekey]",
-        )
-        for frame in frames
-    ):
-        return "captcha_detected"
-
-    if any(term in text for term in _SECURITY_TERMS):
-        return "security_wall"
-
-    if any(term in text for term in _PAYMENT_TERMS) or any(
-        _has_visible(frame, "input[autocomplete^='cc-'], input[name*='card' i]") for frame in frames
-    ):
-        return "payment_required"
-
+    # Login/auth gates take precedence over every other blocker. A login or
+    # account-creation page must never be reported as a reached application
+    # form, even when it embeds an anti-bot widget (real gates like iCIMS's
+    # pair a CAPTCHA/Turnstile challenge with the auth form). Recon and fill
+    # must both stop at the gate.
     password_visible = any(_has_visible(frame, "input[type='password']") for frame in frames)
     login_dialog_visible = False
     for frame in frames:
@@ -279,12 +266,38 @@ def _detect_blocker(page: Page, text: str) -> str | None:
                 break
         if login_dialog_visible:
             break
-    login_path = any(part in page.url.lower() for part in ("/login", "/signin", "/sign-in"))
+    login_path = any(
+        part in page.url.lower()
+        for part in ("/login", "/signin", "/sign-in", "loginonly", "createaccount")
+    )
+    title = (page.title() or "").lower()
     login_heading = any(
         term in text for term in ("sign in to continue", "log in to continue", "login required")
     )
-    if password_visible or login_dialog_visible or (login_path and login_heading):
+    if (
+        password_visible
+        or login_dialog_visible
+        or (login_path and (login_heading or "login" in title))
+    ):
         return "login_required"
+
+    if any(term in text for term in _CAPTCHA_TERMS) or any(
+        _has_visible(
+            frame,
+            "iframe[src*='recaptcha'], iframe[src*='hcaptcha'], "
+            ".g-recaptcha, .h-captcha, [data-sitekey]",
+        )
+        for frame in frames
+    ):
+        return "captcha_detected"
+
+    if any(term in text for term in _SECURITY_TERMS):
+        return "security_wall"
+
+    if any(term in text for term in _PAYMENT_TERMS) or any(
+        _has_visible(frame, "input[autocomplete^='cc-'], input[name*='card' i]") for frame in frames
+    ):
+        return "payment_required"
     return None
 
 
@@ -331,13 +344,20 @@ def analyze_page(page: Page) -> LivePageAnalysis:
         or (visible_forms > 0 and visible_controls >= 1 and application_url_signal)
     )
 
+    blocker = _detect_blocker(page, all_text)
+
     return LivePageAnalysis(
         url=page.url,
         title=page.title(),
         clickables=clickables,
-        is_application_form=is_form,
+        # A login or account-creation gate is never an application form,
+        # even when it contains name/email fields (WQ-7B: no account login,
+        # no account creation). The blocker check runs before the form test
+        # so a gate that also embeds a CAPTCHA is still reported as the
+        # stronger auth gate, not as a captcha-bearing form.
+        is_application_form=is_form and blocker != "login_required",
         has_dangerous_submit=has_submit,
-        blocker=_detect_blocker(page, all_text),
+        blocker=blocker,
         submitted=any(term in all_text for term in _SUBMITTED_TERMS),
         expired=any(term in all_text for term in _EXPIRED_TERMS),
         visible_control_count=visible_controls,
@@ -361,7 +381,24 @@ def choose_safe_action(
     candidates = [item for item in analysis.clickables if item.classification in priorities]
     if not candidates:
         return None
-    candidates.sort(key=lambda item: (priorities[item.classification], -item.confidence))
+
+    # Embedded ATS application widgets (e.g. iCIMS) render the real apply
+    # CTA inside a child frame while the page shell often carries a bare
+    # page-level "Apply" link that points at the employer's careers site
+    # instead of the application form. When both are classified safe_apply,
+    # prefer the widget-embedded CTA (child frame) over the shell link.
+    def embed_rank(item: LiveClickable) -> int:
+        if item.classification != ClickableClassification.SAFE_APPLY:
+            return 0
+        return 0 if item.frame_url != analysis.url else 1
+
+    candidates.sort(
+        key=lambda item: (
+            priorities[item.classification],
+            embed_rank(item),
+            -item.confidence,
+        )
+    )
     return candidates[0]
 
 

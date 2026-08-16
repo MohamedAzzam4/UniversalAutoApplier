@@ -161,20 +161,22 @@ class TestPlatformUrlConfig:
     """Platform URLs are read from settings (env vars)."""
 
     def test_get_platform_urls_all_configured(self) -> None:
-        """All four platform URLs are read from settings."""
+        """All five platform URLs are read from settings."""
         settings = _make_settings(
             enable_live_platform_dry_run=True,
             live_greenhouse_url="https://boards.greenhouse.io/test1",
             live_lever_url="https://jobs.lever.co/test2",
             live_workday_url="https://myworkdayjobs.com/test3",
             live_smartrecruiters_url="https://careers.smartrecruiters.com/test4",
+            live_icims_url="https://careers-example.icims.com/jobs/intro",
         )
         urls = _get_platform_urls(settings)
-        assert len(urls) == 4
+        assert len(urls) == 5
         assert urls["greenhouse"] == "https://boards.greenhouse.io/test1"
         assert urls["lever"] == "https://jobs.lever.co/test2"
         assert urls["workday"] == "https://myworkdayjobs.com/test3"
         assert urls["smartrecruiters"] == "https://careers.smartrecruiters.com/test4"
+        assert urls["icims"] == "https://careers-example.icims.com/jobs/intro"
 
     def test_get_platform_urls_partial(self) -> None:
         """Only configured platforms are included."""
@@ -335,3 +337,116 @@ class TestSummaryAggregation:
         json_str = json.dumps(d, indent=2)
         assert "total_submitted" in json_str
         assert '"total_submitted": 0' in json_str
+
+    def test_summary_to_dict_with_recon_observation_serializable(self, tmp_path: Path) -> None:
+        """A recon observation (with datetime) must serialize cleanly to JSON."""
+        import json
+        from datetime import UTC, datetime
+
+        from universal_auto_applier.browser.live_models import LiveFormObservation
+
+        settings = _make_settings(
+            enable_live_platform_dry_run=True,
+            data_dir=tmp_path,
+            live_greenhouse_url="https://boards.greenhouse.io/test",
+        )
+        report = _make_report(status="recon_complete", stopped_reason="recon_done")
+        report.recon_observation = LiveFormObservation(
+            page_url="https://boards.greenhouse.io/test",
+            title="Apply for this job",
+            visible_control_count=4,
+            file_input_count=1,
+            field_labels=["first_name", "last_name"],
+            detected_at=datetime.now(UTC),
+            embedded_blocker="captcha_detected",
+        )
+        with patch.object(LiveBrowserRunner, "run") as mock_run:
+            mock_run.return_value = report
+            summary = run_platform_dry_runs(settings)
+
+        d = summary.to_dict()
+        assert json.dumps(d) == json.dumps(json.loads(json.dumps(d)))
+        recon = next(r["recon_observation"] for r in d["results"] if r["recon_observation"])
+        assert isinstance(recon["detected_at"], str)
+        assert recon["embedded_blocker"] == "captcha_detected"
+        assert recon["visible_control_count"] == 4
+
+
+class TestReconOnlyMode:
+    """WQ-7B navigation/observation-only mode."""
+
+    def test_recon_only_flag_passed_to_runner(self, tmp_path: Path) -> None:
+        """recon_only=True is forwarded to the LiveBrowserConfig."""
+        settings = _make_settings(
+            enable_live_platform_dry_run=True,
+            data_dir=tmp_path,
+            live_greenhouse_url="https://boards.greenhouse.io/test",
+        )
+        received: list[LiveBrowserConfig] = []
+
+        real_init = LiveBrowserRunner.__init__
+
+        def _spy_init(self_: LiveBrowserRunner, config: LiveBrowserConfig) -> None:
+            received.append(config)
+            real_init(self_, config)
+
+        with (
+            patch.object(LiveBrowserRunner, "__init__", new=_spy_init),
+            patch.object(LiveBrowserRunner, "run") as mock_run,
+        ):
+            mock_run.return_value = _make_report(status="recon_complete")
+            summary = run_platform_dry_runs(settings, recon_only=True)
+
+        assert received and received[0].recon_only is True
+        assert summary.total_recon_complete == 1
+
+    def test_recon_defaults_from_settings(self, tmp_path: Path) -> None:
+        """When recon_only is unset, settings.live_recon_only is used."""
+        settings = _make_settings(
+            enable_live_platform_dry_run=True,
+            data_dir=tmp_path,
+            live_recon_only=True,
+            live_greenhouse_url="https://boards.greenhouse.io/test",
+        )
+        received: list[LiveBrowserConfig] = []
+
+        real_init = LiveBrowserRunner.__init__
+
+        def _spy_init(self_: LiveBrowserRunner, config: LiveBrowserConfig) -> None:
+            received.append(config)
+            real_init(self_, config)
+
+        with (
+            patch.object(LiveBrowserRunner, "__init__", new=_spy_init),
+            patch.object(LiveBrowserRunner, "run") as mock_run,
+        ):
+            mock_run.return_value = _make_report(status="recon_complete")
+            summary = run_platform_dry_runs(settings)
+
+        assert received and received[0].recon_only is True
+        assert summary.total_recon_complete == 1
+
+    def test_recon_complete_not_counted_in_review_ready(self, tmp_path: Path) -> None:
+        """A recon_complete result is counted separately, not as review_ready."""
+        settings = _make_settings(
+            enable_live_platform_dry_run=True,
+            data_dir=tmp_path,
+            live_greenhouse_url="https://boards.greenhouse.io/test",
+        )
+        with patch.object(LiveBrowserRunner, "run") as mock_run:
+            mock_run.return_value = _make_report(status="recon_complete")
+            summary = run_platform_dry_runs(settings, recon_only=True)
+
+        assert summary.total_recon_complete == 1
+        assert summary.total_review_ready == 0
+        assert summary.total_submitted == 0
+
+    def test_icims_platform_enum_member(self) -> None:
+        """ICIMS is a recognized Platform member (used by synthetic jobs)."""
+        from universal_auto_applier.core.statuses import Platform
+
+        assert Platform.ICIMS == "icims"
+        job = _make_synthetic_job(
+            "https://careers-example.icims.com/jobs/123/job", "icims", Path("/tmp")
+        )
+        assert job.platform == Platform.ICIMS
