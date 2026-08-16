@@ -1,24 +1,30 @@
-# Active Workpackage
+# Active Workpackage — WQ-7B (MERGED / COMPLETE)
 
 - **WP ID:** WQ-7B — Real ATS Navigation Reconnaissance.
-- **Status:** ACCEPTED — owner amendment applied; final local validation
-  green; PR opened against `main` for the final CI pass. No merge performed;
-  WQ-7C not started.
-- **Branch:** `checkpoint/wq-7b-real-ats-navigation`
+- **Status:** MERGED / COMPLETE.
+- **PR:** #13 — https://github.com/MohamedAzzam4/UniversalAutoApplier/pull/13
+- **PR head:** `adc8c8dff25c8e1f4143d8db65292d223867a893`
 - **Base SHA:** `6326e4e0815d2d325eccc5bf3671afefd8e5bc8b` (`origin/main`, WQ-7A squash)
-- **PR:** one PR opened against `main` (number recorded in the PR section)
-- **Last completed/checkpoint SHA:** resolve dynamically (see command block).
-  The amendment/finalization commits are pushed; do not trust an embedded SHA.
+- **Merge commit:** resolve dynamically (see command block below); WQ-7B is
+  complete on `main`, no further branch work for this WP is tracked here.
+- **Branch:** `checkpoint/wq-7b-real-ats-navigation` (left intact; no
+  further commits expected)
+- **Amended acceptance:** SATISFIED (see evaluation below).
+- **CI:** all six required checks passed on the final PR head `adc8c8d`
+  (Linux 3.11/3.12/3.13/3.14, Windows Core, Windows Playwright).
+- **Applications submitted:** none.
+- **WQ-7C:** NOT started.
 - **Branch-head verification (run dynamically; do not trust an embedded SHA):**
 
   ```text
   git fetch origin
   git rev-parse HEAD
-  git rev-parse origin/checkpoint/wq-7b-real-ats-navigation
+  git rev-parse origin/main
   ```
 
-  The two values must match before handoff/review.
-- **Last updated:** 2026-08-16 (owner amendment + PR pass)
+  `origin/main` contains the PR #13 merge commit (head `adc8c8d` merged as
+  `cab7a13`).
+- **Last updated:** 2026-08-16 (post-merge closure)
 
 ## Objective
 
@@ -28,7 +34,7 @@ infrastructure — **navigation and observation only**. Never fill fields,
 never upload documents, never log into accounts, never submit applications,
 never bypass CAPTCHA/anti-bot.
 
-## Acceptance criterion history
+## Acceptance criterion history (preserved)
 
 ### Original criterion
 
@@ -42,7 +48,7 @@ Evaluating the original criterion after exhaustion of all permitted
 replacement targets: only **two** distinct ATS platforms reached a real
 public application form (greenhouse, lever); workday, smartrecruiters and
 icims were externally gated with replacements exhausted. Result recorded as
-**BLOCKED** with a full evidence manifest (see manifest and
+**BLOCKED** with a full evidence manifest (see
 `docs/evidence/wq-7b/MANIFEST.md`). This historical record is preserved and
 **not** rewritten.
 
@@ -96,21 +102,7 @@ dependency).
 | Amended criterion | ≥2 distinct reached + exhaustion/evidence/no-UAA-defect per remaining platform |
 | Amended outcome | **SATISFIED** — see evaluation below |
 
-## Objective
-
-Prove that UAA can safely navigate from real public job-detail pages to real
-ATS application forms and observe their structure using the WQ-7A
-infrastructure — **navigation and observation only**. Never fill fields,
-never upload documents, never log into accounts, never submit applications,
-never bypass CAPTCHA/anti-bot.
-
-## Acceptance criterion (unchanged, per reviewer)
-
-At least five real-job attempts; every supported ATS attempted; **at least
-three distinct ATS platforms must reach a real public application form**.
-Unsuccessful platforms get exact evidence and classification.
-
-## Outcome — BLOCKED under original criterion; SATISFIED under owner amendment
+## Final outcome — SATISFIED under owner amendment; MERGED via PR #13
 
 ### Results (unchanged evidenced facts)
 
@@ -219,30 +211,20 @@ reported: UAA submit clicks = 0, `submitted=false`.
 - KCI widget-selection fix is covered by a hermetic regression test; real
   KCI rerun post-fix reached `login_required` with `submitted=false`.
 
-## Completed work
+## Merged state
 
-- Implemented navigation-only recon mode (`UAA_LIVE_RECON_ONLY`),
-  iCIMS support, auth-gate-first `_detect_blocker`, serialization fixes,
-  and hermetic tests (committed as `9f56b19`, `a71525e`, `563a653`).
-- Ran live recons of every supported ATS against real public jobs,
-  exhausting replacements per the original WQ-7B prompt.
-- Captured full evidence (`uaa_wq7b_final`, `uaa_wq7b_icims_kci`,
-  `uaa_wq7b_icims_kci_fix`, `uaa_wq7b_rerun*` under the temp opencode
-  output dirs; not committed).
-- Wrote `docs/evidence/wq-7b/MANIFEST.md` (sanitized).
-- **Reviewer-closure pass (2026-08-16):**
-  - Root-caused and fixed the iCIMS/KCI shell-vs-widget apply ambiguity
-    (`embed_rank` key in `choose_safe_action`).
-  - Added hermetic fixtures + failing regression test, then verified the
-    test passes post-fix and re-ran real KCI to `login_required`
-    (`uaa_wq7b_icims_kci_fix`).
-  - Reconciled attempt counts (7 → authoritative 15/12/11 per MANIFEST) and
-    re-ran the full validation gates after the fix.
-  - Attributed the Lever `form_submit=1` interlock event
-    (page/third-party-initiated; deterministic).
-  - Updated MANIFEST + this handoff.
+- PR #13: https://github.com/MohamedAzzam4/UniversalAutoApplier/pull/13
+- PR head: `adc8c8dff25c8e1f4143d8db65292d223867a893`
+- Merge commit: resolve dynamically with the command block at the top.
+  At closure time `origin/main` was `cab7a13d0e15c06ae04b4c180d11920a9e70fb97`
+  (merge of PR #13).
+- Amended acceptance satisfied.
+- All six required CI checks passed on the final PR head `adc8c8d`
+  (Linux 3.11/3.12/3.13/3.14, Windows Core, Windows Playwright).
+- Applications submitted: none.
+- WQ-7C: NOT started.
 
-## Changed files
+## Changed files (merged via PR #13)
 
 - `src/universal_auto_applier/navigator/apply_path_finder.py` — auth-gate
   first; **added `embed_rank` to prefer child-frame (widget) SAFE_APPLY**
@@ -274,6 +256,8 @@ reported: UAA submit clicks = 0, `submitted=false`.
 - Live recon runs (opt-in, not in CI): as recorded in MANIFEST and thumbnails above.
 - Owner-amendment pass (2026-08-16): all six contract gates re-run and
   green at the final SHA (see MANIFEST validation section).
+- Merge (2026-08-16): all six required CI checks passed on the final PR head
+  `adc8c8d` (Linux 3.11/3.12/3.13/3.14, Windows Core, Windows Playwright).
 
 ## Decisions made
 
@@ -283,8 +267,9 @@ reported: UAA submit clicks = 0, `submitted=false`.
   criterion was replaced by the two-platforms-plus-external-gate criterion
   described above; history of the original criterion and BLOCKED result is
   preserved, not rewritten.
-- Do not open the PR or start WQ-7C until the amended acceptance is evaluated
-  and final gates pass.
+- The PR for the amended/finalized branch was merged with a normal merge
+  commit via reviewed PR #13; no squash/rebase/amend/force-push, no direct
+  push to `main`.
 - Only make a production fix when deterministically reproduced: the KCI
   shell-vs-widget ambiguity was reproduced with a hermetic failing test
   before editing `choose_safe_action` (fix: `embed_rank` preference, not a
@@ -298,11 +283,11 @@ reported: UAA submit clicks = 0, `submitted=false`.
   (distinct URLs, 12 via runner / 15 incl. MCP checks) vs runner
   invocations (10) vs evidence rows (11). "7" is retired.
 
-## Blockers / risks
+## Blockers / risks (resolved / persistent limitations)
 
 - **Accepted-platform constraint:** 2 of 5 supported ATS platforms reach real
   forms; the other three are externally gated despite exhausted replacements.
-  This is the explicit reason for the owner amendment and remains a
+  This was the explicit reason for the owner amendment and remains a
   documented limitation of live ATS reachability — not an unresolved UAA
   defect.
 - A working guest-apply Workday/iCIMS tenant or bypass-free SmartRecruiters
@@ -311,21 +296,19 @@ reported: UAA submit clicks = 0, `submitted=false`.
 - No objectionable production risk: the embed_rank fix was regression-tested
   and validated by the full gate suite.
 
-## Exact next action
+## Next workpackage candidate
 
-1. Push the owner-amendment/finalization commit so CI runs on the final SHA.
-2. Open ONE PR against `main` (REST API) with the required description;
-   do NOT merge.
-3. Collect the six required CI conclusions (Linux 3.11/3.12/3.13/3.14,
-   Windows Core, Windows Playwright) on the final PR SHA.
-4. Do NOT call WQ-7B READY while CI is pending; fix only a genuine WQ-7B
-   defect if one appears.
-5. Do **not** start WQ-7C until WQ-7B reaches final review on origin.
+**WQ-7C — controlled synthetic field fill + synthetic document upload, with
+final submission forbidden.**
+
+This is only a readiness marker. WQ-7C is **not** defined or implemented in
+this workpackage. The detailed WQ-7C contract will be issued separately by
+the owner/reviewer.
 
 ## Rules
 
 - Never merge or push to `main` directly. Preserve all `checkpoint/*`
   branches. No reset/clean/rebase/amend/force-push.
-- Only commit reviewed WQ-7B files; never commit live-runs data, `.uaa_data`,
+- Only commit reviewed files; never commit live-runs data, `.uaa_data`,
   `.env`, browsers/databases, screenshots, traces, or HTML snapshots.
 - Do not embed a "current HEAD" SHA in this file; resolve it dynamically.

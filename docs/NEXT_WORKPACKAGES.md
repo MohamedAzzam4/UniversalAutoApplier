@@ -207,6 +207,23 @@ fixture behavior.
 
 **Predecessor/dependency.** WQ-3 (API/state ready to capture evidence).
 
+**Progress (merged to `main`, 2026-08-16).**
+
+- **WQ-7A complete** — safe live ATS dry-run infrastructure merged
+  (`6326e4e`): opt-in live browser dry-run, hard submit interlock installed
+  before any page script, synthetic profile, never clicks final submit.
+- **WQ-7B complete** — real ATS navigation reconnaissance merged via PR #13
+  (head `adc8c8d`, merge `cab7a13`) under the owner-approved amendment:
+  real public application forms reached on Greenhouse and Lever; Workday,
+  SmartRecruiters, and iCIMS classified as externally gated / externally
+  imposed unsupported conditions after permitted replacement attempts; zero
+  typed values, zero uploads, zero UAA submit clicks; no applications
+  submitted.
+- **WQ-7C is the next proposed controlled stage** — controlled synthetic
+  field fill + synthetic document upload, with final submission forbidden.
+  Its detailed contract is not yet defined; it will be issued separately by
+  the owner/reviewer.
+
 ## WQ-8 — One staged controlled real submission using the sanctioned plan
 
 **Objective.** On the user's machine, execute exactly one manually approved
