@@ -26,7 +26,8 @@
   ```
 
   The two resolved values must match before handoff/review.
-- **Last checked-in milestone:** initial WQ-7C checkpoint (docs + handoff).
+- **Last checked-in milestone:** implementation + hermetic tests checkpoint
+  (`417ce97`, pushed; local HEAD == origin HEAD).
 - **Last updated:** 2026-08-17.
 
 ## Objective
@@ -72,17 +73,18 @@ WQ-7C is NOT a real application-submission workpackage.
 
 1. Initial checkpoint (branch + handoff) — DONE.
 2. Exploration of production modules + WQ-7A/B infra — DONE.
-3. Synthetic identity contract + approved synthetic documents.
+3. Synthetic identity contract + approved synthetic documents — DONE (commit
+   `417ce97`).
 4. Opt-in synthetic-mutation mode (`UAA_LIVE_SYNTHETIC_MUTATION`), config,
    incompatibility with real submission, ephemeral browser, mutation budget and
-   interlock evidence.
+   interlock evidence — DONE (commit `417ce97`).
 5. Pre-mutation machine-readable plan (frozen/hashed) + field-resolution
-   correctness gate.
-6. Field-mapper/embedding decision: hermetic benchmark on a labelled WQ-7C
-   fixture set from real field schemas; do NOT add embeddings unless a real
-   reproducible gap is proven.
+   correctness gate — DONE (commit `417ce97`).
+6. Field-mapper/embedding decision: NOT needed — the value allowlist + source
+   gating (`candidate_profile`/`document_path` only) gives precision without
+   embeddings; revisit only if a labelled-gap benchmark proves otherwise.
 7. Local/hermetic tests (unit + playwright fixture) proving every safety
-   requirement from the WQ-7C contract.
+   requirement from the WQ-7C contract — DONE (commit `417ce97`).
 8. Live real-ATS mutation proof on currently-open public forms (target policy,
    verify each target immediately, ≥2 platforms attempted, ≥1 completes).
 9. End-to-end vertical slice across the JobHunter process boundary (no hand-
@@ -93,21 +95,88 @@ WQ-7C is NOT a real application-submission workpackage.
 
 ## Completed work
 
-- None (code) yet — this is the initial checkpoint.
+Implementation milestone shipped as commit `417ce97` (pushed, verified):
+- `synthetic_profile.py`: `SyntheticMutationProfile` (Test/Candidate,
+  `test.candidate@example.com`, `+1 555 0199`, empty linkedin, both synthetic
+  markers), `SYNTHETIC_MUTATION_BANNER`-labelled CV/cover PDFs,
+  `sha256_file`/`approved_document_hashes`, `is_synthetic_metadata`,
+  `to_candidate_profile` (linkedin stays None), `__all__` updated.
+- `config.py`: `live_synthetic_mutation` (default False) +
+  `synthetic_mutation_max_mutations` (default 60, 1..200); `model_validator`
+  rejects mutation+real-submission and mutation+recon-only at load; both env
+  vars parsed by `load_settings`.
+- `browser/mutation_plan.py` (NEW): frozen `MutationPlan`/`MutationPlanEntry`
+  with `plan_hash` (SHA-256 of canonical JSON, `generated_at` excluded);
+  `build_mutation_plan()` gates — mutate/skip/block/intervention decisions,
+  `_NEVER_MUTATE_CATEGORIES` skip (legal_declaration, consent_signature,
+  demographic_sensitive, work_authorization, availability), value allowlist
+  `_declared_synthetic_values` (bools only as exact declared Yes/No),
+  `_value_fits_options`/`_normalize_option` guard (mapped "5" never fills a
+  Yes/No radio), confidence < 0.7 skipped, unapproved/unpresent doc blocked,
+  missing-required → `needs_intervention` ("not fabricated").
+- `form_engine/live_executor.py`: `SyntheticMutationExecution` +
+  `execute_live_form_synthetic`/`_run_mutation_pass` (plan frozen+hashed BEFORE
+  mutation, budget consumed per mutation, doc hash re-verified at execution,
+  typed-answer validation, one bounded re-observation pass only if budget
+  remains). Circular import (form_engine→live_executor→mutation_plan→
+  field_mapper→form_engine) resolved with TYPE_CHECKING + lazy import.
+- `browser/live_runner.py`: `run_synthetic_mutation` (refuses non-synthetic
+  profile via getattr markers, refuses `hard_submit_block=False`),
+  `run_in_context_synthetic` made public (artifact_dir param) for production-
+  path tests; interlock armed BEFORE mutation, `mutation-plan.json` persisted,
+  plan_hash recorded, stops at `final_submit_detected` (review_ready), reads
+  interlock counters into errors, `submitted=False` always.
+- `browser/live_models.py`: `LiveRunReport` += `plan_hash`,
+  `mutation_plan_path`.
+- `cli.py`: `live-synthetic-mutation` subcommand + `_live_synthetic_mutation`
+  handler (refuses when mode off exit 2; refuses non-synthetic job metadata;
+  generates synthetic docs under `data_dir/synthetic-docs`; ephemeral profile
+  always; `hard_submit_block=True`; budget clamped to config; overrides job
+  `cv_pdf`/`cover_letter_pdf`; exits 0 review_ready / 3 needs_user_input /
+  1 submitted / 2 error).
+- `tests/unit/test_wq7c_mutation_plan.py` (NEW, 15 tests) + `test_config.py`
+  additions (mode/budget/conflicts).
+- `tests/playwright/test_wq7c_synthetic_mutation.py` (NEW, 7 tests) using the
+  production `run_in_context_synthetic` path over Hygiene/Hydro served
+  greenhouse/lever apply fixtures: synthetic identity only, approved-doc upload
+  only (hash membership), plan frozen+hashed+re-verifiable, interlock armed /
+  zero submit attempts, stops at final submit without submitting, refuses
+  non-synthetic profile and disarmable-interlock config.
 
 ## Changed files
 
-- `docs/handoffs/ACTIVE_WORKPACKAGE.md` (this rewrite for WQ-7C).
+- `src/universal_auto_applier/synthetic_profile.py`
+- `src/universal_auto_applier/config.py`
+- `src/universal_auto_applier/browser/mutation_plan.py` (NEW)
+- `src/universal_auto_applier/browser/live_models.py`
+- `src/universal_auto_applier/form_engine/live_executor.py`
+- `src/universal_auto_applier/browser/live_runner.py`
+- `src/universal_auto_applier/cli.py`
+- `tests/unit/test_wq7c_mutation_plan.py` (NEW)
+- `tests/unit/test_config.py`
+- `tests/playwright/test_wq7c_synthetic_mutation.py` (NEW)
 
 ## Tests and exact results
 
-- Not run in this checkpoint.
+Full local gate (all green) at commit `417ce97`:
+- `ruff check src tests migrations` — pass.
+- `ruff format --check src tests migrations` — 201 files clean (3 reformatted).
+- `pyright` — 0 errors, 0 warnings, 0 informations.
+- `pytest -m "not live and not playwright"` — **1229 passed**, 266 deselected
+  (baseline was 1209).
+- `pytest tests/playwright` — **263 passed** (includes 7 new WQ-7C tests).
+- `git diff --check` — clean; only the 10 intended files staged; untracked
+  `tmp_debug_status.py`, `tmp_debug_status/`, `tmp_final_pipeline/` preserved.
 
 ## Decisions made
 
 - Deliver WQ-7C as a new distinct opt-in mode; recon-only (WQ-7B) is NOT
   converted into a fill mode.
-- No embeddings unless a reproducible semantic-mapping gap is proven offline.
+- No embeddings — value allowlist + strict `candidate_profile`/`document_path`
+  source gating yields the required precision; documented in milestone 6.
+- Keep the WQ-7C CLI always ephemeral (never reuse saved profiles/cookies).
+- Plan/hash-before-mutation contract; `generated_at` excluded from the hash so
+  identical plans hash identically and the persisted plan re-verifies.
 - Preserve all pre-existing untracked debug artifacts
   (`tmp_debug_status.py`, `tmp_debug_status/`, `tmp_final_pipeline/`).
 
@@ -121,11 +190,21 @@ WQ-7C is NOT a real application-submission workpackage.
 
 ## Exact next action
 
-1. Add the synthetic identity contract and approved-document enforcement.
-2. Add the opt-in synthetic-mutation mode to `config.py` + `execution_mode.py`.
-3. Add the pre-mutation plan + mutation execution path.
-4. Add hermetic tests, then run the full local gate.
-5. Push after each meaningful milestone; verify local HEAD == remote HEAD.
+1. **Live real-ATS mutation proof**: re-verify ≥2 currently-open public
+   Greenhouse/Lever apply URLs immediately before each run; run via the new
+   CLI (`python -m universal_auto_applier live-synthetic-mutation --application-id ...
+   --max-mutations 60` or directly through `run_synthetic_mutation`) with
+   `UAA_LIVE_SYNTHETIC_MUTATION=true`; blocker-before-mutation = record + skip;
+   ≥1 platform must complete the mutation proof; verify stop-pre-submit.
+2. **Vertical slice**: JobHunter → synthetic CV → queue → import → orchestrate
+   (application_id trace) without editing JobHunter production code; STOP and
+   report if a JobHunter change would be needed.
+3. Collect sanitized evidence under `docs/evidence/wq-7c/` (no cookies/tokens/
+   sessions/raw HTML dumps).
+4. Update `docs/CURRENT_STATE.md`, `docs/WQ7_LOCAL_LIVE_RUN.md`,
+   `docs/NEXT_WORKPACKAGES.md`.
+5. Open ONE PR against `main` via GitHub REST API; wait for six CI checks on
+   the final SHA; do not merge.
 
 ## Rules
 
