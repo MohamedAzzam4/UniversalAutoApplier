@@ -17,7 +17,7 @@ import os
 from pathlib import Path
 from typing import Literal
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 SubmitMode = Literal["dry_run", "review", "trusted_auto_submit"]
 ExecutionMode = Literal["sequential", "parallel"]
@@ -165,7 +165,46 @@ class Settings(BaseModel):
     # layer guarantee that no final submission occurs during a WQ-7 dry run.
     wq7_hard_submit_block: bool = Field(default=False)
 
+    # WQ-7C: controlled synthetic ATS mutation mode. OFF by default.
+    # When True, the live-synthetic-mutation CLI command and the mutation
+    # tests are allowed to run: REAL ATS forms are filled with the dedicated
+    # WQ-7C synthetic identity and approved synthetic documents, and the
+    # submission interlocks stay armed so final application submission is
+    # technically impossible.
+    #
+    # Safety: this mode is INCOMPATIBLE with real submission. Enabling both
+    # is rejected at config load time (see _validate_mode_conflicts). It
+    # never uses a normal candidate profile or a normal CV; only the
+    # synthetic mutation identity and hash-approved synthetic documents are
+    # accepted by the mutation enforcement layer.
+    live_synthetic_mutation: bool = Field(default=False)
+    # Mutation budget: the maximum number of scalar+file field mutations the
+    # synthetic mutation path may perform per run. Budget is consumed once
+    # per approved field and exhausted runs stop mutating (they never submit).
+    synthetic_mutation_max_mutations: int = Field(default=60, ge=1, le=200)
+
     model_config = {"frozen": True, "extra": "ignore"}
+
+    @model_validator(mode="after")
+    def _validate_mode_conflicts(self) -> Settings:
+        """Reject mutually exclusive modes at config load time.
+
+        ``live_synthetic_mutation`` is a synthetic-dry-run mode. Enabling it
+        together with real submission is a configuration error and MUST fail
+        loudly rather than let a run proceed with ambiguous intent.
+        """
+        if self.live_synthetic_mutation and self.enable_real_submission:
+            raise ValueError(
+                "UAA_LIVE_SYNTHETIC_MUTATION and UAA_ENABLE_REAL_SUBMISSION are "
+                "mutually exclusive. Synthetic mutation never submits; enabling "
+                "both flags is a configuration error."
+            )
+        if self.live_synthetic_mutation and self.live_recon_only:
+            raise ValueError(
+                "UAA_LIVE_SYNTHETIC_MUTATION and UAA_LIVE_RECON_ONLY are mutually "
+                "exclusive. Mutation fills fields; recon mode never fills."
+            )
+        return self
 
     @property
     def jobhunter_queue(self) -> Path | None:
@@ -315,4 +354,10 @@ def load_settings(env: dict[str, str] | None = None) -> Settings:
         live_dry_run_platforms=source.get("UAA_LIVE_DRY_RUN_PLATFORMS", "").strip() or None,
         live_recon_only=_parse_bool(source.get("UAA_LIVE_RECON_ONLY", "false").strip()),
         wq7_hard_submit_block=_parse_bool(source.get("UAA_WQ7_HARD_SUBMIT_BLOCK", "false").strip()),
+        live_synthetic_mutation=_parse_bool(
+            source.get("UAA_LIVE_SYNTHETIC_MUTATION", "false").strip()
+        ),
+        synthetic_mutation_max_mutations=_parse_int(
+            "UAA_SYNTHETIC_MUTATION_MAX_MUTATIONS", 60, 1, 200
+        ),
     )

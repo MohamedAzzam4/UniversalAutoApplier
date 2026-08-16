@@ -107,6 +107,11 @@ class LiveRunReport(BaseModel):
     errors: list[str] = Field(default_factory=list[str])
     submitted: bool = False
     recon_observation: LiveFormObservation | None = None
+    # WQ-7C synthetic mutation evidence. plan_hash fingerprints the FROZEN
+    # pre-mutation plan; mutation_plan_path points at the serialized plan
+    # written next to the run evidence once execution starts.
+    plan_hash: str = ""
+    mutation_plan_path: str | None = None
 
 
 __all__ = [

@@ -11,15 +11,32 @@ Safety:
 - No real LinkedIn account, profile, passwords, cookies, or API credentials.
 - Never fabricates sensitive answers as if they belong to the real user.
 - CV and cover letter PDFs visibly state "TEST DATA — AUTOMATION DRY RUN".
+
+WQ-7C synthetic mutation:
+- A dedicated :class:`SyntheticMutationProfile` carries the required
+  ``synthetic_test=True`` / ``wq7_synthetic=True`` markers so operation code
+  can refuse to run WQ-7C mutation against a normal candidate.
+- Synthetic mutation documents carry the stronger banner
+  ``SYNTHETIC TEST DOCUMENT / NOT A REAL CANDIDATE / DO NOT PROCESS AS AN
+  APPLICATION`` and are hash-verifiable so the production mutation path only
+  ever uploads approved synthetic files.
 """
 
 from __future__ import annotations
 
+import hashlib
 import logging
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any, cast
 
 logger = logging.getLogger("universal_auto_applier.synthetic_profile")
+
+# WQ-7C banner that MUST appear on every synthetic mutation document so the
+# document cannot be mistaken for a real candidate's CV even by a human.
+SYNTHETIC_MUTATION_BANNER = (
+    "SYNTHETIC TEST DOCUMENT / NOT A REAL CANDIDATE / DO NOT PROCESS AS AN APPLICATION"
+)
 
 # Minimal PDF content with visible "TEST DATA" watermark.
 # This is a valid minimal PDF that any ATS file-type check will accept.
@@ -90,6 +107,177 @@ class SyntheticProfile:
                 "wq7_synthetic": True,
             },
         }
+
+
+@dataclass(frozen=True)
+class SyntheticMutationProfile:
+    """Dedicated WQ-7C synthetic mutation identity.
+
+    Structurally distinct from the WQ-7A/B SyntheticProfile so that
+    operation code can require the exact ``synthetic_test`` marker and
+    refuse to run synthetic mutation against any other candidate data:
+
+    - ``synthetic_test: True`` and ``wq7_synthetic: True`` markers,
+    - ``first_name=Test`` / ``last_name=Candidate``,
+    - ``example.com`` (RFC 2606) email,
+    - fictional ``+1 555 0199`` phone that no real subscriber owns,
+    - no real LinkedIn profile / website / credentials.
+
+    It is consumed ONLY by the WQ-7C opt-in synthetic mutation path. It is
+    never the default candidate and is never used for real submissions.
+    """
+
+    first_name: str = "Test"
+    last_name: str = "Candidate"
+    full_name: str = "Test Candidate"
+    email: str = "test.candidate@example.com"
+    phone: str = "+1 555 0199"
+    city: str = "Test City"
+    country: str = "Syntheticland"
+    linkedin: str = ""  # Empty — never a real profile.
+    website: str = "https://example.com/test-candidate"
+    requires_sponsorship: bool = False
+    years_of_experience: int = 5
+    current_role: str = "Synthetic Test Engineer"
+    synthetic_test: bool = True
+    wq7_synthetic: bool = True
+
+    def to_metadata(self) -> dict[str, object]:
+        """Convert to job metadata (matching candidate_profile structure)."""
+        return {
+            "candidate_profile": {
+                "first_name": self.first_name,
+                "last_name": self.last_name,
+                "full_name": self.full_name,
+                "email": self.email,
+                "phone": self.phone,
+                "city": self.city,
+                "country": self.country,
+                "linkedin": self.linkedin,
+                "website": self.website,
+                "requires_sponsorship": self.requires_sponsorship,
+                "years_of_experience": self.years_of_experience,
+                "current_role": self.current_role,
+                "synthetic_test": True,
+                "wq7_synthetic": True,
+            },
+        }
+
+    def to_candidate_profile(self) -> Any:
+        """Convert into the core :class:`CandidateProfile` used by mappers.
+
+        The ``linkedin``/``website`` fields map to their URL counterparts;
+        notably ``linkedin`` stays empty so the mapper never proposes a real
+        profile URL.
+        """
+        from universal_auto_applier.core.models import CandidateProfile
+
+        return CandidateProfile(
+            first_name=self.first_name,
+            last_name=self.last_name,
+            full_name=self.full_name,
+            email=self.email,
+            phone=self.phone,
+            city=self.city,
+            country=self.country,
+            requires_sponsorship=self.requires_sponsorship,
+            years_of_experience=self.years_of_experience,
+            current_position=self.current_role,
+            linkedin_url=self.linkedin or None,
+            website=self.website,
+        )
+
+
+def sha256_file(path: Path) -> str:
+    """Return the lowercase SHA-256 hexdigest of ``path``'s bytes."""
+    digest = hashlib.sha256()
+    with path.open("rb") as fh:
+        for chunk in iter(lambda: fh.read(1 << 16), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def generate_synthetic_mutation_cv(output_path: Path) -> Path:
+    """Generate a WQ-7C synthetic CV PDF with the strong synthetic banner.
+
+    The PDF is a valid minimal PDF that passes ATS file-type checks and
+    visibly states ``SYNTHETIC TEST DOCUMENT / NOT A REAL CANDIDATE /
+    DO NOT PROCESS AS AN APPLICATION`` so it cannot be mistaken for a real
+    candidate's document.
+    """
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    content = (
+        "BT /F1 24 Tf 72 700 Td (Test Candidate - Synthetic CV) Tj ET\n"
+        "BT /F1 14 Tf 72 660 Td "
+        "(SYNTHETIC TEST DOCUMENT / NOT A REAL CANDIDATE / \\n) Tj ET\n"
+        "BT /F1 14 Tf 72 645 Td "
+        "(DO NOT PROCESS AS AN APPLICATION) Tj ET\n"
+        "BT /F1 12 Tf 72 615 Td "
+        "(Generated by UniversalAutoApplier WQ-7C synthetic mutation.) Tj ET\n"
+        "BT /F1 12 Tf 72 595 Td "
+        "(Contains no real candidate data.) Tj ET"
+    )
+    pdf = _build_minimal_pdf(content, "Synthetic CV - Test Candidate")
+    output_path.write_bytes(pdf)
+    logger.info("[wq7c] Synthetic mutation CV generated: %s", output_path)
+    return output_path
+
+
+def generate_synthetic_mutation_cover(output_path: Path) -> Path:
+    """Generate a WQ-7C synthetic cover letter PDF with the strong banner."""
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    content = (
+        "BT /F1 24 Tf 72 700 Td (Test Candidate - Synthetic Cover Letter) Tj ET\n"
+        "BT /F1 14 Tf 72 660 Td "
+        "(SYNTHETIC TEST DOCUMENT / NOT A REAL CANDIDATE / \\n) Tj ET\n"
+        "BT /F1 14 Tf 72 645 Td "
+        "(DO NOT PROCESS AS AN APPLICATION) Tj ET\n"
+        "BT /F1 12 Tf 72 615 Td "
+        "(Generated by UniversalAutoApplier WQ-7C synthetic mutation.) Tj ET\n"
+        "BT /F1 12 Tf 72 595 Td "
+        "(Contains no real candidate data.) Tj ET"
+    )
+    pdf = _build_minimal_pdf(content, "Synthetic Cover Letter - Test Candidate")
+    output_path.write_bytes(pdf)
+    logger.info("[wq7c] Synthetic mutation cover generated: %s", output_path)
+    return output_path
+
+
+def create_synthetic_mutation_documents(directory: Path) -> tuple[Path, Path]:
+    """Create WQ-7C synthetic CV and cover letter (strongly marked).
+
+    Returns ``(cv_path, cover_path)``.
+    """
+    cv_path = generate_synthetic_mutation_cv(directory / "wq7c-test-cv.pdf")
+    cover_path = generate_synthetic_mutation_cover(directory / "wq7c-test-cover.pdf")
+    return cv_path, cover_path
+
+
+def approved_document_hashes(*paths: Path) -> frozenset[str]:
+    """Return a frozen set of SHA-256 hashes for the approved synthetic docs.
+
+    The mutation enforcement layer compares every proposed upload against
+    this set before ``set_input_files`` is allowed.
+    """
+    return frozenset(sha256_file(path) for path in paths if path.exists())
+
+
+def is_synthetic_metadata(metadata: dict[str, Any] | None) -> bool:
+    """True when the candidate snapshot in ``metadata`` carries the WQ-7C marker.
+
+    WQ-7C mutation refuses to run against a normal candidate. ``metadata``
+    is the ``ApplicationJob.metadata`` dict; the candidate snapshot is the
+    ``candidate_profile`` key. The marker is accepted in either the
+    ``synthetic_test`` or ``wq7_synthetic`` form (both are written by
+    :class:`SyntheticMutationProfile`).
+    """
+    if not metadata:
+        return False
+    snapshot = metadata.get("candidate_profile")
+    if not isinstance(snapshot, dict):
+        return False
+    snapshot_typed: dict[str, object] = cast(dict[str, object], snapshot)
+    return bool(snapshot_typed.get("synthetic_test") or snapshot_typed.get("wq7_synthetic"))
 
 
 def generate_synthetic_cv(output_path: Path) -> Path:
@@ -181,8 +369,16 @@ def create_synthetic_documents(directory: Path) -> tuple[Path, Path]:
 
 
 __all__ = [
+    "SYNTHETIC_MUTATION_BANNER",
+    "SyntheticMutationProfile",
     "SyntheticProfile",
+    "approved_document_hashes",
     "create_synthetic_documents",
+    "create_synthetic_mutation_documents",
     "generate_synthetic_cover_letter",
     "generate_synthetic_cv",
+    "generate_synthetic_mutation_cover",
+    "generate_synthetic_mutation_cv",
+    "is_synthetic_metadata",
+    "sha256_file",
 ]
