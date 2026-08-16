@@ -4,15 +4,17 @@ Authoritative snapshot of `UniversalAutoApplier` as of the project rebaseline.
 If this document contradicts any older planning doc, this document wins for
 "what is implemented"; the planning doc keeps its architectural authority.
 
-- Reference commit: `3ddc4becdab1dac9cc8b867c82c190fc42178f51` (`main`)
+- Reference commit: `cab7a13d0e15c06ae04b4c180d11920a9e70fb97` (`main`,
+  merge of PR #13 — WQ-7B real ATS navigation reconnaissance)
 - Coverage: all roadmap phases 0-8, the controlled final submission
-  pipeline, and the WQ-1 post-submit status transitions are merged to `main`.
-- Branch work: WQ-2 (JobHunter queue export, lives in the JobHunter repo,
-  merged at JobHunter main `0e8ba2f`) and WQ-3 (durable production queue
-  import, API, startup import, dashboard Queue Import card) are implemented
-  on their branches. WQ-3 is complete on
-  `checkpoint/wq-3-uaa-production-queue-import` and awaits review/merge. Real
-  external browser orchestration is still later work.
+  pipeline, and WQ-1 through WQ-7B are merged to `main` via reviewed PRs.
+- Branch work: WQ-2 (JobHunter queue export) lives in the JobHunter repo and
+  is merged at JobHunter main `0e8ba2f`. WQ-3 (durable production queue
+  import, API, startup import, dashboard Queue Import card), WQ-4 (background
+  browser pipeline), WQ-5 (restart recovery), WQ-6 (cross-repo
+  orchestration), WQ-7A (safe live ATS dry-run), and WQ-7B (real ATS
+  navigation reconnaissance) are all merged to `main`. Real field
+  mutation/upload and real submission are still later work.
 
 ## What is implemented
 
@@ -34,14 +36,16 @@ If this document contradicts any older planning doc, this document wins for
 | Submission | `submission/coordinator.py`, `execution_service.py`, `models.py`, `store.py`, `api/routes/submit.py` | approval + snapshot + gated submit; `submitted_confirmed`, `outcome_unknown`, `already_submitted` result states. |
 | Orchestration | `services/pipeline_orchestrator.py`, `api/routes/pipeline.py` | safe pipeline routing, review-only default. |
 | Cross-repo orchestration (WQ-6) | `services/orchestration_service.py`, `services/jobhunter_runner.py`, `api/routes/orchestration.py`, `persistence/orchestration_run_repository.py`, `migrations/0012_orchestration_runs.py`, `migrations/0013_orchestration_durable_evidence.py` | Sequential/parallel orchestration of JobHunter export → UAA import → UAA pipeline. Durable run state with targeted/processed/remaining IDs, all pipeline run IDs, and pass count. Process-level boundary (never imports JobHunter modules). Fail-closed target manifest. Multi-batch continuation with no-progress detection. Never performs final submission. |
+| Live ATS dry-run (WQ-7A) | `browser/live_runner.py`, `browser/submit_interlock.py`, `cli.py`, `execution_mode.py`, `services/live_dry_run_platforms.py`, `synthetic_profile.py` | opt-in live browser dry-run with a hard submit interlock installed before any page script; never clicks final submit. |
+| Recon-only nav (WQ-7B) | `execution_mode.py` (`UAA_LIVE_RECON_ONLY`), `navigator/apply_path_finder.py` (`embed_rank` widget preference), fixtures under `tests/fixtures/recon/`, `docs/evidence/wq-7b/MANIFEST.md` | real public forms reached on Greenhouse + Lever; Workday, SmartRecruiters, iCIMS externally gated; zero typed values, zero uploads, zero UAA submit clicks. |
 | CI | `verify-windows-py314.yml`, `verify-linux.yml` | Windows+Python 3.14 primary; Linux matrix 3.11-3.14. |
 
 ## Status
 
-`main` is at `3ddc4becdab1dac9cc8b867c82c190fc42178f51` (WQ-1 post-submit
-status transitions merged via reviewed PR). Merge history note: commit
-`2cf3f18` introduced the controlled-submission content directly onto `main`
-(a local squash onto main) rather than through a reviewed PR. PR #3
+`main` is at `cab7a13d0e15c06ae04b4c180d11920a9e70fb97` (WQ-7B real ATS
+navigation reconnaissance merged via reviewed PR #13). Merge history note:
+commit `2cf3f18` introduced the controlled-submission content directly onto
+`main` (a local squash onto main) rather than through a reviewed PR. PR #3
 (`controlled-final-submission`, head `f5b2055`) was then merged as `f7c49f7`
 carrying the same tree — an empty duplicate commit. Harmless: the tree is
 correct and clean; history must NOT be rewritten. From now on, every change
@@ -49,21 +53,25 @@ to `main` arrives through exactly one reviewed-PR merge — never
 commit/squash to main first and also merge the PR. Latest verified:
 
 ```text
-Linux  runner: 30105080305  (main)  -> success
-Windows runner: 30105128952  (main)  -> success
+Linux  runner: 31971929393  (PR #13 / main branch, WQ-7B final head)  -> success
+Windows runner: 31971929343  (PR #13 / main branch, WQ-7B final head) -> success
 ```
 
-WQ-3 (queue import) is fully implemented and gate-clean on
-`checkpoint/wq-3-uaa-production-queue-import` (base `3ddc4bec...`), awaiting
-review/merge. JobHunter WQ-2 (atomic `application_queue.jsonl` export) is
-merged at JobHunter main `0e8ba2f`.
+WQ-7B (real ATS navigation reconnaissance) was accepted under the
+owner-approved amendment and merged via PR #13 (head `adc8c8d`, merge
+`cab7a13`). Real public application forms were reached on Greenhouse and
+Lever; Workday, SmartRecruiters, and iCIMS were classified as externally
+gated / externally imposed unsupported conditions after permitted
+replacement attempts. All six required CI checks passed on the final PR
+head. JobHunter WQ-2 (atomic `application_queue.jsonl` export) is merged at
+JobHunter main `0e8ba2f`.
 
 ## Test counts (reference run)
 
 ```text
-1035 unit/contract/integration  passed  (WQ-3 branch, 2026-08-05)
-185  playwright                passed
-1220 total                      passed, 1 skipped (live)
+1209 unit/contract/integration  passed  (WQ-7B merged head, 2026-08-16)
+256  playwright                passed
+1465 total                      passed
 ```
 
 ## Submission capability (accurate contract)
@@ -93,10 +101,10 @@ merged at JobHunter main `0e8ba2f`.
   `submitted`/`applied`/`needs_review` from the persisted submission result;
   the dashboard reflects the effective post-submit state. Duplicate
   prevention blocks resubmission via the gates.
-- **Queue import (WQ-3) is implemented on a branch, not yet on `main`.**
-  Durable opt-in import, `POST/GET /api/queue/{import,status}`, CLI, and
-  dashboard card are complete and gate-clean on
-  `checkpoint/wq-3-uaa-production-queue-import`; it awaits review/merge.
+- **Queue import (WQ-3) merged to `main`.** Durable opt-in import,
+  `POST/GET /api/queue/{import,status}`, CLI, and dashboard card are
+  implemented on `main`. Auto-wiring `run_all` to produce + import is still
+  future work (see operational gaps).
 - Live re-check of login state is user-required; UAA never bypasses login,
   CAPTCHA, SSO, or payment walls.
 - Test suite never touches real ATS sites in default runs.
@@ -116,12 +124,18 @@ in production; none of them are unimplemented core phases. See
    It does not run the live-dry-run / live-submit execution paths; those
    remain separate CLI-driven flows. Queue import (WQ-3) explicitly does NOT
    start the pipeline.
-4. **Cross-repository concurrency is not wired.** JobHunter scanning /
-   evaluating / tailoring and UAA applying cannot yet run concurrently with
-   controlled handoff between the two processes. (WQ-6)
-5. **Real external ATS execution is unverified.** All real-platform behavior
-   is gated by the controlled test plan on the user's machine; no real ATS
-   submission has been executed from CI or a sandbox. (WQ-7/WQ-8)
+4. **Cross-repository orchestration controls are merged (WQ-6); parallel
+   producing is not yet exercised.** Sequential/parallel JobHunter export →
+   UAA import → UAA pipeline orchestration with durable run state is on
+   `main`; real concurrent scan/apply production use still awaits the real
+   field-mutation/upload stage.
+5. **Real ATS navigation is verified; real field mutation/upload and real
+   submission are not.** WQ-7B merged real navigation reconnaissance: forms
+   on Greenhouse + Lever reached, Workday/SmartRecruiters/iCIMS externally
+   gated, zero typed values/uploads/submits. Real field typing, document
+   upload, and final submit remain gated by the controlled test plan on the
+   user's machine; no real submission has been executed from CI or a
+   sandbox. (WQ-7C next proposed stage; WQ-8)
 6. **Queue-import concurrency lock is process-local.** The
    `QueueImportService` uses a `threading.Lock` stored on
    `app.state.queue_import_service`. This is safe for the current
