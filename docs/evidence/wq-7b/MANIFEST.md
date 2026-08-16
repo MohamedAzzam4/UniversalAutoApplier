@@ -1,19 +1,68 @@
 # WQ-7B Evidence Manifest
 
-Status: **BLOCKED** — acceptance criterion not met (reviewer-closure verdict:
-OWNER DECISION REQUIRED; the ≥3-distinct gate stays unchanged by this pass)
+Status: **ACCEPTED under owner-amended criterion** — see amendment record
+below. Historical original result (BLOCKED under ≥3-distinct) preserved.
 
 Date: 2026-08-16 (runs on 2026-08-15–16 22:42–23:18 UTC)
 Branch: `checkpoint/wq-7b-real-ats-navigation`
 Head: resolve dynamically (`git rev-parse HEAD` / `git rev-parse origin/<branch>`)
 
-## Acceptance criterion
+## Acceptance criterion record
+
+### Original criterion (unchanged in this record, not rewritten)
 
 - At least five real-job attempts — **met** (see Attempt-count reconciliation
   below; authoritative distinct-target totals are larger than the earlier
   "7" figure)
 - Every supported ATS attempted (greenhouse, lever, workday, smartrecruiters, icims) — **met**
 - At least three distinct ATS platforms must reach a real public application form — **NOT MET (only 2 of 5)**
+
+### Original result — BLOCKED
+
+Under the original ≥3-distinct criterion, WQ-7B was evaluated as BLOCKED
+after all permitted replacement targets were exhausted. This historical
+result is preserved in full below and is not rewritten.
+
+### Reviewer closure
+
+`cc79959` resolved every reviewer-closure item: KCI shell-vs-widget defect
+root-caused/fixed/regression-tested, real KCI rerun to `login_required`,
+attempt/validation-count reconciliation, Lever interlock event attributed to
+page JS (not UAA). BLOCKED retained under the original criterion; no PR opened.
+
+### Owner amendment (2026-08-16, APPROVED)
+
+Reason: real-world reconnaissance showed that reaching ≥3 distinct ATS forms
+depends partly on external ATS availability, login policy, and
+anti-automation/security behavior that UAA is explicitly forbidden to
+bypass.
+
+Amended acceptance criterion (replaces the single ≥3-distinct criterion;
+all other original criteria unchanged):
+
+1. At least **TWO** distinct supported ATS platforms reach a real public
+   application form.
+2. Every supported ATS platform that does NOT reach a real public
+   application form must: have the permitted replacement-target budget
+   exhausted, have an evidence-backed external gate or externally imposed
+   unsupported condition, and have **no unresolved UAA-caused defect**
+   contributing to the failure.
+3. An externally blocked platform MUST NOT count as successfully classified
+   if an unresolved UAA defect prevents UAA from reaching or observing the
+   external blocker.
+
+### Evaluation under the amended criterion — SATISFIED
+
+- Criterion 1: MET — greenhouse and lever reached real public application forms.
+- Criterion 2: MET — workday (3 tenants, account creation), smartrecruiters
+  (3 tenants, DataDome anti-bot wall), icims (3 tenants incl. KCI,
+  login/account creation): replacements exhausted, evidence-backed external
+  gates, no unresolved UAA defect (KCI defect fixed + live reverified).
+- Criterion 3: MET — no platform is classified externally blocked while an
+  unresolved UAA defect prevents reaching/observing that blocker.
+
+KCI history preserved below in the target matrix (reproduced defect →
+hermetic regression test → minimal fix → real rerun → `login_required`).
 
 ## Attempt-count reconciliation (reviewer-closure pass)
 
@@ -238,6 +287,14 @@ Additional historical validation (kept for reference; does not substitute
 for the required split above): `pytest -m "not live"` = 1465 passed,
 3 deselected (that run aggregated the 1209 non-browser suite with the
 256 browser tests).
+
+Owner-amendment pass (2026-08-16, final SHA): all six contract gates re-run
+exactly — 1209 passed / 259 deselected (contract), 256 passed (playwright),
+ruff check pass, format pass (198), pyright 0/0/0, `git diff --check` clean.
+A first full playwright run showed 1 failure in the pre-existing
+load-timing-sensitive `TestAllowedBehavior` interlock test; it passed in
+isolation and on the authoritative re-run (256/256) and is unrelated to
+WQ-7B code.
 
 - New regression test coverage: `TestReconWidgetApplyPreference` (hermetic
   shell-vs-widget apply competition) in `tests/playwright/test_wq7b_recon_mode.py`.

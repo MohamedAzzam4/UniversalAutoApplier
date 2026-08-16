@@ -1,19 +1,14 @@
 # Active Workpackage
 
 - **WP ID:** WQ-7B — Real ATS Navigation Reconnaissance.
-- **Status:** REVIEWER CLOSURE COMPLETE — OWNER DECISION REQUIRED. The
-  closure pass (this branch head) resolved every open item (KCI navigation
-  ambiguity fixed + verified live, attempt-count and validation counts
-  reconciled, Lever interlock event attributed). The acceptance criterion
-  (≥3 distinct ATS reaching a real public application form) still shows
-  **2 of 5** and is **unchanged per reviewer instruction** — the owner must
-  decide whether to amend it. No PR, no READY FOR REVIEW.
+- **Status:** ACCEPTED — owner amendment applied; final local validation
+  green; PR opened against `main` for the final CI pass. No merge performed;
+  WQ-7C not started.
 - **Branch:** `checkpoint/wq-7b-real-ats-navigation`
 - **Base SHA:** `6326e4e0815d2d325eccc5bf3671afefd8e5bc8b` (`origin/main`, WQ-7A squash)
-- **PR:** none (blocked outcome; reviewer decides whether the ≥3-distinct
-  acceptance criterion should later be amended).
-- **Last completed/checkpoint SHA:** `563a6530abf782613a427ce4ffc8a2ba32fd24fe`
-  (docs(wq-7b): finalize BLOCKED outcome with evidence manifest). Resolve the head dynamically.
+- **PR:** one PR opened against `main` (number recorded in the PR section)
+- **Last completed/checkpoint SHA:** resolve dynamically (see command block).
+  The amendment/finalization commits are pushed; do not trust an embedded SHA.
 - **Branch-head verification (run dynamically; do not trust an embedded SHA):**
 
   ```text
@@ -23,7 +18,83 @@
   ```
 
   The two values must match before handoff/review.
-- **Last updated:** 2026-08-16 (reviewer-closure pass)
+- **Last updated:** 2026-08-16 (owner amendment + PR pass)
+
+## Objective
+
+Prove that UAA can safely navigate from real public job-detail pages to real
+ATS application forms and observe their structure using the WQ-7A
+infrastructure — **navigation and observation only**. Never fill fields,
+never upload documents, never log into accounts, never submit applications,
+never bypass CAPTCHA/anti-bot.
+
+## Acceptance criterion history
+
+### Original criterion
+
+At least five real-job attempts; every supported ATS attempted; **at least
+three distinct ATS platforms must reach a real public application form**.
+Unsuccessful platforms get exact evidence and classification.
+
+### Original result — BLOCKED
+
+Evaluating the original criterion after exhaustion of all permitted
+replacement targets: only **two** distinct ATS platforms reached a real
+public application form (greenhouse, lever); workday, smartrecruiters and
+icims were externally gated with replacements exhausted. Result recorded as
+**BLOCKED** with a full evidence manifest (see manifest and
+`docs/evidence/wq-7b/MANIFEST.md`). This historical record is preserved and
+**not** rewritten.
+
+### Reviewer closure
+
+A reviewer-closure pass on `cc79959` resolved every open item: the iCIMS/KCI
+shell-vs-widget apply defect was root-caused, regression-tested, and fixed;
+real KCI was rerun post-fix to `login_required`; attempt counts and
+validation counts were reconciled; the Lever `form_submit=1` interlock event
+was attributed to page/third-party JS, not UAA. Outcome remained BLOCKED
+under the unchanged original criterion; no PR was opened.
+
+### Reason for owner amendment
+
+Real-world reconnaissance demonstrated that reaching ≥3 distinct ATS
+application forms depends partly on external ATS availability, login policy,
+and anti-automation/security behavior that UAA is explicitly forbidden to
+bypass. The owner therefore approved an amendment after the completed real
+reconnaissance and reviewer closure.
+
+### Owner amendment (APPROVED)
+
+Replacing the single original criterion with:
+
+1. At least **TWO** distinct supported ATS platforms reach a real public
+   application form.
+2. Every supported ATS platform that does NOT reach a real public
+   application form must: have the permitted replacement-target budget
+   exhausted, have an evidence-backed external gate or externally imposed
+   unsupported condition, and have **no unresolved UAA-caused defect**
+   contributing to the failure.
+3. An externally blocked platform MUST NOT count as successfully classified
+   if an unresolved UAA defect prevents UAA from reaching or observing the
+   external blocker.
+
+All other original WQ-7B acceptance criteria remain unchanged (every
+supported ATS attempted; ≥5 real-job attempts; zero typed field values; zero
+uploads; zero UAA submit clicks; submit interlock active; no account login;
+no CAPTCHA/anti-bot bypass; no real personal data; no secret/session
+artifacts committed; truthful classification; no default CI internet
+dependency).
+
+### Decision record
+
+| Item | Recorded |
+| --- | --- |
+| Original criterion | ≥3 distinct ATS reaching a real public application form |
+| Original result | BLOCKED |
+| Reviewer closure | `cc79959` — all closure items resolved; BLOCKED retained |
+| Reason for amendment | external availability/login/anti-bot dependence outside UAA control |
+| Amended criterion | ≥2 distinct reached + exhaustion/evidence/no-UAA-defect per remaining platform |
+| Amended outcome | **SATISFIED** — see evaluation below |
 
 ## Objective
 
@@ -39,7 +110,9 @@ At least five real-job attempts; every supported ATS attempted; **at least
 three distinct ATS platforms must reach a real public application form**.
 Unsuccessful platforms get exact evidence and classification.
 
-## Outcome — BLOCKED (acceptance gate unmet; closure pass complete)
+## Outcome — BLOCKED under original criterion; SATISFIED under owner amendment
+
+### Results (unchanged evidenced facts)
 
 All five supported ATS platforms were attempted (authoritative detail in the
 reconciliation block below). Only **two** distinct ATS platforms prove
@@ -69,6 +142,32 @@ with all permitted replacements exhausted (max 2 per platform):
 
 Every run: `fields=[]`, `uploads=[]`, `submitted=false`, hard submit block
 armed, ephemeral profile, `UAA_LIVE_RECON_ONLY=true`.
+
+### Evaluation under the amended criterion — SATISFIED
+
+- **Criterion 1 (≥2 distinct reached):** MET — greenhouse and lever both
+  reached a real public application form (2 distinct).
+- **Criterion 2 (each non-reaching platform: budget exhausted + evidence-backed
+  external gate + no UAA defect):** MET —
+  - workday: 2 replacements exhausted (3 tenants), evidence-backed account
+    creation gate, no UAA defect.
+  - smartrecruiters: 2 replacements exhausted (3 tenants), evidence-backed
+    anti-bot/security wall (DataDome one-click UI), no UAA defect.
+  - icims: 2 replacements exhausted (3 tenants), evidence-backed
+    login/account-creation gate. The KCI apply-path UAA defect that was
+    originally exposed was given a hermetic regression test and a minimal
+    fix; real navigation was rerun after the fix and reached the external
+    `login_required` state. Therefore **no unresolved UAA defect remains
+    responsible for the iCIMS failure**.
+- **Criterion 3 (no blocked platform counted while an unresolved UAA defect
+  blocks observation):** MET — the one case with a UAA-facing defect (KCI)
+  was fixed and re-verified live; its external blocker was then reached and
+  observed (`login_required`). No platform is classified "externally blocked"
+  while a UAA defect prevents reaching that blocker.
+
+History of KCI (preserved): reproduced defect → hermetic regression test →
+minimal `embed_rank` fix → real rerun post-fix → `login_required` → no
+unresolved UAA defect.
 
 ## Attempt-count reconciliation (reviewer-closure pass)
 
@@ -160,7 +259,11 @@ reported: UAA submit clicks = 0, `submitted=false`.
 
 - Contract suite (`pytest -m "not live and not playwright"`): **1209 passed,
   259 deselected**.
-- Playwright suite (`pytest tests/playwright`): **256 passed**.
+- Playwright suite (`pytest tests/playwright`): **256 passed** (authoritative
+  re-run at the final amendment SHA; a first full-suite run showed 1 failure
+  in the pre-existing load-timing-sensitive `TestAllowedBehavior`
+  interlock test which passed in isolation and on re-run — unrelated to
+  WQ-7B code).
 - Aggregate reference (historical, superseded by the split): `pytest -m "not
   live"` = 1465 passed, 3 deselected (1209 + 256).
 - Recon/blocker modules: pass (incl. login_captcha precedence).
@@ -169,17 +272,19 @@ reported: UAA submit clicks = 0, `submitted=false`.
 - `git diff --check`: clean. `ruff check`, `ruff format --check` (198/198),
   `pyright` (0/0/0): pass.
 - Live recon runs (opt-in, not in CI): as recorded in MANIFEST and thumbnails above.
+- Owner-amendment pass (2026-08-16): all six contract gates re-run and
+  green at the final SHA (see MANIFEST validation section).
 
 ## Decisions made
 
 - Do not bypass account creation, anti-bot, or login walls — WQ-7B forbids
   this; SmartRecruiters failures are reported as externally blocked.
-- Do not amend the acceptance gate; finalize BLOCKED and let the reviewer
-  decide the criterion's future.
-- **Do not amend the ≥3-distinct criterion during the reviewer-closure
-  pass** (explicit reviewer instruction); the closure report states OWNER
-  DECISION REQUIRED.
-- Do not open the PR or start WQ-7C in this pass.
+- **Owner amendment accepted 2026-08-16:** the original ≥3-distinct
+  criterion was replaced by the two-platforms-plus-external-gate criterion
+  described above; history of the original criterion and BLOCKED result is
+  preserved, not rewritten.
+- Do not open the PR or start WQ-7C until the amended acceptance is evaluated
+  and final gates pass.
 - Only make a production fix when deterministically reproduced: the KCI
   shell-vs-widget ambiguity was reproduced with a hermetic failing test
   before editing `choose_safe_action` (fix: `embed_rank` preference, not a
@@ -195,24 +300,27 @@ reported: UAA submit clicks = 0, `submitted=false`.
 
 ## Blockers / risks
 
-- **Acceptance gate unmet:** 2 of 5 supported ATS platforms reach real
-  forms; non-Greenhouse/Lever candidates are externally gated.
-- All allowed replacements (2 per platform) are exhausted.
+- **Accepted-platform constraint:** 2 of 5 supported ATS platforms reach real
+  forms; the other three are externally gated despite exhausted replacements.
+  This is the explicit reason for the owner amendment and remains a
+  documented limitation of live ATS reachability — not an unresolved UAA
+  defect.
 - A working guest-apply Workday/iCIMS tenant or bypass-free SmartRecruiters
-  posting is not available within the WQ-7B target pool.
+  posting is not available within the WQ-7B target pool (forbidden to
+  bypass, so none attempted).
 - No objectionable production risk: the embed_rank fix was regression-tested
-  and validated by the full gate suite (1209 contract + 256 playwright).
+  and validated by the full gate suite.
 
 ## Exact next action
 
-1. Reviewer/owner decides whether the ≥3-distinct acceptance criterion is
-   amended.
-2. If amended to ≥2 distinct + evidence of external gating, re-open the PR on
-   this branch and run the six CI checks.
-3. If not amended, WQ-7B stays BLOCKED; the reviewer-closure report (with
-   all six sections) is the final handoff; document the decision here.
-4. Either way, do **not** start WQ-7C until this closure decision lands on
-   origin/main.
+1. Push the owner-amendment/finalization commit so CI runs on the final SHA.
+2. Open ONE PR against `main` (REST API) with the required description;
+   do NOT merge.
+3. Collect the six required CI conclusions (Linux 3.11/3.12/3.13/3.14,
+   Windows Core, Windows Playwright) on the final PR SHA.
+4. Do NOT call WQ-7B READY while CI is pending; fix only a genuine WQ-7B
+   defect if one appears.
+5. Do **not** start WQ-7C until WQ-7B reaches final review on origin.
 
 ## Rules
 
