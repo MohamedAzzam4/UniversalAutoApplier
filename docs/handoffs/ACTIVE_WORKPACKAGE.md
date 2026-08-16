@@ -83,7 +83,8 @@ with the 11-row evidence matrix. Authoritative figures (see MANIFEST):
 - **Evidence rows (per-platform block outcome): 11** (greenhouse 1, lever 1,
   workday 3, smartrecruiters 3, icims 3).
 - **Runner invocations:** 10 summary-producing runs (5-platform `final` +
-  targeted reruns) + 1 chrome-profile probe without a summary.
+  targeted reruns); 1 chrome-profile probe without a summary; **total 11
+  invocations including the probe**.
 
 **"7" is superseded and must not be carried forward.** Formal ≥5 real-job
 attempts criterion is met under every authoritative measure (12/15/11).
@@ -157,8 +158,11 @@ reported: UAA submit clicks = 0, `submitted=false`.
 
 ## Tests and exact results
 
-- Non-live suite: **1465 passed, 3 deselected** (`pytest -m "not live"`).
-- Playwright suite: **256 passed** (`pytest tests/playwright`).
+- Contract suite (`pytest -m "not live and not playwright"`): **1209 passed,
+  259 deselected**.
+- Playwright suite (`pytest tests/playwright`): **256 passed**.
+- Aggregate reference (historical, superseded by the split): `pytest -m "not
+  live"` = 1465 passed, 3 deselected (1209 + 256).
 - Recon/blocker modules: pass (incl. login_captcha precedence).
 - WQ-7B recon-mode tests: 14 passed (13 existing + 1 new widget-preference
   regression).
@@ -197,7 +201,7 @@ reported: UAA submit clicks = 0, `submitted=false`.
 - A working guest-apply Workday/iCIMS tenant or bypass-free SmartRecruiters
   posting is not available within the WQ-7B target pool.
 - No objectionable production risk: the embed_rank fix was regression-tested
-  and validated by the full gate suite (1465 non-live + 256 playwright).
+  and validated by the full gate suite (1209 contract + 256 playwright).
 
 ## Exact next action
 

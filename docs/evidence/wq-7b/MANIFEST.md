@@ -27,7 +27,8 @@ of runs and contradicted the 11-row target matrix. Authoritative totals:
 | Distinct initial URLs executed by the runner | **12** | 14 unique URL strings minus 2 duplicate-form variants of the same jobs (US Bank `2026-0024161`; LMI `14407`) |
 | Distinct real public jobs observed (runner + MCP spot checks) | **15** | plus Pilot Company (SR), MBP (iCIMS), Baltimore City (WD) verified via MCP browser |
 | Documented evidence rows (blocked-outcome matrix) | **11** | greenhouse 1, lever 1, workday 3, smartrecruiters 3, icims 3 — the target-matrix below |
-| Runner invocations total (incl. chrome-profile probe) | 11 + 1 probe | summary files + `uaa_wq7b_chrome_profile` (no summary) |
+| Chrome-profile probe without summary | **1** | `uaa_wq7b_chrome_profile` (no `summary-*.json`) |
+| Runner invocations total (incl. probe) | **11** | 10 summary-producing + 1 probe |
 
 - **"7" is superseded.** It was derived from a partial enumeration of runs
   and did not reconcile with either the target matrix (11 rows) or the
@@ -222,15 +223,22 @@ not in-repository defects.
   (MBP iCIMS, Baltimore City Workday, Pilot/IT TrailBlazers SmartRecruiters,
   headed chrome-channel spot checks).
 
-## Validation (reviewer-closure pass, post-fix)
+## Validation (post-fix; final pre-decision cleanup 2026-08-16)
 
+Authoritative contract gates, run exactly as specified:
+
+- `pytest -m "not live and not playwright"`: **1209 passed, 259 deselected**
+- `pytest tests/playwright`: **256 passed**
 - `ruff check src tests migrations`: pass
 - `ruff format --check src tests migrations`: pass (198/198 formatted)
 - `pyright`: 0 errors / 0 warnings / 0 informations
-- `pytest -m "not live"`: **1465 passed, 3 deselected** (includes the new
-  embed_rank regression test)
-- `pytest tests/playwright`: **256 passed**
 - `git diff --check`: clean
+
+Additional historical validation (kept for reference; does not substitute
+for the required split above): `pytest -m "not live"` = 1465 passed,
+3 deselected (that run aggregated the 1209 non-browser suite with the
+256 browser tests).
+
 - New regression test coverage: `TestReconWidgetApplyPreference` (hermetic
   shell-vs-widget apply competition) in `tests/playwright/test_wq7b_recon_mode.py`.
 
