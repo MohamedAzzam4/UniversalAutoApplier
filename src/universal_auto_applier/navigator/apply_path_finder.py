@@ -381,7 +381,24 @@ def choose_safe_action(
     candidates = [item for item in analysis.clickables if item.classification in priorities]
     if not candidates:
         return None
-    candidates.sort(key=lambda item: (priorities[item.classification], -item.confidence))
+
+    # Embedded ATS application widgets (e.g. iCIMS) render the real apply
+    # CTA inside a child frame while the page shell often carries a bare
+    # page-level "Apply" link that points at the employer's careers site
+    # instead of the application form. When both are classified safe_apply,
+    # prefer the widget-embedded CTA (child frame) over the shell link.
+    def embed_rank(item: LiveClickable) -> int:
+        if item.classification != ClickableClassification.SAFE_APPLY:
+            return 0
+        return 0 if item.frame_url != analysis.url else 1
+
+    candidates.sort(
+        key=lambda item: (
+            priorities[item.classification],
+            embed_rank(item),
+            -item.confidence,
+        )
+    )
     return candidates[0]
 
 

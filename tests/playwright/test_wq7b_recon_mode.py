@@ -366,6 +366,55 @@ class TestReconStopsAtFirstForm:
         assert 'data-submitted="false"' in dom
 
 
+class TestReconWidgetApplyPreference:
+    def test_prefers_widget_apply_over_shell_apply(
+        self, context: BrowserContext, recon_server: str, tmp_path: Path
+    ) -> None:
+        """Recon prefers the embedded widget apply CTA over a shell 'Apply'.
+
+        iCIMS-style boards embed the real "Apply for this job online"
+        CTA inside an iframe widget while the page shell also renders a
+        bare "Apply" navigation link (often pointing to the employer's
+        careers site, not the ATS form). The navigation-only recon must
+        follow the widget CTA to the actual application form rather than
+        the shell link.
+
+        Regression: a bare, exact-match "Apply" (HIGH confidence) used to
+        outrank the widget's longer phrase CTA (MEDIUM confidence) in
+        ``choose_safe_action``, so recon chased the shell link and never
+        reached the application form.
+        """
+        url = f"{recon_server}/icims_outside.html"
+        job = _make_job(url, tmp_path)
+        runner = LiveBrowserRunner(_make_recon_config(tmp_path, max_steps=6))
+        report = runner.run_in_context(
+            context,
+            job,
+            candidate=CandidateProfile(
+                first_name="Recon",
+                last_name="Observer",
+                full_name="Recon Observer",
+                email="recon.observer@example.com",
+                phone="+49 000",
+            ),
+            artifact_dir=tmp_path / "run-recon-widget-apply",
+        )
+
+        # The recon must follow the widget CTA to the real application
+        # form, not the shell "Apply" link to the agency landing page.
+        assert report.status == "recon_complete", (
+            f"expected recon_complete, got {report.status} "
+            f"(stopped_reason={report.stopped_reason}, errors={report.errors})"
+        )
+        assert report.stopped_reason == "first_application_form_reached"
+        assert report.final_url.endswith("apply.html"), (
+            f"recon followed the shell apply link instead of the widget CTA: {report.final_url}"
+        )
+        assert report.fields == []
+        assert report.uploads == []
+        assert report.submitted is False
+
+
 class TestReconConfigFlag:
     def test_recon_only_defaults_false(self, tmp_path: Path) -> None:
         """Recon mode is opt-in; default config is WQ-7A full dry-run."""

@@ -1,16 +1,43 @@
 # WQ-7B Evidence Manifest
 
-Status: **BLOCKED** — acceptance criterion not met
+Status: **BLOCKED** — acceptance criterion not met (reviewer-closure verdict:
+OWNER DECISION REQUIRED; the ≥3-distinct gate stays unchanged by this pass)
 
-Date: 2026-08-16 (runs on 2026-08-15 22:42–23:00 UTC)
+Date: 2026-08-16 (runs on 2026-08-15–16 22:42–23:18 UTC)
 Branch: `checkpoint/wq-7b-real-ats-navigation`
-Head: `a71525e` (fix commit; resolve head dynamically)
+Head: resolve dynamically (`git rev-parse HEAD` / `git rev-parse origin/<branch>`)
 
 ## Acceptance criterion
 
-- At least five real-job attempts — **met (7 attempts)**
+- At least five real-job attempts — **met** (see Attempt-count reconciliation
+  below; authoritative distinct-target totals are larger than the earlier
+  "7" figure)
 - Every supported ATS attempted (greenhouse, lever, workday, smartrecruiters, icims) — **met**
 - At least three distinct ATS platforms must reach a real public application form — **NOT MET (only 2 of 5)**
+
+## Attempt-count reconciliation (reviewer-closure pass)
+
+The earlier "7 real-job target runs" figure was an undercount of a subset
+of runs and contradicted the 11-row target matrix. Authoritative totals:
+
+| Metric | Count | Basis |
+| --- | --- | --- |
+| Runner invocations with summary | **10** | `uaa_wq7b_liveruns`, `rerun`, `rerun2`, `rerun3`, `rerun3_sr`, `rerun3_sr2`, `rerun3_sr3`, `final`, `icims_kci`, `icims_kci_fix` (each has exactly 1 `summary-*.json`) |
+| `report.json` files (executed target entries) | **33** | summed across all `uaa_wq7b_*` run dirs |
+| Distinct initial URLs executed by the runner | **12** | 14 unique URL strings minus 2 duplicate-form variants of the same jobs (US Bank `2026-0024161`; LMI `14407`) |
+| Distinct real public jobs observed (runner + MCP spot checks) | **15** | plus Pilot Company (SR), MBP (iCIMS), Baltimore City (WD) verified via MCP browser |
+| Documented evidence rows (blocked-outcome matrix) | **11** | greenhouse 1, lever 1, workday 3, smartrecruiters 3, icims 3 — the target-matrix below |
+| Runner invocations total (incl. chrome-profile probe) | 11 + 1 probe | summary files + `uaa_wq7b_chrome_profile` (no summary) |
+
+- **"7" is superseded.** It was derived from a partial enumeration of runs
+  and did not reconcile with either the target matrix (11 rows) or the
+  distinct executed URL inventory (12). Do not carry it forward.
+- Terminology used in this manifest and the closure report:
+  - *target attempt* = one distinct real public job URL exercised by the
+    live runner (12), plus MCP-only verification (3) = 15 observed.
+  - *runner invocation* = one `live-dry-run-platforms` process (10).
+  - *evidence row* = one platform-level outcome row in the matrix below (11):
+    the final approach taken per platform after exhausting replacements.
 
 ## Purpose
 
@@ -57,6 +84,20 @@ For every run: `fields=[]`, `uploads=[]`, `submitted=false`.
   cards[*][fieldN], consent[marketing])
 - WQ-7 interlock blocked 1 `form_submit` submission attempt —
   runner captured it as an error entry; `submitted=false`
+- **Interlock event attribution (reviewer-closure pass):** the
+  `form_submit_calls=1, submit_events=0, dispatch_submit_events=0`
+  signature means a site JS script called `HTMLFormElement.prototype.submit()`
+  programmatically — no `submit` event, no button click, no dispatched
+  SubmitEvent. The run trace contains exactly one `page.evaluate` call
+  (UAA's own final counters read, call@1266); UAA never evaluated any
+  script containing `submit()`, never filled a field (`fields=[]`), and
+  performed exactly one action (clicking "APPLY FOR THIS JOB", a link
+  navigation). The event is therefore **page/third-party-initiated** —
+  Lever's apply SPA calls `form.submit()` as part of its own load/behavior
+  in this automation context — and it is **deterministic** (identical
+  counters on all 4 runner invocations: liveruns, rerun, rerun2, final).
+  The interlock blocked it with zero network/navigation effect
+  (`submitted=false`).
 - `submitted=false`
 
 ### workday — EXTERNALLY GATED (account creation required)
@@ -99,24 +140,42 @@ SPA for the automation context; replacements exhausted.
 ### icims — EXTERNALLY GATED (account creation required)
 
 All three targets reach an iCIMS "apply" entry that lands on a login
-screen or fails to navigate to the hosted widget; replacements exhausted.
+screen; replacements exhausted.
 
 | # | Tenant / Role | URL (initial) | Result | Stopped reason | Gate observed |
 | --- | --- | --- | --- | --- | --- |
 | 1 (original) | LMI — Cloud Systems Engineer (14407) | `https://careers-lmi.icims.com/jobs/14407/job` | needs_user_input | login_required | "Apply for this job online" → `/jobs/14407/.../login` |
 | 2 (repl 1) | MBP (2639) | `https://careers-mbpce.icims.com/jobs/2639/...` | needs_user_input | login_required | "Apply for this job online" → `/jobs/2639/.../login` |
-| 3 (repl 2) | KCI — AI/ML Program Manager (7938) | `https://careers-kci.icims.com/jobs/7938/ai-ml-program-manager-consulting/job` | needs_user_input | click_failed | runner selected page-level "Apply" (`careers.kci.com`) instead of iframe widget control |
+| 3 (repl 2) | KCI — AI/ML Program Manager (7938) | `https://careers-kci.icims.com/jobs/7938/ai-ml-program-manager-%E2%80%93-consulting/job` | needs_user_input | login_required | "Apply for this job online" (widget iframe) → `/jobs/7938/.../login` |
 
-- The LMI and MBP entries are **platform gating**: iCIMS candidate apply
-  always requires account creation/login ("create a login and password",
-  "Submit Profile"). Verified on two tenants and consistent with iCIMS
+- All three entries are **platform gating**: iCIMS candidate apply always
+  requires account creation/login ("create a login and password",
+  "Submit Profile"). Verified on three tenants and consistent with iCIMS
   public documentation and its jobs aggregator (`hrjobs.icims.com`), whose
   every "Apply Now" link points directly to a `/login` URL.
-- The KCI entry adds a secondary **UAA observation**: on this specific
-  layout the apply control lives in an iCIMS iframe and the locator
-  resolved to the page-level "Apply" link first; no navigation was
-  attempted beyond the failed click. It does not reach a form either
-  way, so it does not change the acceptance outcome.
+- **KCI secondary observation (reviewer-closure pass):** an earlier run had
+  failed at click resolution — `choose_safe_action` preferred the
+  page-shell "Apply" link (`http://careers.kci.com/`, exact-match HIGH)
+  over the embedded iCIMS widget's "Apply for this job online" control
+  (substring-match MEDIUM). This was a reproducible UAA defect, not a
+  live-site difference. It was fixed and regression-tested:
+  - Fix: `choose_safe_action` now prefers child-frame (widget) `SAFE_APPLY`
+    over page-shell `SAFE_APPLY` via an `embed_rank` key (rank 0 vs 1)
+    before confidence. See
+    `src/universal_auto_applier/navigator/apply_path_finder.py`.
+  - Hermetic fixtures: `tests/fixtures/recon/icims_outside.html`,
+    `icims_widget.html`, `agency_landing.html` reproduce the
+    shell-vs-widget competition.
+  - Regression test: `TestReconWidgetApplyPreference::test_prefers_widget_apply_over_shell_apply`
+    in `tests/playwright/test_wq7b_recon_mode.py` (failed pre-fix, passes
+    post-fix).
+  - Real KCI rerun post-fix (`uaa_wq7b_icims_kci_fix`, 2026-08-16 23:1x UTC):
+    `status=needs_user_input`, `stopped_reason=login_required`, final URL
+    `https://careers-kci.icims.com/jobs/7938/ai-ml-program-manager-%E2%80%93-consulting/login`,
+    click_path step 1 = "Apply for this job online" → widget frame,
+    `fields=[]`, `uploads=[]`, `submitted=false`.
+  - iCIMS is therefore **3/3 tenants externally gated with no
+    UAA-caused navigation failure remaining**.
 
 ## Distinct ATS platforms that REACHED a real public application form
 
@@ -140,8 +199,10 @@ form. The original WQ-7B target pool for this unit supports exactly the
 five platforms tested.
 
 - Workday: account-creation gate reproduced on 3/3 tenants.
-- iCIMS: login/account-creation gate reproduced on 2/2 tenants plus its
-  own careers hub; aggregator confirms `/login` on every customer page.
+- iCIMS: login/account-creation gate reproduced on 3/3 tenants (LMI, MBP,
+  KCI) plus its own careers hub; aggregator confirms `/login` on every
+  customer page. No UAA-caused navigation failure remains (embed_rank fix
+  verified live on KCI).
 - SmartRecruiters: anti-bot wall reproduced on 3/3 tenants; no bypass
   attempted (forbidden by WQ-7B).
 
@@ -153,9 +214,24 @@ not in-repository defects.
 - `C:\Users\LOQ\AppData\Local\Temp\opencode\uaa_wq7b_final\` — full
   5-platform run (2026-08-15T22:42Z)
 - `C:\Users\LOQ\AppData\Local\Temp\opencode\uaa_wq7b_icims_kci\` — iCIMS
-  KCI replacement run (2026-08-15T22:59Z)
+  KCI replacement run pre-fix (2026-08-15T22:59Z, `click_failed`)
+- `C:\Users\LOQ\AppData\Local\Temp\opencode\uaa_wq7b_icims_kci_fix\` —
+  iCIMS KCI rerun post-embed_rank-fix (2026-08-16T23:1xZ,
+  `login_required`) — proves widget selection + external gate
 - Earlier reruns in `C:\Users\LOQ\AppData\Local\Temp\opencode\uaa_wq7b_rerun*`
   (MBP iCIMS, Baltimore City Workday, Pilot/IT TrailBlazers SmartRecruiters,
   headed chrome-channel spot checks).
+
+## Validation (reviewer-closure pass, post-fix)
+
+- `ruff check src tests migrations`: pass
+- `ruff format --check src tests migrations`: pass (198/198 formatted)
+- `pyright`: 0 errors / 0 warnings / 0 informations
+- `pytest -m "not live"`: **1465 passed, 3 deselected** (includes the new
+  embed_rank regression test)
+- `pytest tests/playwright`: **256 passed**
+- `git diff --check`: clean
+- New regression test coverage: `TestReconWidgetApplyPreference` (hermetic
+  shell-vs-widget apply competition) in `tests/playwright/test_wq7b_recon_mode.py`.
 
 No artifacts from these directories are committed to the repository.
