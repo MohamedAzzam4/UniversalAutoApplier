@@ -1,7 +1,10 @@
 # Active Workpackage — WQ-7C (IN PROGRESS)
 
 - **WP ID:** WQ-7C — Controlled Synthetic ATS Mutation + End-to-End Vertical Slice.
-- **Status:** IN PROGRESS (initial checkpoint pushed; implementation underway).
+- **Status:** IN PROGRESS (implementation `417ce97` + CLI-dispatch defect fix
+  `e838039` + live-proof detector fixes `fd155f6`/`aae24d0`/`162233d` pushed;
+  live real-ATS mutation proof on Greenhouse + Lever DONE, vertical slice
+  pending).
 - **Repository:** `MohamedAzzam4/UniversalAutoApplier`.
 - **PR:** none yet (one PR against `main` will be opened at the end via GitHub
   REST API; no local `gh` shim; do not merge).
@@ -26,8 +29,30 @@
   ```
 
   The two resolved values must match before handoff/review.
-- **Last checked-in milestone:** implementation + hermetic tests checkpoint
-  (`417ce97`, pushed; local HEAD == origin HEAD).
+- **Last checked-in milestone:** Live real-ATS synthetic mutation proof
+  (pre-submit). Two UAA detector defects found during the proof and fixed with
+  hermetic regressions + full gates + push before continuing:
+  1. **Greenhouse invisible reCAPTCHA badge** — every Greenhouse board renders a
+     fixed off-screen `grecaptcha-badge` (`size=invisible`); Playwright reports
+     it visible and its anchor-frame body text ("protected by reCAPTCHA")
+     matched `_CAPTCHA_TERMS`, so **every** Greenhouse form was misclassified
+     `captcha_detected`. Fixed in two commits (`fd155f6`, `aae24d0`):
+     captcha widget selector excludes `size=invisible` iframes, and
+     `analyze_page` skips text from anti-bot widget frames.
+  2. **Lever `cards[...]` payment false positive** — Lever names form sections
+     `name="cards[<uuid>][fieldN]"`; `input[name*='card' i]` matched and
+     reported `payment_required`. Fixed (`162233d`): payment selector excludes
+     `cards[` array-group convention (`:not([name*='cards[' i])`).
+  Both defects were reproduced, fixed minimally, regression-tested hermetically
+  (fixtures + playwright tests, keeping genuine captcha/payment blockers
+  intact), and pushed; local HEAD == origin HEAD each time.
+  Live proof results (both pre-submit, `submitted=false`): Greenhouse Carta
+  (19 fields planned / 10 filled, 1 synthetic CV upload, 2-pass plan chain,
+  stopped `required_fields_unresolved`); Lever Apply Digital (21 fields filled,
+  2 synthetic CV uploads, 2-pass plan chain, interlock blocked 1 Lever-page
+  `form.submit()`, stopped `required_fields_unresolved`). Anthropic Greenhouse
+  target superseded by Carta after Defect 1. Evidence manifest:
+  `docs/evidence/wq-7c/MANIFEST.md`.
 - **Last updated:** 2026-08-17.
 
 ## Objective
@@ -86,7 +111,9 @@ WQ-7C is NOT a real application-submission workpackage.
 7. Local/hermetic tests (unit + playwright fixture) proving every safety
    requirement from the WQ-7C contract — DONE (commit `417ce97`).
 8. Live real-ATS mutation proof on currently-open public forms (target policy,
-   verify each target immediately, ≥2 platforms attempted, ≥1 completes).
+   verify each target immediately, ≥2 platforms attempted, ≥1 completes) —
+   DONE (Greenhouse Carta + Lever Apply Digital; both reached mutation and
+   stopped pre-submit).
 9. End-to-end vertical slice across the JobHunter process boundary (no hand-
    fabricated queue, no DB seeding, no JobHunter code changes; STOP if a
    JobHunter change would be needed).
@@ -94,6 +121,60 @@ WQ-7C is NOT a real application-submission workpackage.
 11. Final PR against `main` via GitHub REST API; six CI checks green; no merge.
 
 ## Completed work
+
+Milestone: Live real-ATS synthetic mutation proof (pre-submit) — DONE
+- Queue/store seeding via the production CLI (`queue-import`): synthetic probe
+  queue at `$env:LOCALAPPDATA\Temp\opencode\uaa_wq7c_queue\synthetic_probe_queue.jsonl`
+  → `UAA_DATA_DIR=...\uaa_wq7c_data` (run_id `b032d6d0`, total 3 imported 3).
+- Greenhouse Carta (`fdda3f191ee1...`, `https://job-boards.greenhouse.io/carta/jobs/7822002003`):
+  `live-synthetic-mutation` → 19 fields planned / 10 filled, 1 synthetic CV
+  upload, 2-pass plan chain (`plan_hash=c45c3a53`, chain `d3fbef5f`), stopped
+  `required_fields_unresolved` (safe: location autocomplete, cover-letter
+  upload timeout, unmapped free-text, sensitive/demographic categories never
+  auto-answered), `submitted=false`, interlock all-zero.
+- Lever Apply Digital (`f02ef0fb6ce1...`, `https://jobs.lever.co/applydigital/e67e06b6-48e7-471d-8050-34127416dcf8`):
+  1 safe_apply click → `/apply`, 21 fields filled, 2 synthetic CV uploads,
+  2-pass plan chain (`plan_hash=e3c2cfe6`, chain `6cc80e9b`), interlock blocked
+  1 Lever-page programmatic `form.submit()` (same attribution as WQ-7B: page
+  JS, not UAA — `uaa_submit_clicks=0`, `submit_events=0`), stopped
+  `required_fields_unresolved`, `submitted=false`.
+- Anthropic Greenhouse target superseded by Carta after Defect 1 (recorded in
+  the evidence manifest as superseded, kept as replacement-pool target).
+- Evidence manifest written: `docs/evidence/wq-7c/MANIFEST.md`.
+
+Milestone: Live-proof detector defect fixes (commits `fd155f6`, `aae24d0`,
+`162233d`, pushed, verified):
+- Defect 1 (Greenhouse invisible reCAPTCHA badge → false `captcha_detected`):
+  root cause = widget selector matched `size=invisible` badge iframes AND the
+  badge anchor frame's "protected by reCAPTCHA" body text matched
+  `_CAPTCHA_TERMS`. Fix: selector excludes invisible-badge iframes
+  (`:not([src*='size=invisible'])`), `analyze_page` skips anti-bot widget-frame
+  text (`_CAPTCHA_WIDGET_URL_MARKS`). Genuine `.g-recaptcha`/`.h-captcha`/
+  `[data-sitekey]`/hcaptcha iframes still block.
+- Defect 2 (Lever `cards[<uuid>][fieldN]` → false `payment_required`): payment
+  selector now `input[name*='card' i]:not([name*='cards[' i])`; real card
+  fields (`autocomplete^='cc-'`, `card_number`, `card_cvv`) still block.
+- Regressions (hermetic, playwright): `invisible_recaptcha_badge.html` +
+  `www.recaptcha.net/recaptcha_anchor.html` (form reaches `review_ready`),
+  visible `.g-recaptcha` still blocks, `lever_cards_groups.html` reaches
+  `review_ready`, `payment_wall.html` still blocks.
+
+Milestone: CLI-dispatch defect fix (commit `e838039`, pushed, verified):
+- Reproduced: `python -m universal_auto_applier live-synthetic-mutation` fell
+  through to the dashboard server because `__main__.py`'s dispatch allowlist
+  was stale (WQ-3 era): only `list-jobs`, `browser-session`, `live-dry-run`,
+  `queue-import` were routed.
+- Fix: `cli.py` now declares `CLI_COMMANDS` (single source of truth for every
+  subcommand incl. `live-submit`, `live-dry-run-platforms`,
+  `live-synthetic-mutation`); `__main__.py` imports it lazily and routes
+  argv[0]; the dashboard bootstrap is extracted into `_run_dashboard`.
+- Regression: `tests/unit/test_main_cli_dispatch.py` (9 tests) — parity
+  allowlist==registered parser commands (guards future drift), every CLI
+  command dispatches to `run_command` via `main()`, and empty argv reaches
+  `_run_dashboard` (server path), not the CLI.
+- Gate results at `e838039`: ruff check pass, ruff format pass (202 files),
+  pyright 0/0/0, non-live `pytest -m "not live and not playwright"` =
+  **1238 passed / 268 deselected**, playwright = **265 passed**.
 
 Implementation milestone shipped as commit `417ce97` (pushed, verified):
 - `synthetic_profile.py`: `SyntheticMutationProfile` (Test/Candidate,
@@ -145,6 +226,17 @@ Implementation milestone shipped as commit `417ce97` (pushed, verified):
 
 ## Changed files
 
+- `docs/evidence/wq-7c/MANIFEST.md` (NEW)
+- `src/universal_auto_applier/navigator/apply_path_finder.py` (captcha widget
+  selector + widget-frame text skip + payment `cards[` exclusion)
+- `tests/fixtures/live_browser/invisible_recaptcha_badge.html` (NEW)
+- `tests/fixtures/live_browser/www.recaptcha.net/recaptcha_anchor.html` (NEW)
+- `tests/fixtures/live_browser/lever_cards_groups.html` (NEW)
+- `tests/fixtures/live_browser/payment_wall.html` (NEW)
+- `tests/playwright/test_live_browser_executor.py` (4 new tests)
+- `src/universal_auto_applier/__main__.py` (CLI dispatch allowlist → `CLI_COMMANDS`; `_run_dashboard`)
+- `src/universal_auto_applier/cli.py` (`CLI_COMMANDS`)
+- `tests/unit/test_main_cli_dispatch.py` (NEW, 9 tests)
 - `src/universal_auto_applier/synthetic_profile.py`
 - `src/universal_auto_applier/config.py`
 - `src/universal_auto_applier/browser/mutation_plan.py` (NEW)
@@ -157,6 +249,17 @@ Implementation milestone shipped as commit `417ce97` (pushed, verified):
 - `tests/playwright/test_wq7c_synthetic_mutation.py` (NEW)
 
 ## Tests and exact results
+
+Full local gate (all green) at commit `162233d` (latest pushed milestone):
+- `ruff check src tests migrations` — pass.
+- `ruff format --check src tests migrations` — 202 files clean.
+- `pyright` — 0 errors, 0 warnings, 0 informations.
+- `pytest -p no:cacheprovider --ignore=tests/live` — **1507 passed**.
+- Related suites (live_browser_executor, wq7b_recon_mode,
+  wq7c_synthetic_mutation, wq7c_mutation_plan) — **48 passed**.
+- Playwright suite — **267 passed** at `aae24d0` (265 baseline + 2 new).
+- `git diff --check` — clean; untracked `tmp_debug_status.py`,
+  `tmp_debug_status/`, `tmp_final_pipeline/` preserved.
 
 Full local gate (all green) at commit `417ce97`:
 - `ruff check src tests migrations` — pass.
@@ -179,6 +282,13 @@ Full local gate (all green) at commit `417ce97`:
   identical plans hash identically and the persisted plan re-verifies.
 - Preserve all pre-existing untracked debug artifacts
   (`tmp_debug_status.py`, `tmp_debug_status/`, `tmp_final_pipeline/`).
+- During the live proof, follow the defect policy (stop → hermetic regression →
+  smallest fix → full gates → push → verify → continue) rather than working
+  around detector false positives. Do not weaken real captcha/payment
+  detection to make a live target succeed; exclude only the specific
+  invisible-badge (`size=invisible`) and Lever `cards[` naming patterns.
+- Anthropic Greenhouse target recorded as superseded by Carta (same platform,
+  same blocker), not as a second failure; the ≥2-platforms proof stands.
 
 ## Blockers / risks
 
@@ -187,23 +297,21 @@ Full local gate (all green) at commit `417ce97`:
 - Vertical slice depends on the JobHunter repo running a synthetic-profile
   workflow without production-code changes; if that is impossible, WQ-7C will
   STOP and report the exact cross-repository blocker.
+- Greenhouse/Lever runtimes evolve (as seen with the invisible reCAPTCHA badge
+  and `cards[` naming); blocker/payment detectors are now narrow but must be
+  revisited if those platforms change their markup again.
 
 ## Exact next action
 
-1. **Live real-ATS mutation proof**: re-verify ≥2 currently-open public
-   Greenhouse/Lever apply URLs immediately before each run; run via the new
-   CLI (`python -m universal_auto_applier live-synthetic-mutation --application-id ...
-   --max-mutations 60` or directly through `run_synthetic_mutation`) with
-   `UAA_LIVE_SYNTHETIC_MUTATION=true`; blocker-before-mutation = record + skip;
-   ≥1 platform must complete the mutation proof; verify stop-pre-submit.
-2. **Vertical slice**: JobHunter → synthetic CV → queue → import → orchestrate
-   (application_id trace) without editing JobHunter production code; STOP and
-   report if a JobHunter change would be needed.
-3. Collect sanitized evidence under `docs/evidence/wq-7c/` (no cookies/tokens/
-   sessions/raw HTML dumps).
-4. Update `docs/CURRENT_STATE.md`, `docs/WQ7_LOCAL_LIVE_RUN.md`,
+1. **Vertical slice** (remaining): JobHunter → synthetic CV → queue → import →
+   orchestrate (application_id trace) without editing JobHunter production
+   code; STOP and report if a JobHunter change would be needed.
+2. Collect any remaining sanitized evidence under `docs/evidence/wq-7c/` (no
+   cookies/tokens/sessions/raw HTML dumps) — live-proof manifest already
+   written.
+3. Update `docs/CURRENT_STATE.md`, `docs/WQ7_LOCAL_LIVE_RUN.md`,
    `docs/NEXT_WORKPACKAGES.md`.
-5. Open ONE PR against `main` via GitHub REST API; wait for six CI checks on
+4. Open ONE PR against `main` via GitHub REST API; wait for six CI checks on
    the final SHA; do not merge.
 
 ## Rules
