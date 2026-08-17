@@ -23,6 +23,22 @@ from universal_auto_applier.persistence.db import (
 from universal_auto_applier.persistence.job_repository import list_application_jobs
 from universal_auto_applier.persistence.migrations import apply_migrations
 
+# Single source of truth for every explicit CLI subcommand. ``__main__.py``
+# routes its argv[0] here so ``python -m universal_auto_applier <command>``
+# dispatches to :func:`run_command` instead of starting the dashboard server.
+# Keep this in sync with the subparsers registered in ``_build_parser``.
+CLI_COMMANDS: frozenset[str] = frozenset(
+    {
+        "list-jobs",
+        "queue-import",
+        "browser-session",
+        "live-dry-run",
+        "live-submit",
+        "live-dry-run-platforms",
+        "live-synthetic-mutation",
+    }
+)
+
 
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="python -m universal_auto_applier")

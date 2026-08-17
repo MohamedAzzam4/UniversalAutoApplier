@@ -43,15 +43,25 @@ def main(argv: list[str] | None = None) -> int:
     _configure_logging(verbose)
 
     settings: Settings = load_settings()
-    if argv and argv[0] in {"list-jobs", "browser-session", "live-dry-run", "queue-import"}:
-        from universal_auto_applier.cli import run_command
+    if argv:
+        from universal_auto_applier.cli import CLI_COMMANDS, run_command
 
-        return run_command(argv, settings)
+        if argv[0] in CLI_COMMANDS:
+            return run_command(argv, settings)
 
     logger.info("starting UniversalAutoApplier on %s:%s", settings.host, settings.port)
     logger.info("data dir: %s", settings.data_dir)
     logger.info("submit mode: %s", settings.submit_mode)
 
+    return _run_dashboard(settings)
+
+
+def _run_dashboard(settings: Settings) -> int:
+    """Bootstrap and serve the local dashboard/API (never a public bind).
+
+    Extracted from :func:`main` so tests can exercise the CLI-dispatch branch
+    without starting a server.
+    """
     # Ensure the data directory exists. The SQLite database file lives inside it.
     settings.data_dir.mkdir(parents=True, exist_ok=True)
 
