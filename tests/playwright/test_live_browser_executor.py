@@ -248,3 +248,52 @@ def test_visible_recaptcha_widget_still_blocks_after_badge_fix(
     assert report.stopped_reason == "captcha_detected"
     assert report.click_path == []
     assert report.submitted is False
+
+
+def test_lever_cards_named_groups_are_not_a_payment_wall(
+    context: BrowserContext,
+    live_fixture_server: str,
+    tmp_path: Path,
+) -> None:
+    """Lever's ``cards[<uuid>][fieldN]`` section names must not be payment.
+
+    Lever names every application section ``cards[...]``. The payment-wall
+    detector used to match ``input[name*='card' i]`` and misclassified every
+    Lever form as ``payment_required``. The ``cards[`` array-group naming
+    is a form-structure convention, not a payment field.
+    """
+    job = _make_job(
+        tmp_path,
+        f"{live_fixture_server}/lever_cards_groups.html",
+        "lever-cards-groups",
+    )
+    report = _runner(tmp_path).run_in_context(
+        context,
+        job,
+        artifact_dir=tmp_path / "lever-cards-artifacts",
+    )
+
+    assert report.status == "review_ready", report.model_dump_json(indent=2)
+    assert report.stopped_reason == "final_submit_detected"
+    assert report.click_path == []
+    assert report.submitted is False
+    assert report.fields, "the Lever-style form must have been filled"
+
+
+def test_real_card_field_still_blocks_after_cards_fix(
+    context: BrowserContext,
+    live_fixture_server: str,
+    tmp_path: Path,
+) -> None:
+    """A genuine payment-card field is still reported as ``payment_required``."""
+    job = _make_job(tmp_path, f"{live_fixture_server}/payment_wall.html", "payment-wall")
+    report = _runner(tmp_path).run_in_context(
+        context,
+        job,
+        artifact_dir=tmp_path / "payment-wall-artifacts",
+    )
+
+    assert report.status == "needs_user_input"
+    assert report.stopped_reason == "payment_required"
+    assert report.click_path == []
+    assert report.submitted is False

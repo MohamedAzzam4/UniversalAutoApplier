@@ -311,7 +311,15 @@ def _detect_blocker(page: Page, text: str) -> str | None:
         return "security_wall"
 
     if any(term in text for term in _PAYMENT_TERMS) or any(
-        _has_visible(frame, "input[autocomplete^='cc-'], input[name*='card' i]") for frame in frames
+        _has_visible(
+            frame,
+            # Only real payment-card fields count as a payment wall. Lever
+            # names its form sections ``cards[<uuid>][fieldN]``; the bare
+            # ``cards[`` array-group convention is not a payment field and
+            # must not be mistaken for one.
+            "input[autocomplete^='cc-'], input[name*='card' i]:not([name*='cards[' i])",
+        )
+        for frame in frames
     ):
         return "payment_required"
     return None
