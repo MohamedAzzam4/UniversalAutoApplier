@@ -1,0 +1,31 @@
+<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8"><title>Application - Senior Product Manager</title></head>
+<body data-submitted="false">
+  <main>
+    <h1>Application form</h1>
+    <form onsubmit="document.body.dataset.submitted='true'; return false;">
+      <label for="first_name">First name *</label>
+      <input id="first_name" name="first_name" placeholder="First name" required>
+      <label for="last_name">Last name *</label>
+      <input id="last_name" name="last_name" placeholder="Last name" required>
+      <label for="email">Email *</label>
+      <input id="email" name="email" type="email" placeholder="Email" required>
+      <label for="resume">Resume / CV</label>
+      <input id="resume" name="resume" type="file">
+      <button type="submit">Submit application</button>
+    </form>
+  </main>
+  <div class="grecaptcha-badge" data-style="bottomright"
+       style="width:256px;height:60px;display:block;position:fixed;bottom:14px;right:-186px;box-shadow:gray 0 0 5px;border-radius:2px;overflow:hidden;">
+    <div class="grecaptcha-logo">
+      <iframe title="reCAPTCHA" width="256" height="60" role="presentation" tabindex="-1"
+              src="https://www.recaptcha.net/recaptcha/enterprise/anchor?ar=1&k=fixture&co=aHR0cHM6Ly9maXh0dXJl&hl=en&v=fixture&size=invisible&cb=fixture"
+              frameborder="0" scrolling="no"></iframe>
+    </div>
+    <div class="grecaptcha-error"></div>
+    <textarea id="g-recaptcha-response-100000" name="g-recaptcha-response"
+              class="g-recaptcha-response" style="display:none"></textarea>
+  </div>
+</body>
+</html>

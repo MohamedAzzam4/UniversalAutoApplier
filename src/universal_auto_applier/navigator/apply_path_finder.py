@@ -281,13 +281,19 @@ def _detect_blocker(page: Page, text: str) -> str | None:
     ):
         return "login_required"
 
+    # Only a user-facing captcha challenge blocks. Many ATS boards (for
+    # example every Greenhouse job board) embed a fixed, off-screen
+    # `size=invisible` reCAPTCHA badge on every page; that badge is not a
+    # challenge the applicant must solve, so it must not stop navigation.
+    # Visible checkbox widgets (`.g-recaptcha`/`.h-captcha`) and
+    # explicitly-sized challenge iframes still count as blockers.
+    captcha_widget_selector = (
+        "iframe[src*='recaptcha']:not([src*='size=invisible']), "
+        "iframe[src*='hcaptcha'], "
+        ".g-recaptcha, .h-captcha, [data-sitekey]"
+    )
     if any(term in text for term in _CAPTCHA_TERMS) or any(
-        _has_visible(
-            frame,
-            "iframe[src*='recaptcha'], iframe[src*='hcaptcha'], "
-            ".g-recaptcha, .h-captcha, [data-sitekey]",
-        )
-        for frame in frames
+        _has_visible(frame, captcha_widget_selector) for frame in frames
     ):
         return "captcha_detected"
 
