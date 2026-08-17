@@ -66,6 +66,16 @@ _SUBMITTED_TERMS = (
     "application received",
     "bewerbung eingegangen",
 )
+# Anti-bot widget frames (reCAPTCHA/hCaptcha anchors) always contain the
+# phrase "protected by reCAPTCHA" in their body. Those frames are the widget
+# itself — not page content — and their text must not be mistaken for a
+# challenge signal (Greenhouse renders such a badge on every job board).
+_CAPTCHA_WIDGET_URL_MARKS = (
+    "recaptcha.net",
+    "google.com/recaptcha",
+    "gstatic.com/recaptcha",
+    "hcaptcha.com",
+)
 _EXPIRED_TERMS = (
     "job expired",
     "position no longer available",
@@ -317,6 +327,12 @@ def analyze_page(page: Page) -> LivePageAnalysis:
     visible_forms = 0
 
     for frame in page.frames:
+        if any(mark in frame.url for mark in _CAPTCHA_WIDGET_URL_MARKS):
+            # The widget's own iframe is the captcha badge itself, not page
+            # content; its body text ("protected by reCAPTCHA") would
+            # otherwise match _CAPTCHA_TERMS and block every board that
+            # merely embeds an invisible badge.
+            continue
         all_text_parts.append(_frame_text(frame))
         clickables.extend(_collect_clickables(frame))
         controls, files, signals = _application_control_counts(frame)
