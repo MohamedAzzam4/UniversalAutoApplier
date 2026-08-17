@@ -1238,12 +1238,34 @@ def execute_live_form_with_llm(
 
 
 @dataclass
+class SyntheticMutationPass:
+    """One frozen mutation pass with its own pre-mutation plan.
+
+    Every pass (the initial extraction pass and each bounded reveal pass)
+    builds and freezes its own plan BEFORE mutating anything. Keeping the
+    passes ordered lets evidence prove that every actual mutation belongs
+    to a hash-verifiable plan.
+    """
+
+    pass_index: int
+    plan: MutationPlan
+    plan_hash: str
+    mutations_performed: int
+    budget_consumed: int
+
+
+@dataclass
 class SyntheticMutationExecution:
     """Result of one WQ-7C synthetic mutation pass over a live form.
 
     The frozen :attr:`plan` and its :attr:`plan_hash` are recorded before
     any mutation happened. Only entries the plan decided ``mutate`` were
     written; everything else was left untouched.
+
+    :attr:`passes` is the deterministic ordered chain of every frozen plan
+    that ran (initial + each reveal pass). :attr:`plan_chain_hash` covers
+    that whole ordered chain so the persisted evidence proves no mutation
+    happened outside a frozen plan.
     """
 
     plan: MutationPlan
@@ -1254,6 +1276,23 @@ class SyntheticMutationExecution:
     uploads: list[LiveUploadRecord] = field(default_factory=list[LiveUploadRecord])
     validation_errors: list[str] = field(default_factory=list[str])
     required_unresolved: int = 0
+    passes: list[SyntheticMutationPass] = field(default_factory=list[SyntheticMutationPass])
+    plan_chain_hash: str = ""
+
+
+def plan_chain_hash(plan_hashes: list[str]) -> str:
+    """Deterministic SHA-256 over the ordered chain of per-pass plan hashes.
+
+    The order matters (reveal runs after the initial pass), and the input is
+    the per-pass plan hash — which itself excludes the volatile
+    ``generated_at`` timestamp — so identical chains always re-verify.
+    """
+    canonical = json.dumps(
+        list(plan_hashes),
+        sort_keys=False,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    return hashlib.sha256(canonical).hexdigest()
 
 
 def _entry_to_status(entry: MutationPlanEntry) -> str:
@@ -1318,17 +1357,18 @@ def _run_mutation_pass(
     if existing_tokens:
         targets = [t for t in targets if t.token not in existing_tokens]
     if not targets:
+        empty_plan = build_mutation_plan(
+            [],
+            candidate,
+            job,
+            approved_document_hashes=approved_document_hashes,
+            budget=budget,
+            application_id=job.application_id,
+            page_url=page.url,
+        )
         return SyntheticMutationExecution(
-            plan=build_mutation_plan(
-                [],
-                candidate,
-                job,
-                approved_document_hashes=approved_document_hashes,
-                budget=budget,
-                application_id=job.application_id,
-                page_url=page.url,
-            ),
-            plan_hash="",
+            plan=empty_plan,
+            plan_hash=empty_plan.plan_hash,
             mutations_performed=0,
         )
 
@@ -1519,6 +1559,19 @@ def execute_live_form_synthetic(
         budget=mutation_budget,
     )
 
+    # Deterministic ordered plan chain: the initial pass is always pass 0;
+    # each bounded reveal pass appends a new frozen plan. EVERY actual
+    # mutation must belong to one of these hash-verifiable plans.
+    passes: list[SyntheticMutationPass] = [
+        SyntheticMutationPass(
+            pass_index=0,
+            plan=execution.plan,
+            plan_hash=execution.plan_hash,
+            mutations_performed=execution.mutations_performed,
+            budget_consumed=execution.budget_consumed,
+        )
+    ]
+
     # Single bounded re-observation for conditionally revealed fields.
     remaining_budget = mutation_budget - execution.budget_consumed
     existing_tokens = {f.field_token for f in execution.fields if f.field_token}
@@ -1531,15 +1584,25 @@ def execute_live_form_synthetic(
             budget=remaining_budget,
             existing_tokens=existing_tokens,
         )
-        if revealed.fields:
-            # Merge revealed fields/records into the main execution. The
-            # budget is shared: revealed mutations count against it.
-            execution.mutations_performed += revealed.mutations_performed
-            execution.budget_consumed += revealed.budget_consumed
-            execution.fields.extend(revealed.fields)
-            execution.uploads.extend(revealed.uploads)
-            execution.required_unresolved += revealed.required_unresolved
+        # Merge revealed fields/records into the main execution. The
+        # budget is shared: revealed mutations count against it.
+        execution.mutations_performed += revealed.mutations_performed
+        execution.budget_consumed += revealed.budget_consumed
+        execution.fields.extend(revealed.fields)
+        execution.uploads.extend(revealed.uploads)
+        execution.required_unresolved += revealed.required_unresolved
+        passes.append(
+            SyntheticMutationPass(
+                pass_index=1,
+                plan=revealed.plan,
+                plan_hash=revealed.plan_hash,
+                mutations_performed=revealed.mutations_performed,
+                budget_consumed=revealed.budget_consumed,
+            )
+        )
 
+    execution.passes = passes
+    execution.plan_chain_hash = plan_chain_hash([p.plan_hash for p in passes])
     execution.fields = consolidate_fields(execution.fields)
     execution.validation_errors = _validation_errors(page)
     return execution
@@ -1548,9 +1611,11 @@ def execute_live_form_synthetic(
 __all__ = [
     "LiveFormExecution",
     "SyntheticMutationExecution",
+    "SyntheticMutationPass",
     "execute_live_form",
     "execute_live_form_synthetic",
     "execute_live_form_with_llm",
+    "plan_chain_hash",
     "validate_typed_answer",
     "compute_field_token",
     "consolidate_fields",

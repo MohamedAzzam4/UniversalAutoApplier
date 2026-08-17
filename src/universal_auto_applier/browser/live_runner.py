@@ -25,6 +25,12 @@ from universal_auto_applier.browser.live_models import (
     LiveClickRecord,
     LiveFormObservation,
     LiveRunReport,
+    SubmitInterlockCounters,
+)
+from universal_auto_applier.browser.submit_interlock import (
+    install_interlock,
+    is_interlock_installed,
+    read_counters,
 )
 from universal_auto_applier.candidate_profile_loader import resolve_candidate_profile
 from universal_auto_applier.core.models import ApplicationJob, CandidateProfile
@@ -78,6 +84,10 @@ class LiveBrowserRunner:
 
     def __init__(self, config: LiveBrowserConfig) -> None:
         self._config = config
+        # UAA-level submit-click attempts for the current run. The dry-run
+        # never performs one, but any call into ``attempt_submit`` (the only
+        # UAA code path that could click submit) truthfully increments this.
+        self._uaa_submit_clicks = 0
 
     def _new_artifact_dir(self, job: ApplicationJob) -> Path:
         timestamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%S%fZ")
@@ -185,16 +195,12 @@ class LiveBrowserRunner:
         page: Page | None = None
         trace_started = False
         seen_actions: set[tuple[str, str, str]] = set()
+        self._uaa_submit_clicks = 0
 
         # WQ-7: Install the browser-side submit interlock BEFORE any page
         # is created. This intercepts submit events, form.submit(),
         # requestSubmit(), and dispatched SubmitEvents at the capture phase,
         # before any site JavaScript can process them.
-        from universal_auto_applier.browser.submit_interlock import (
-            install_interlock,
-            read_counters,
-        )
-
         if self._config.hard_submit_block:
             install_interlock(context)
             logger.info("[%s] WQ-7 submit interlock installed on context", job.application_id[:12])
@@ -380,25 +386,49 @@ class LiveBrowserRunner:
         finally:
             # WQ-7: Read the browser-side interlock counters to record
             # truthful evidence of what happened (not what we hope happened).
-            if self._config.hard_submit_block and page is not None and not page.is_closed():
+            counters = {
+                "submit_events": 0,
+                "form_submit_calls": 0,
+                "request_submit_calls": 0,
+                "dispatch_submit_events": 0,
+                "blocked_submissions": 0,
+                "navigation_attempts": 0,
+            }
+            try:
+                installed = (
+                    page is not None and not page.is_closed() and (is_interlock_installed(page))
+                )
+            except Exception:  # noqa: BLE001
+                installed = page is not None and not page.is_closed()
+            if page is not None and not page.is_closed():
                 try:
                     counters = read_counters(page)
-                    if counters.get("blocked_submissions", 0) > 0:
-                        report.errors.append(
-                            f"wq7_interlock: blocked {counters['blocked_submissions']} "
-                            f"submission attempt(s) — "
-                            f"submit_events={counters['submit_events']}, "
-                            f"form_submit={counters['form_submit_calls']}, "
-                            f"request_submit={counters['request_submit_calls']}, "
-                            f"dispatch={counters['dispatch_submit_events']}"
-                        )
-                        logger.warning(
-                            "[%s] WQ-7 interlock blocked %d submission(s)",
-                            job.application_id[:12],
-                            counters["blocked_submissions"],
-                        )
                 except Exception:  # noqa: BLE001
                     pass  # Counter reading is best-effort
+            report.submit_interlock = SubmitInterlockCounters(
+                installed=installed,
+                uaa_submit_clicks=self._uaa_submit_clicks,
+                submit_events=counters.get("submit_events", 0),
+                form_submit_calls=counters.get("form_submit_calls", 0),
+                request_submit_calls=counters.get("request_submit_calls", 0),
+                dispatch_submit_events=counters.get("dispatch_submit_events", 0),
+                blocked_submissions=counters.get("blocked_submissions", 0),
+                navigation_attempts=counters.get("navigation_attempts", 0),
+            )
+            if counters.get("blocked_submissions", 0) > 0:
+                report.errors.append(
+                    f"wq7_interlock: blocked {counters['blocked_submissions']} "
+                    f"submission attempt(s) — "
+                    f"submit_events={counters['submit_events']}, "
+                    f"form_submit={counters['form_submit_calls']}, "
+                    f"request_submit={counters['request_submit_calls']}, "
+                    f"dispatch={counters['dispatch_submit_events']}"
+                )
+                logger.warning(
+                    "[%s] WQ-7 interlock blocked %d submission(s)",
+                    job.application_id[:12],
+                    counters["blocked_submissions"],
+                )
 
             if page is not None and not page.is_closed():
                 report.final_url = page.url
@@ -618,6 +648,7 @@ class LiveBrowserRunner:
         """
         run_dir = artifact_dir or self._new_artifact_dir(job)
         run_dir.mkdir(parents=True, exist_ok=True)
+        self._uaa_submit_clicks = 0
         report = LiveRunReport(
             application_id=job.application_id,
             started_at=datetime.now(UTC),
@@ -627,11 +658,6 @@ class LiveBrowserRunner:
         page: Page | None = None
         trace_started = False
         seen_actions: set[tuple[str, str, str]] = set()
-
-        from universal_auto_applier.browser.submit_interlock import (
-            install_interlock,
-            read_counters,
-        )
 
         install_interlock(context)
         logger.info(
@@ -696,13 +722,25 @@ class LiveBrowserRunner:
                     report.fields.extend(execution.fields)
                     report.uploads.extend(execution.uploads)
                     report.plan_hash = execution.plan_hash
-                    # Persist the frozen plan next to the run evidence.
-                    plan_path = run_dir / "mutation-plan.json"
-                    plan_path.write_text(
-                        execution.plan.model_dump_json(indent=2),
-                        encoding="utf-8",
-                    )
-                    report.mutation_plan_path = str(plan_path.resolve())
+                    report.plan_chain_hash = execution.plan_chain_hash
+                    # Persist EVERY frozen pass plan next to the run evidence:
+                    # the initial pass (mutation-plan.json) plus one file per
+                    # bounded reveal pass, referenced by the chain paths. The
+                    # ordered chain covers all actual mutations.
+                    for pass_record in execution.passes:
+                        if pass_record.pass_index == 0:
+                            pass_path = run_dir / "mutation-plan.json"
+                        else:
+                            pass_path = (
+                                run_dir / f"mutation-plan-pass-{pass_record.pass_index}.json"
+                            )
+                        pass_path.write_text(
+                            pass_record.plan.model_dump_json(indent=2),
+                            encoding="utf-8",
+                        )
+                        report.mutation_plan_chain_paths.append(str(pass_path.resolve()))
+                        report.plan_chain_hashes.append(pass_record.plan_hash)
+                    report.mutation_plan_path = report.mutation_plan_chain_paths[0]
                     self._screenshot(
                         page,
                         run_dir,
@@ -805,20 +843,48 @@ class LiveBrowserRunner:
             report.errors.append(f"{type(exc).__name__}: {exc}")
             logger.exception("[%s] wq7c synthetic mutation run failed", job.application_id[:12])
         finally:
+            # WQ-7C closure item 2: persist the submit-interlock counters on
+            # EVERY run as structured evidence, including zeros. Zeros are
+            # meaningful — an installed interlock that recorded zero blocks
+            # IS the safety proof, not report.submitted alone.
+            try:
+                installed = (
+                    page is not None and not page.is_closed() and (is_interlock_installed(page))
+                )
+            except Exception:  # noqa: BLE001
+                installed = page is not None and not page.is_closed()
+            counters = {
+                "submit_events": 0,
+                "form_submit_calls": 0,
+                "request_submit_calls": 0,
+                "dispatch_submit_events": 0,
+                "blocked_submissions": 0,
+                "navigation_attempts": 0,
+            }
             if page is not None and not page.is_closed():
                 try:
                     counters = read_counters(page)
-                    if counters.get("blocked_submissions", 0) > 0:
-                        report.errors.append(
-                            f"wq7_interlock: blocked {counters['blocked_submissions']} "
-                            f"submission attempt(s) — "
-                            f"submit_events={counters['submit_events']}, "
-                            f"form_submit={counters['form_submit_calls']}, "
-                            f"request_submit={counters['request_submit_calls']}, "
-                            f"dispatch={counters['dispatch_submit_events']}"
-                        )
                 except Exception:  # noqa: BLE001
-                    pass
+                    pass  # Counter reading is best-effort
+            report.submit_interlock = SubmitInterlockCounters(
+                installed=installed,
+                uaa_submit_clicks=self._uaa_submit_clicks,
+                submit_events=counters.get("submit_events", 0),
+                form_submit_calls=counters.get("form_submit_calls", 0),
+                request_submit_calls=counters.get("request_submit_calls", 0),
+                dispatch_submit_events=counters.get("dispatch_submit_events", 0),
+                blocked_submissions=counters.get("blocked_submissions", 0),
+                navigation_attempts=counters.get("navigation_attempts", 0),
+            )
+            if counters.get("blocked_submissions", 0) > 0:
+                report.errors.append(
+                    f"wq7_interlock: blocked {counters['blocked_submissions']} "
+                    f"submission attempt(s) — "
+                    f"submit_events={counters['submit_events']}, "
+                    f"form_submit={counters['form_submit_calls']}, "
+                    f"request_submit={counters['request_submit_calls']}, "
+                    f"dispatch={counters['dispatch_submit_events']}"
+                )
 
             if page is not None and not page.is_closed():
                 report.final_url = page.url
@@ -862,6 +928,7 @@ class LiveBrowserRunner:
             "blocked" if the hard submit block is active,
             "not_found" if the selector was not found on the page.
         """
+        self._uaa_submit_clicks += 1
         if self._config.hard_submit_block:
             logger.warning(
                 "[wq7] attempt_submit blocked by hard_submit_block — "

@@ -748,6 +748,12 @@ def _live_synthetic_mutation(settings: Settings, args: argparse.Namespace) -> in
     print(f"uploads: {len(report.uploads)}")
     print(f"plan_hash: {report.plan_hash}")
     print(f"plan_path: {report.mutation_plan_path}")
+    print(f"plan_chain_hashes: {len(report.plan_chain_hashes)}")
+    print(f"plan_chain_hash: {report.plan_chain_hash}")
+    print(f"plan_chain_paths: {len(report.mutation_plan_chain_paths)}")
+    counters = report.submit_interlock
+    if counters is not None:
+        print(f"interlock: installed={counters.installed} blocked={counters.blocked_submissions}")
     print(f"submitted: {report.submitted}")
     print(f"report: {report.report_path}")
     if report.errors:

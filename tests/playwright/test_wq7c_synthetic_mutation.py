@@ -53,7 +53,11 @@ def platform_dir(tmp_path_factory) -> Path:
     (target / "conditional_reveal.html").write_text(
         "<html><body>ready</body></html>", encoding="utf-8"
     )
-    for name in ("greenhouse_apply.html", "lever_apply.html"):
+    for name in (
+        "greenhouse_apply.html",
+        "lever_apply.html",
+        "wq7c_conditional_apply.html",
+    ):
         (target / name).write_bytes((PLATFORM_FIXTURE_DIR / name).read_bytes())
     return target
 
@@ -198,12 +202,23 @@ class TestGreenhouseSyntheticMutation:
         )
 
         assert report.submitted is False
-        # Nothing attempted a submission, so the interlock never had to
-        # block anything (and never will, because the runner never clicks).
+        # The safety proof is the STRUCTURED interlock counters (closure
+        # item 2): an installed interlock that recorded zeros.
+        counters = report.submit_interlock
+        assert counters is not None, "submit_interlock counters must be recorded"
+        assert counters.installed is True, "interlock must be armed"
+        assert counters.uaa_submit_clicks == 0
+        assert counters.submit_events == 0
+        assert counters.form_submit_calls == 0
+        assert counters.request_submit_calls == 0
+        assert counters.dispatch_submit_events == 0
+        assert counters.blocked_submissions == 0
+        assert counters.navigation_attempts == 0
+        # No network-level detector exists; the limitation is reported.
+        assert counters.network_submission_detector == "not_instrumented"
         assert not any("wq7_interlock" in err for err in report.errors), (
             "runner must not attempt submissions during synthetic mutation"
         )
-        assert not any("blocked" in err for err in report.errors)
 
     def test_no_real_candidate_data_in_dom(
         self, context: BrowserContext, platform_server: str, tmp_path: Path
@@ -265,6 +280,107 @@ class TestLeverSyntheticMutation:
         assert {"Full name", "Email", "Phone"} <= filled
         assert len(report.uploads) >= 2
         assert all(u.status == "uploaded" for u in report.uploads)
+
+
+class TestConditionalRevealPlanChain:
+    """Closure item 1: EVERY actual mutation is covered by plan evidence.
+
+    A conditional field (City revealed when Country is selected) forces the
+    bounded reveal pass to run a SECOND frozen plan. This test proves the
+    second pass is NOT mutated silently: its plan/hash are part of the
+    persisted, ordered, hash-verifiable plan chain.
+    """
+
+    def test_revealed_mutations_have_their_own_frozen_plan(
+        self, context: BrowserContext, platform_server: str, tmp_path: Path
+    ) -> None:
+        job = _make_job(f"{platform_server}/wq7c_conditional_apply.html", tmp_path)
+        runner = LiveBrowserRunner(_config(tmp_path))
+        report = runner.run_in_context_synthetic(
+            context,
+            job,
+            PROFILE,
+            approved_document_hashes=_approved(tmp_path),
+            mutation_budget=20,
+            artifact_dir=tmp_path / "run-conditional",
+        )
+
+        assert report.status == "review_ready", (
+            f"got status={report.status} reason={report.stopped_reason} errors={report.errors}"
+        )
+        assert report.submitted is False
+
+        # The conditional City field must have been mutated (Country select
+        # is declared country value; selecting it reveals City).
+        filled_labels = {f.label for f in report.fields if f.status == "filled" and f.filled_value}
+        assert "City" in filled_labels, (
+            f"conditional City field not filled: {sorted(filled_labels)}"
+        )
+
+        # Plan chain: TWO passes (initial + reveal), both frozen and hashed.
+        assert len(report.plan_chain_hashes) >= 2, report.plan_chain_hashes
+        assert len(report.mutation_plan_chain_paths) >= 2
+        assert all(len(h) == 64 for h in report.plan_chain_hashes)
+        assert report.plan_chain_hash
+        assert len(report.plan_chain_hash) == 64
+        assert report.plan_hash in report.plan_chain_hashes
+
+        # Every persisted pass plan re-verifies against its recorded hash.
+        import hashlib
+        import json
+
+        for path, recorded_hash in zip(
+            report.mutation_plan_chain_paths,
+            report.plan_chain_hashes,
+            strict=True,
+        ):
+            plan_json = Path(path)
+            assert plan_json.exists(), f"missing plan evidence: {plan_json}"
+            data = json.loads(plan_json.read_text(encoding="utf-8"))
+            data.pop("generated_at", None)
+            canonical = json.dumps(data, sort_keys=True, separators=(",", ":")).encode("utf-8")
+            assert recorded_hash == hashlib.sha256(canonical).hexdigest()
+
+        # The chain hash is deterministic over the ordered per-pass hashes.
+        from universal_auto_applier.form_engine.live_executor import plan_chain_hash
+
+        recomputed = plan_chain_hash(report.plan_chain_hashes)
+        assert report.plan_chain_hash == recomputed
+
+        # EVERY filled field is represented by a mutate entry in SOME plan
+        # pass — no mutation happens outside the recorded frozen chain.
+        filled_tokens = {
+            f.field_token for f in report.fields if f.status == "filled" and f.field_token
+        }
+        planned_selectors: set[str] = set()
+        for path in report.mutation_plan_chain_paths:
+            data = json.loads(Path(path).read_text(encoding="utf-8"))
+            planned_selectors.update(
+                entry["selector"] for entry in data["entries"] if entry["decision"] == "mutate"
+            )
+        uncovered = filled_tokens - planned_selectors
+        assert not uncovered, f"mutated fields with no frozen plan entry: {sorted(uncovered)}"
+
+    def test_zero_submit_counters_even_with_conditional_reveal(
+        self, context: BrowserContext, platform_server: str, tmp_path: Path
+    ) -> None:
+        job = _make_job(f"{platform_server}/wq7c_conditional_apply.html", tmp_path)
+        runner = LiveBrowserRunner(_config(tmp_path))
+        report = runner.run_in_context_synthetic(
+            context,
+            job,
+            PROFILE,
+            approved_document_hashes=_approved(tmp_path),
+            mutation_budget=20,
+            artifact_dir=tmp_path / "run-conditional-interlock",
+        )
+
+        counters = report.submit_interlock
+        assert counters is not None
+        assert counters.installed is True
+        assert counters.blocked_submissions == 0
+        assert counters.uaa_submit_clicks == 0
+        assert report.submitted is False
 
 
 class TestSyntheticMutationGuard:

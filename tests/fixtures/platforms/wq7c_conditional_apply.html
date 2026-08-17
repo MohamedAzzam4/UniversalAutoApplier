@@ -1,0 +1,45 @@
+<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8"><title>wq7c conditional reveal</title></head>
+<body data-submitted="false">
+  <main>
+    <h1>WQ-7C Conditional Apply Form</h1>
+    <form onsubmit="document.body.dataset.submitted='true'; return false;">
+      <label for="full_name">Full name</label>
+      <input id="full_name" name="full_name" required>
+
+      <label for="email">Email</label>
+      <input id="email" name="email" type="email" required>
+
+      <!-- Selecting this select mutates in pass 0 and reveals the City
+           field, which the bounded reveal pass must then ALSO plan and
+           mutate. Proves the second pass is covered by plan evidence. -->
+      <label for="country">Country</label>
+      <select id="country" name="country" required>
+        <option value="">Select a country</option>
+        <option value="Syntheticland">Syntheticland</option>
+        <option value="Other">Other</option>
+      </select>
+
+      <div id="city-container" style="display:none;">
+        <label for="city">City</label>
+        <input id="city" name="city" required>
+      </div>
+
+      <button type="submit" id="submit-app">Submit application</button>
+    </form>
+  </main>
+  <script>
+    document.getElementById('country').addEventListener('change', function () {
+      var container = document.getElementById('city-container');
+      if (this.value === 'Syntheticland') {
+        container.style.display = 'block';
+        document.getElementById('city').setAttribute('required', 'required');
+      } else {
+        container.style.display = 'none';
+        document.getElementById('city').removeAttribute('required');
+      }
+    });
+  </script>
+</body>
+</html>
