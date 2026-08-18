@@ -3,8 +3,8 @@
 - **WP ID:** WQ-7C — Controlled Synthetic ATS Mutation + End-to-End Vertical Slice.
 - **Status:** IN PROGRESS (implementation `417ce97` + CLI-dispatch defect fix
   `e838039` + live-proof detector fixes `fd155f6`/`aae24d0`/`162233d` pushed;
-  live real-ATS mutation proof on Greenhouse + Lever DONE, vertical slice
-  pending).
+  live real-ATS mutation proof on Greenhouse + Lever DONE, **vertical slice
+  (milestone 9) DONE at `6462402`**, evidence finalization + PR pending).
 - **Repository:** `MohamedAzzam4/UniversalAutoApplier`.
 - **PR:** none yet (one PR against `main` will be opened at the end via GitHub
   REST API; no local `gh` shim; do not merge).
@@ -29,7 +29,7 @@
   ```
 
   The two resolved values must match before handoff/review.
-- **Last checked-in milestone:** Live real-ATS synthetic mutation proof
+- **Prior checked-in milestone:** Live real-ATS synthetic mutation proof
   (pre-submit). Two UAA detector defects found during the proof and fixed with
   hermetic regressions + full gates + push before continuing:
   1. **Greenhouse invisible reCAPTCHA badge** — every Greenhouse board renders a
@@ -53,7 +53,27 @@
   `form.submit()`, stopped `required_fields_unresolved`). Anthropic Greenhouse
   target superseded by Carta after Defect 1. Evidence manifest:
   `docs/evidence/wq-7c/MANIFEST.md`.
-- **Last updated:** 2026-08-17.
+- **Last checked-in milestone:** End-to-end vertical slice (milestone 9) — DONE
+  at `6462402` (pushed, local==origin==`64624026a2507d84b024a5024820335155c8fe2e`).
+  Unchanged JobHunter evaluated the real Carta Greenhouse posting via its normal
+  pipeline (`data/pipeline.md` → `run_evaluate.py --next --threshold 3.0
+  --german-policy accept_all`) with a fully synthetic senior-AE persona:
+  **score 5/5, recommendation apply**, tailored CV + cover PDFs generated. The
+  normal `run_export_queue.py` exported `data/application_queue.jsonl` with
+  `application_id=869bbd6e4ab460259cceb30f8996599dd6216091f7ecada7688b64cd9278d485`
+  (`platform=greenhouse`, `external_job_id=null` → canonical-URL identity).
+  A UAA-side opt-in `queue-import --synthetic-mutation` stamps
+  `synthetic_test`/`wq7_synthetic` onto `metadata.candidate_profile` ONLY when
+  the snapshot already matches the WQ-7C synthetic identity (Test Candidate /
+  test.candidate@example.com); any other row is refused. Import in a temp data
+  dir (`uaa_data`) produced the **same application_id** in UAA's DB with both
+  markers present, status `ready_to_apply`. `live-synthetic-mutation --headless`
+  against the Carta Greenhouse form reached the ATS, extracted 19 fields,
+  uploaded the approved synthetic CV (`input[id='resume']`), recorded
+  `plan_hash=b6763fd5`, 2-pass plan chain `1101539781`, interlock installed with
+  all-zero counters, **`submitted=false`**, stopped `required_fields_unresolved`
+  (visa/LinkedIn/work-history/demographic never auto-answered — correct).
+- **Last updated:** 2026-08-18.
 
 ## Objective
 
@@ -121,6 +141,53 @@ WQ-7C is NOT a real application-submission workpackage.
 11. Final PR against `main` via GitHub REST API; six CI checks green; no merge.
 
 ## Completed work
+
+Milestone: End-to-end vertical slice across the JobHunter boundary — DONE
+- Unchanged JobHunter (branch `main` `0e8ba2f9`, zero production-code edits)
+  run from a synthetic workdir (`C:\Users\LOQ\AppData\Local\Temp\opencode\jh_synthetic_20260817_214734`)
+  with a fully synthetic senior-AE persona (`config/profile.yml`, `cv.md`):
+  wrote `data/pipeline.md` with the real Carta Greenhouse posting
+  (`https://job-boards.greenhouse.io/carta/jobs/7822002003`), then
+  `run_evaluate.py --next --threshold 3.0 --german-policy accept_all` →
+  **score 5/5 (skills 5, education 5, location 5, language 5, growth 5),
+  recommendation `apply`**, tailored CV + cover letter PDFs generated
+  (weasyprint via the UAA venv; OpenRouter free model
+  `nvidia/nemotron-3-ultra-550b-a55b:free`; no Google AI, Telegram degraded).
+- `run_export_queue.py` → `data/application_queue.jsonl`: 1 row,
+  `application_id=869bbd6e4ab4...`, `platform=greenhouse`,
+  `external_job_id=null`, `company=Carta`,
+  `title=Account Executive, Legal Services`, absolute artifact paths,
+  `metadata.candidate_profile` = whitelisted synthetic snapshot (no markers).
+- UAA opt-in (this workpackage's only code change, JobHunter untouched):
+  `queue-import --synthetic-mutation` — new CLI flag + service/import plumbing
+  (`cli.py`, `services/queue_import_service.py`,
+  `application_queue/importer.py`) using
+  `synthetic_profile.stamp_synthetic_mutation_metadata()` which stamps
+  `synthetic_test`/`wq7_synthetic` ONLY when `candidate_profile` already IS
+  the WQ-7C synthetic identity (full_name "Test Candidate" AND email
+  "test.candidate@example.com"); any other snapshot is refused per-row.
+- Import executed against a fresh temp `uaa_data`:
+  `python -m universal_auto_applier queue-import --path <abs queue>
+  --synthetic-mutation` → state `success`, total 1 imported 1, errors 0,
+  run_id `1d4ef028`. UAA DB holds the **same application_id**
+  `869bbd6e4ab4...`, status `ready_to_apply`, both synthetic markers present.
+  Identity across the boundary verified: UAA
+  `compute_application_id(platform='greenhouse', external_job_id=None, url=...)`
+  == JobHunter's exported id.
+- Live pre-submit synthetic mutation on the real Carta Greenhouse form:
+  `python -m universal_auto_applier live-synthetic-mutation --application-id
+  869bbd6e4ab4 --headless --timeout-ms 60000` (temp data dir,
+  `UAA_LIVE_SYNTHETIC_MUTATION=true`, real submission off) → ATS reached,
+  19 fields extracted, synthetic CV uploaded (`input[id='resume']`,
+  "approved synthetic document"), `plan_hash=b6763fd5`, 2-pass plan chain
+  (`plan_chain_hashes=2`, chain hash `1101539781`), interlock
+  `installed=True blocked=0` all-zero counters, **`submitted=false`**, stopped
+  `required_fields_unresolved` (`needs_user_input`). Cover-letter upload hit a
+  Playwright locator timeout (hidden remix required-input shadowing) and the
+  "Location (City)" field was mis-targeted to the file input; both are
+  recorded as deferred field-mapping weaknesses — the run stopped safely.
+  Artifacts under `uaa_data/live-runs/869bbd6e4ab4-20260818T153838773260Z/`
+  (report.json, mutation-plan.json + pass-1, trace.zip, screenshots).
 
 Milestone: Live real-ATS synthetic mutation proof (pre-submit) — DONE
 - Queue/store seeding via the production CLI (`queue-import`): synthetic probe
@@ -226,6 +293,20 @@ Implementation milestone shipped as commit `417ce97` (pushed, verified):
 
 ## Changed files
 
+- `src/universal_auto_applier/synthetic_profile.py`
+  (`is_synthetic_identity_snapshot`, `stamp_synthetic_mutation_metadata`)
+- `src/universal_auto_applier/application_queue/importer.py`
+  (`import_queue_file(synthetic_mutation=...)`, `_stamp_synthetic_mutation`)
+- `src/universal_auto_applier/services/queue_import_service.py`
+  (`run`/`_run_import` propagate `synthetic_mutation`)
+- `src/universal_auto_applier/cli.py` (`queue-import --synthetic-mutation`)
+- `tests/contract/test_importer.py` (stamp/refuse/no-flag tests)
+- `tests/contract/test_queue_import_service.py` (opt-in propagate/refuse)
+- `tests/integration/test_queue_import_api.py` +
+  `tests/integration/test_queue_import_concurrency.py` (mock signatures
+  updated for the new `_run_import` param)
+- `tests/unit/test_main_cli_dispatch.py` (parser flag test)
+- `tests/unit/test_wq7_synthetic_profile.py` (stamp unit tests)
 - `docs/evidence/wq-7c/MANIFEST.md` (NEW)
 - `src/universal_auto_applier/navigator/apply_path_finder.py` (captcha widget
   selector + widget-frame text skip + payment `cards[` exclusion)
@@ -250,6 +331,20 @@ Implementation milestone shipped as commit `417ce97` (pushed, verified):
 
 ## Tests and exact results
 
+Full local gate (all green) at commit `6462402` (vertical slice):
+- `ruff check src tests migrations` — pass.
+- `ruff format --check src tests migrations` — 202 files clean.
+- `pyright` — 0 errors, 0 warnings, 0 informations.
+- `pytest -q` (default, non-live) — **1513 passed, 3 skipped** + 5 initial
+  failures in queue-import concurrency mocks (their `_run_import` fakes did
+  not accept the new third param); after updating the mock signatures:
+  `tests/integration/test_queue_import_api.py` +
+  `test_queue_import_concurrency.py` → **25 passed**. Target suites
+  (importer, queue_import_service, cli dispatch, wq7 synthetic profile)
+  → **68 passed**.
+- `git diff --check` — clean; untracked `tmp_debug_status.py`,
+  `tmp_debug_status/`, `tmp_final_pipeline/` preserved.
+
 Full local gate (all green) at commit `162233d` (latest pushed milestone):
 - `ruff check src tests migrations` — pass.
 - `ruff format --check src tests migrations` — 202 files clean.
@@ -272,6 +367,22 @@ Full local gate (all green) at commit `417ce97`:
   `tmp_debug_status.py`, `tmp_debug_status/`, `tmp_final_pipeline/` preserved.
 
 ## Decisions made
+
+- Deliver the vertical-slice cross-boundary markers as a UAA-side opt-in
+  (`queue-import --synthetic-mutation`) rather than editing JobHunter —
+  satisfies "JobHunter untouched" and keeps marker stamping identity-guarded.
+- The synthetic persona was changed from "working student" to a senior
+  Account Executive (same Test Candidate / test.candidate@example.com identity)
+  so the unchanged evaluator emits `recommendation: apply` (5/5) against the
+  Carta full-time senior AE JD; only the persona text changed, never UAA or
+  JobHunter code, and the identity contract is unchanged.
+- Field-resolution weaknesses observed in the live run (cover-letter upload
+  locator timeout; "Location (City)" mis-targeted to the file input;
+  "current position" mis-mapped to the eligibility question) are recorded as
+  deferred — do NOT open a field-mapping workpackage now.
+- Use JobHunter's normal pipeline.md-driven flow for the Carta row to get
+  proper company/title (avoids the `--url` "Unknown" fallback) while still
+  letting JobHunter, unchanged, do discovery-input→evaluation→tailoring→export.
 
 - Deliver WQ-7C as a new distinct opt-in mode; recon-only (WQ-7B) is NOT
   converted into a fill mode.
@@ -303,15 +414,15 @@ Full local gate (all green) at commit `417ce97`:
 
 ## Exact next action
 
-1. **Vertical slice** (remaining): JobHunter → synthetic CV → queue → import →
-   orchestrate (application_id trace) without editing JobHunter production
-   code; STOP and report if a JobHunter change would be needed.
-2. Collect any remaining sanitized evidence under `docs/evidence/wq-7c/` (no
-   cookies/tokens/sessions/raw HTML dumps) — live-proof manifest already
-   written.
-3. Update `docs/CURRENT_STATE.md`, `docs/WQ7_LOCAL_LIVE_RUN.md`,
+1. **Evidence finalization** — add sanitized vertical-slice evidence under
+   `docs/evidence/wq-7c/` (no cookies/tokens/sessions/raw HTML dumps): the
+   exported queue record's application_id, the UAA query result showing the
+   same application_id + markers, an artifact summary of the live run
+   (plan hash, chain hash, uploads, interlock counters, `submitted=false`),
+   plus the deferred field-mapping notes.
+2. Update `docs/CURRENT_STATE.md`, `docs/WQ7_LOCAL_LIVE_RUN.md`,
    `docs/NEXT_WORKPACKAGES.md`.
-4. Open ONE PR against `main` via GitHub REST API; wait for six CI checks on
+3. Open ONE PR against `main` via GitHub REST API; wait for six CI checks on
    the final SHA; do not merge.
 
 ## Rules
