@@ -4,11 +4,17 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
 from universal_auto_applier.synthetic_profile import (
+    SyntheticMutationProfile,
     SyntheticProfile,
     create_synthetic_documents,
     generate_synthetic_cover_letter,
     generate_synthetic_cv,
+    is_synthetic_identity_snapshot,
+    is_synthetic_metadata,
+    stamp_synthetic_mutation_metadata,
 )
 
 
@@ -116,3 +122,52 @@ class TestSyntheticDocuments:
         cv_path, cover_path = create_synthetic_documents(tmp_path / "docs")
         assert tmp_path in cv_path.parents
         assert tmp_path in cover_path.parents
+
+
+class TestSyntheticMutationStamp:
+    """WQ-7C opt-in stamping: identity-guarded synthetic markers."""
+
+    def _matching_snapshot(self) -> dict[str, object]:
+        profile = SyntheticMutationProfile()
+        return {
+            "full_name": profile.full_name,
+            "first_name": profile.first_name,
+            "last_name": profile.last_name,
+            "email": profile.email,
+            "phone": profile.phone,
+            "city": profile.city,
+            "country": profile.country,
+        }
+
+    def test_stamp_matching_identity(self) -> None:
+        metadata = {"candidate_profile": self._matching_snapshot()}
+        stamped = stamp_synthetic_mutation_metadata(metadata)
+        assert stamped is not metadata
+        assert stamped["candidate_profile"]["synthetic_test"] is True
+        assert stamped["candidate_profile"]["wq7_synthetic"] is True
+        assert is_synthetic_metadata(stamped) is True
+
+    def test_refuses_mismatched_email(self) -> None:
+        snapshot = self._matching_snapshot()
+        snapshot["email"] = "real.person@example.com"
+
+        with pytest.raises(ValueError, match="refusing to stamp"):
+            stamp_synthetic_mutation_metadata({"candidate_profile": snapshot})
+
+    def test_refuses_mismatched_name(self) -> None:
+        snapshot = self._matching_snapshot()
+        snapshot["full_name"] = "Real Person"
+
+        with pytest.raises(ValueError, match="refusing to stamp"):
+            stamp_synthetic_mutation_metadata({"candidate_profile": snapshot})
+
+    def test_refuses_missing_snapshot(self) -> None:
+
+        with pytest.raises(ValueError, match="refusing to stamp"):
+            stamp_synthetic_mutation_metadata({})
+
+    def test_identity_snapshot_recognition(self) -> None:
+        assert is_synthetic_identity_snapshot(self._matching_snapshot()) is True
+        assert is_synthetic_identity_snapshot({"full_name": "X", "email": "y@z.com"}) is False
+        assert is_synthetic_identity_snapshot("not a dict") is False
+        assert is_synthetic_identity_snapshot(None) is False

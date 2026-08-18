@@ -37,6 +37,19 @@ def test_cli_commands_are_registered_commands() -> None:
     assert CLI_COMMANDS == frozenset(_registered_commands())
 
 
+def test_queue_import_exposes_synthetic_mutation_opt_in() -> None:
+    """``queue-import --synthetic-mutation`` must parse (WQ-7C opt-in stamp)."""
+    parser = _build_parser()
+    args = parser.parse_args(
+        ["queue-import", "--path", "C:/tmp/queue.jsonl", "--synthetic-mutation"]
+    )
+    assert args.command == "queue-import"
+    assert args.synthetic_mutation is True
+
+    args_bare = parser.parse_args(["queue-import"])
+    assert args_bare.synthetic_mutation is False
+
+
 @pytest.mark.parametrize("command", sorted(CLI_COMMANDS))
 def test_python_m_dispatches_every_cli_command(
     command: str,

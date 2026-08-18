@@ -109,10 +109,12 @@ class _BlockingImport:
     def __enter__(self) -> _BlockingImport:
         original = self._original
 
-        def blocking_run_import(source: Path, trigger: str) -> Any:  # noqa: ARG001
+        def blocking_run_import(
+            source: Path, trigger: str, synthetic_mutation: bool = False
+        ) -> Any:  # noqa: ARG002
             self.acquired_event.set()
             self.block_event.wait(timeout=10)
-            return original(source, trigger)
+            return original(source, trigger, synthetic_mutation)
 
         self._service._run_import = blocking_run_import  # type: ignore[method-assign]  # noqa: SLF001
         return self
@@ -201,12 +203,12 @@ class TestDeterministicConcurrency:
         original = service._run_import  # noqa: SLF001
         call_count = 0
 
-        def failing_then_ok(source: Path, trigger: str) -> Any:
+        def failing_then_ok(source: Path, trigger: str, synthetic_mutation: bool = False) -> Any:
             nonlocal call_count
             call_count += 1
             if call_count == 1:
                 raise RuntimeError("simulated crash")
-            return original(source, trigger)
+            return original(source, trigger, synthetic_mutation)
 
         service._run_import = failing_then_ok  # type: ignore[method-assign]  # noqa: SLF001
         try:
@@ -225,7 +227,7 @@ class TestDeterministicConcurrency:
         service: QueueImportService = queue_client.app.state.queue_import_service  # type: ignore[union-attr]
         original = service._run_import  # noqa: SLF001
 
-        def always_raise(source: Path, trigger: str) -> Any:  # noqa: ARG001
+        def always_raise(source: Path, trigger: str, synthetic_mutation: bool = False) -> Any:  # noqa: ARG001, ARG002
             raise RuntimeError("direct crash")
 
         service._run_import = always_raise  # type: ignore[method-assign]  # noqa: SLF001

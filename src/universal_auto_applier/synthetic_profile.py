@@ -280,6 +280,55 @@ def is_synthetic_metadata(metadata: dict[str, Any] | None) -> bool:
     return bool(snapshot_typed.get("synthetic_test") or snapshot_typed.get("wq7_synthetic"))
 
 
+def is_synthetic_identity_snapshot(snapshot: Any) -> bool:
+    """True when ``candidate_profile`` matches the WQ-7C synthetic identity.
+
+    Both the full name and the RFC 2606 email must match
+    :class:`SyntheticMutationProfile` exactly. This is the identity guard
+    for the opt-in ``queue-import --synthetic-mutation`` stamp: markers are
+    only ever written onto a snapshot that already IS the synthetic identity.
+    """
+    if not isinstance(snapshot, dict):
+        return False
+    snapshot_typed: dict[str, object] = cast(dict[str, object], snapshot)
+    return bool(
+        snapshot_typed.get("full_name") == SyntheticMutationProfile.full_name
+        and snapshot_typed.get("email") == SyntheticMutationProfile.email
+    )
+
+
+def stamp_synthetic_mutation_metadata(metadata: dict[str, Any]) -> dict[str, Any]:
+    """Return a copy of ``metadata`` with WQ-7C synthetic markers stamped.
+
+    Only stamps when the ``candidate_profile`` snapshot already matches the
+    WQ-7C synthetic identity (see :func:`is_synthetic_identity_snapshot`).
+    Marker stamping is opt-in (``queue-import --synthetic-mutation``); it is
+    never applied to a snapshot that could belong to a real candidate.
+
+    Returns:
+        A shallow-copied ``metadata`` dict whose ``candidate_profile`` carries
+        ``synthetic_test=True`` and ``wq7_synthetic=True``.
+
+    Raises:
+        ValueError: If the snapshot is missing, not a dict, or does not match
+            the WQ-7C synthetic identity.
+    """
+    snapshot = metadata.get("candidate_profile")
+    if not is_synthetic_identity_snapshot(snapshot):
+        raise ValueError(
+            "candidate_profile does not match the WQ-7C synthetic identity "
+            f"({SyntheticMutationProfile.full_name} / {SyntheticMutationProfile.email}); "
+            "refusing to stamp synthetic-mutation markers"
+        )
+    snapshot_typed = cast(dict[str, object], snapshot)
+    stamped_snapshot: dict[str, object] = dict(snapshot_typed)
+    stamped_snapshot["synthetic_test"] = True
+    stamped_snapshot["wq7_synthetic"] = True
+    stamped_metadata: dict[str, Any] = dict(metadata)
+    stamped_metadata["candidate_profile"] = stamped_snapshot
+    return stamped_metadata
+
+
 def generate_synthetic_cv(output_path: Path) -> Path:
     """Generate a synthetic CV PDF with visible TEST DATA marking.
 
@@ -379,6 +428,8 @@ __all__ = [
     "generate_synthetic_cv",
     "generate_synthetic_mutation_cover",
     "generate_synthetic_mutation_cv",
+    "is_synthetic_identity_snapshot",
     "is_synthetic_metadata",
     "sha256_file",
+    "stamp_synthetic_mutation_metadata",
 ]

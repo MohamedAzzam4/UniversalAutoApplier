@@ -328,6 +328,104 @@ class TestImportResultStructure:
         assert isinstance(result.errors[0], ImportRowError)
 
 
+class TestSyntheticMutationStamping:
+    """WQ-7C opt-in ``synthetic_mutation`` stamping, identity-guarded."""
+
+    def _synthetic_line(
+        self,
+        *,
+        full_name: str = "Test Candidate",
+        email: str = "test.candidate@example.com",
+        external_job_id: str = "syn-1",
+    ) -> str:
+        application_id = compute_application_id(
+            platform="greenhouse", external_job_id=external_job_id, url="https://example.com/syn/1"
+        )
+        data = {
+            "application_id": application_id,
+            "platform": "greenhouse",
+            "source": "greenhouse",
+            "company": "Carta",
+            "title": "Account Executive, Legal Services",
+            "url": "https://example.com/syn/1",
+            "location": "London",
+            "job_description": "Full JD",
+            "score": 5.0,
+            "verdict": "apply",
+            "cv_pdf": None,
+            "cover_letter_pdf": None,
+            "status": "evaluated",
+            "external_job_id": external_job_id,
+            "metadata": {
+                "candidate_profile": {
+                    "full_name": full_name,
+                    "first_name": full_name.split()[0],
+                    "last_name": full_name.split()[-1],
+                    "email": email,
+                    "phone": "+1 555 0199",
+                    "current_position": "Senior Account Executive",
+                    "city": "Test City",
+                    "country": "Syntheticland",
+                }
+            },
+        }
+        return json.dumps(data)
+
+    def test_matching_identity_is_stamped(self, tmp_path: Path, session_factory) -> None:
+        queue_path = tmp_path / "queue.jsonl"
+        queue_path.write_text(self._synthetic_line() + "\n", encoding="utf-8")
+
+        result = import_queue_file(queue_path, session_factory, synthetic_mutation=True)
+
+        assert result.imported == 1
+        assert result.skipped == 0
+        assert len(result.errors) == 0
+        with session_factory() as session:
+            job = get_application_job(
+                session,
+                compute_application_id(
+                    platform="greenhouse", external_job_id="syn-1", url="https://example.com/syn/1"
+                ),
+            )
+        assert job is not None
+        snapshot = job.metadata["candidate_profile"]
+        assert snapshot["synthetic_test"] is True
+        assert snapshot["wq7_synthetic"] is True
+
+    def test_mismatched_identity_is_refused(self, tmp_path: Path, session_factory) -> None:
+        queue_path = tmp_path / "queue.jsonl"
+        queue_path.write_text(
+            self._synthetic_line(full_name="Real Person", email="real.person@example.com") + "\n",
+            encoding="utf-8",
+        )
+
+        result = import_queue_file(queue_path, session_factory, synthetic_mutation=True)
+
+        assert result.imported == 0
+        assert result.skipped == 1
+        assert len(result.errors) == 1
+        assert "synthetic-mutation stamp refused" in result.errors[0].error
+
+    def test_without_flag_never_stamps(self, tmp_path: Path, session_factory) -> None:
+        queue_path = tmp_path / "queue.jsonl"
+        queue_path.write_text(self._synthetic_line() + "\n", encoding="utf-8")
+
+        result = import_queue_file(queue_path, session_factory)
+
+        assert result.imported == 1
+        with session_factory() as session:
+            job = get_application_job(
+                session,
+                compute_application_id(
+                    platform="greenhouse", external_job_id="syn-1", url="https://example.com/syn/1"
+                ),
+            )
+        assert job is not None
+        snapshot = job.metadata["candidate_profile"]
+        assert snapshot.get("synthetic_test") is None
+        assert snapshot.get("wq7_synthetic") is None
+
+
 # ---------------------------------------------------------------------------
 # Helper
 # ---------------------------------------------------------------------------

@@ -59,6 +59,15 @@ def _build_parser() -> argparse.ArgumentParser:
         type=Path,
         help="Optional operator-supplied absolute queue path overriding the configured one.",
     )
+    queue_import.add_argument(
+        "--synthetic-mutation",
+        action="store_true",
+        help=(
+            "WQ-7C opt-in: stamp synthetic_test/wq7_synthetic markers on every "
+            "row whose candidate snapshot already IS the WQ-7C synthetic identity "
+            "(Test Candidate / test.candidate@example.com). Any other row is refused."
+        ),
+    )
 
     session = subparsers.add_parser(
         "browser-session",
@@ -561,7 +570,9 @@ def _queue_import(settings: Settings, args: argparse.Namespace) -> int:
     """Import the configured queue through the named import service (WQ-3).
 
     Prints counts and structured row errors. This command never launches a
-    browser and never starts the pipeline.
+    browser and never starts the pipeline. With ``--synthetic-mutation``,
+    rows whose candidate snapshot matches the WQ-7C synthetic identity are
+    stamped with the synthetic markers (identity-guarded per row).
     """
     from universal_auto_applier.services.queue_import_service import (
         QueueImportConcurrentError,
@@ -573,7 +584,11 @@ def _queue_import(settings: Settings, args: argparse.Namespace) -> int:
     try:
         service = QueueImportService(settings, session_factory)
         try:
-            summary = service.run(path=args.path, trigger="cli")
+            summary = service.run(
+                path=args.path,
+                trigger="cli",
+                synthetic_mutation=getattr(args, "synthetic_mutation", False),
+            )
         except QueueImportConfigurationError as exc:
             print(f"error: {exc}", file=sys.stderr)
             return 2
