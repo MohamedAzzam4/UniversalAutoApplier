@@ -1,648 +1,339 @@
-# Active Workpackage — WQ-7C (MERGED / COMPLETE)
+# Active Workpackage — WQ-8 (IN PROGRESS)
 
-- **WP ID:** WQ-7C — Controlled Synthetic ATS Mutation + End-to-End Vertical Slice.
-- **Status:** **MERGED / COMPLETE** — the full-system same-job proof (normal
-  JobHunter discovery → Robco/Ashby pre-submit mutation) was reviewed,
-  accepted by the owner, and merged to `main` via **PR #15** (head
-  `395b7dc…`, merge commit `2ac1e00…`). WQ-7C's six final CI checks all passed
-  on the PR head (Linux 3.11/3.12/3.13/3.14, Windows Core, Windows Playwright).
-  Final local gates: `ruff` pass, `pyright` 0/0/0, non-live/non-playwright
-  **1258 passed** / 272 deselected, Playwright **269 passed**. Evidence:
-  `docs/evidence/wq-7c/FINAL_ACCEPTANCE.md`, `FULL_SAME_JOB_CLOSURE.md`,
-  `MANIFEST.md`. `submitted=false`, submit interlock all-zero, **zero real
-  applications submitted**. WQ-8 is NOT started. The implementation branch
-  `checkpoint/wq-7c-synthetic-mutation` is preserved (do not delete). Superseded
-  intermediate decisions are explicitly marked below and remain audit history.
+- **WP ID:** WQ-8 — One staged, owner-approved, controlled real application
+  submission.
+- **Status:** **IN PROGRESS** (Phase A: prepare + review packet). Branch just
+  created from `origin/main`; no code changes yet. WQ-8 succeeds the accepted
+  WQ-7C pre-submit proof (merged via PR #15, merge `2ac1e00`; post-merge
+  closure merged via PR #16, merge `76b2e1f`). **No real application has ever
+  been submitted** from any UAA run (CI, sandbox, or proof runs).
 - **Repository:** `MohamedAzzam4/UniversalAutoApplier`.
-- **PR:** **#15 — MERGED** (`https://github.com/MohamedAzzam4/UniversalAutoApplier/pull/15`,
-  head `395b7d…`, merge commit `2ac1e00…`, closed via the standard GitHub
-  merge-commit merge).
-- **Branch:** `checkpoint/wq-7c-synthetic-mutation`.
-- **Base SHA:** resolve dynamically (see command block below). The branch was
-  created from the exact `origin/main` at WQ-7C start — the PR #14 merge
-  `b5e1532f763b5c5f4e86d36061d7f175158415c8` (WQ-7B post-merge closure), with
-  the WQ-7B closure commit `5b498c863d2df7a57d9a706521cf76a8d876bae8` and
-  the PR #13 WQ-7B implementation merge `cab7a13` as ancestors.
-- **Prerequisites verified at start:** origin/main contained merged PR #13
-  (WQ-7B implementation, merge `cab7a13`) and the merged post-merge closure
-  PR #14 (commit `5b498c8`) as an ancestor; `ACTIVE_WORKPACKAGE.md` showed
-  WQ-7B `MERGED/COMPLETE` and `WQ-7C: NOT started`. Verified via
-  `git merge-base --is-ancestor 5b498c8 origin/main` → true.
-- **Last completed/checkpoint SHA:** resolve dynamically (see command block).
+- **PR:** none yet (do NOT open/merge a WQ-8 PR without explicit owner/reviewer
+  authorization).
+- **Branch:** `checkpoint/wq-8-controlled-real-submission`.
+- **Base SHA:** `76b2e1f166dd56398e7234c733ca24d703d0194a` — the `origin/main`
+  HEAD (PR #16 merge) this branch was created from. Verify dynamically; do not
+  trust an embedded SHA.
 - **Branch-head verification (run dynamically; do not trust an embedded SHA):**
 
   ```text
   git fetch origin
   git rev-parse HEAD
-  git rev-parse origin/checkpoint/wq-7c-synthetic-mutation
+  git rev-parse origin/checkpoint/wq-8-controlled-real-submission
   ```
 
   The two resolved values must match before handoff/review.
-- **Prior checked-in milestone:** Live real-ATS synthetic mutation proof
-  (pre-submit). Two UAA detector defects found during the proof and fixed with
-  hermetic regressions + full gates + push before continuing:
-  1. **Greenhouse invisible reCAPTCHA badge** — every Greenhouse board renders a
-     fixed off-screen `grecaptcha-badge` (`size=invisible`); Playwright reports
-     it visible and its anchor-frame body text ("protected by reCAPTCHA")
-     matched `_CAPTCHA_TERMS`, so **every** Greenhouse form was misclassified
-     `captcha_detected`. Fixed in two commits (`fd155f6`, `aae24d0`):
-     captcha widget selector excludes `size=invisible` iframes, and
-     `analyze_page` skips text from anti-bot widget frames.
-  2. **Lever `cards[...]` payment false positive** — Lever names form sections
-     `name="cards[<uuid>][fieldN]"`; `input[name*='card' i]` matched and
-     reported `payment_required`. Fixed (`162233d`): payment selector excludes
-     `cards[` array-group convention (`:not([name*='cards[' i])`).
-  Both defects were reproduced, fixed minimally, regression-tested hermetically
-  (fixtures + playwright tests, keeping genuine captcha/payment blockers
-  intact), and pushed; local HEAD == origin HEAD each time.
-  Live proof results (both pre-submit, `submitted=false`): Greenhouse Carta
-  (19 fields planned / 10 filled, 1 synthetic CV upload, 2-pass plan chain,
-  stopped `required_fields_unresolved`); Lever Apply Digital (21 fields filled,
-  2 synthetic CV uploads, 2-pass plan chain, interlock blocked 1 Lever-page
-  `form.submit()`, stopped `required_fields_unresolved`). Anthropic Greenhouse
-  target superseded by Carta after Defect 1. Evidence manifest:
-  `docs/evidence/wq-7c/MANIFEST.md`.
-- **Last checked-in milestone:** End-to-end vertical slice (milestone 9) — DONE
-  at `6462402` (pushed, local==origin==`64624026a2507d84b024a5024820335155c8fe2e`).
-  Unchanged JobHunter evaluated the real Carta Greenhouse posting via its normal
-  pipeline (`data/pipeline.md` → `run_evaluate.py --next --threshold 3.0
-  --german-policy accept_all`) with a fully synthetic senior-AE persona:
-  **score 5/5, recommendation apply**, tailored CV + cover PDFs generated. The
-  normal `run_export_queue.py` exported `data/application_queue.jsonl` with
-  `application_id=869bbd6e4ab460259cceb30f8996599dd6216091f7ecada7688b64cd9278d485`
-  (`platform=greenhouse`, `external_job_id=null` → canonical-URL identity).
-  A UAA-side opt-in `queue-import --synthetic-mutation` stamps
-  `synthetic_test`/`wq7_synthetic` onto `metadata.candidate_profile` ONLY when
-  the snapshot already matches the WQ-7C synthetic identity (Test Candidate /
-  test.candidate@example.com); any other row is refused. Import in a temp data
-  dir (`uaa_data`) produced the **same application_id** in UAA's DB with both
-  markers present, status `ready_to_apply`. `live-synthetic-mutation --headless`
-  against the Carta Greenhouse form reached the ATS, extracted 19 fields,
-  uploaded the approved synthetic CV (`input[id='resume']`), recorded
-  `plan_hash=b6763fd5`, 2-pass plan chain `1101539781`, interlock installed with
-  all-zero counters, **`submitted=false`**, stopped `required_fields_unresolved`
-  (visa/LinkedIn/work-history/demographic never auto-answered — correct).
-- **Last updated:** 2026-08-20 (post-merge closure).
+- **Last updated:** 2026-08-20 (WQ-8 initial handoff checkpoint).
 
 ## Objective
 
-Prove that UniversalAutoApplier can safely perform REAL browser mutation on a
-REAL public ATS form using ONLY synthetic candidate data and synthetic
-documents, while making final application submission technically impossible.
-Also prove at least one end-to-end vertical slice:
+On the user's machine, execute **exactly one** manually approved real job
+application submission through the complete normal workflow
+(JobHunter discovery/evaluation/tailoring/export → UAA import/orchestration →
+ATS navigation → field fill → real document upload → **owner-approved
+single-use authorization** → ONE controlled submit), then prove the WQ-1
+status transitions (`REVIEW_READY → SUBMITTED`, `APPLIED` only with a
+structured ATS reference), truthful post-submit classification, sanitized
+evidence, and duplicate prevention.
 
-`JobHunter → real job discovery/evaluation → tailoring → synthetic tailored CV →
-application_queue.jsonl → UAA queue import → UAA orchestration → real ATS
-navigation → schema extraction → field resolution → synthetic field fill →
-synthetic document upload → STOP BEFORE SUBMISSION`.
+WQ-8 is split into two owner-controlled phases:
 
-WQ-7C is NOT a real application-submission workpackage.
+- **Phase A (this session's deliverable):** prepare everything — real job
+  selected through the normal workflow to `review_ready`, final `review_plan_hash`
+  frozen, single-use authorization designed/implemented/hermetically tested,
+  full local gates green, sanitized review packet written — then **STOP**.
+  Phase A ends by returning a review packet ending with
+  `WQ-8 OWNER APPROVAL REQUIRED`. The agent never proceeds past this gate
+  autonomously.
+- **Phase B (only after explicit owner approval):** the owner issues an
+  approval matching the exact `application_id` + `review_plan_hash`; the
+  single-use authorization is enabled and consumed for exactly one intentional
+  submit; outcome is truthfully classified; evidence is written under
+  `docs/evidence/wq-8/`.
 
-## Synthetic-only policy (non-negotiable)
+## Owner contract (authoritative for WQ-8)
 
-- Synthetic text entry, select/radio/checkbox selection, and synthetic document
-  upload are allowed.
-- **Forbidden:** final submit, review-and-submit, application confirmation,
-  account creation, login, SSO, CAPTCHA solving/bypass, anti-bot bypass,
-  authenticated LinkedIn/Easy Apply, use of any real candidate data, cookies/
-  profile/session reuse, weakening any submit interlock, disabling blocker
-  detection to make a live run succeed, modifying a third-party page to bypass
-  its safety state.
-- If CAPTCHA, login, account creation, or a security wall is present BEFORE
-  mutation: DO NOT FILL. Record the blocker and stop.
-- Recon-only logic that may observe a form containing a blocker must NOT be
-  reused as justification to fill that form.
+Issued by the owner this session; supersedes the brief WQ-8 entry in
+`docs/NEXT_WORKPACKAGES.md` and any older planning text.
 
-## Submit prohibition
+### Absolute submission limit
 
-- No code path in this workpackage may click a final submit, call
-  `form.submit()` / `requestSubmit()`, dispatch a synthetic submit event, or
-  perform an application-completion navigation.
-- The mutation run installs and verifies the browser-side submit interlock
-  BEFORE the first field mutation and keeps it armed throughout.
-- Any unexpected submission signal → block it, stop immediately, capture
-  evidence, classify the run.
+- **Exactly ONE real application submission total for the whole WQ-8.** This
+  limit is absolute. Ambiguous attempts count conservatively against the
+  limit; on any ambiguity **STOP** and record `submission_unknown`
+  (block automatic action). Never auto-retry.
+- Phase B may only happen after explicit owner approval that matches the exact
+  `application_id` AND the exact frozen `review_plan_hash`. If anything changes
+  (contents, CV, application, target URL, hash, page), the approval is invalid
+  and WQ-8 returns to Phase A. A generic instruction to "finish WQ-8" /
+  "continue" does **NOT** authorize submission. Approval cannot be delegated
+  to any AI.
+
+### Real candidate data policy
+
+- Only the approved real candidate profile/CV configuration may be used.
+- Never fabricate candidate facts; missing information → skip /
+  intervention / explicit owner input.
+- **Never commit** real CV, email, phone, address, LinkedIn, GitHub, or
+  artifacts to git. Committed WQ-8 evidence must be sanitized/redacted
+  (placeholders + hashes for sensitive values).
+
+### Job targeting
+
+- ONE real, currently-open Germany Working Student / Werkstudent / Student
+  Assistant role (AI/ML/Data/Python-data preferred), found via the **normal
+  JobHunter workflow** (ordinary discovery/evaluation/tailoring → export).
+  No fabricated queue rows; no manual score edits; **no JobHunter production
+  code changes.**
+- Prefer a safe, simple ATS already exercised in WQ-7C (e.g. Ashby/GH-style
+  public anonymous form, no login/CAPTCHA).
+- Any security wall/consent overlay/login/CAPTCHA before the form → record and
+  STOP for that target (never bypass).
+
+### Authorization design (implementation requirement)
+
+- Tightly scoped single-use real-submission authorization.
+- Bound to: `application_id`, job/company identity, target ATS URL,
+  final `review_plan_hash`, CV/document SHA-256 hashes, expiration,
+  one-time state.
+- Default = submission forbidden. Authorization consumed immediately when
+  submission initiates. **Exactly one** controlled submit path (no
+  `form.submit()` / `requestSubmit()` / dispatch-event bypass).
+- Do NOT remove the WQ-7 submit interlock; the interlock remains default
+  armed, and the authorized submit uses the existing controlled path
+  (`SubmissionCoordinator` is the single entry point that may click the final
+  submit control). Unexpected ATS submit before authorization → BLOCK and STOP.
+- Coexist with synthetic mode: synthetic mutation and real submission remain
+  mutually exclusive.
+
+### Post-submit classification (truthful only)
+
+- `submitted_confirmed` / `submission_rejected` / `submission_unknown` /
+  `submission_blocked_before_attempt`.
+- "Button clicked" is never proof of submission — classification must come
+  from authoritative evidence (confirmation page/URL, ATS reference,
+  recognized success state).
+- Use the existing state machine (`core/statuses.py`): `REVIEW_READY →
+  SUBMITTED`; `APPLIED` only with a structured ATS reference; `outcome_unknown
+  → NEEDS_REVIEW`. No new parallel state machine. DB-vs-external mismatch is a
+  defect — report it.
+
+### Hermetic tests (required BEFORE any live prep)
+
+Real submission off by default; synthetic and real mutually exclusive; exact
+`application_id` + exact `review_plan_hash` + one-time authorization
+enforced; expired/wrong authorization rejected; changed CV/document/job/URL
+invalidates authorization; duplicate / `submission_unknown` blocks retry;
+second submit rejected; arbitrary submit bypass impossible; non-final controls
+cannot consume the authorization; deterministic transitions; timeout = no
+retry; default CI never submits.
+
+### Evidence
+
+Sanitized evidence under `docs/evidence/wq-8/`: run IDs, timestamps, job/
+company, ATS, `application_id`, `review_plan_hash`, document hashes, field
+categories/sources, approvals proof reference, authorization lifecycle,
+submit-attempt count, classification, DB transition, duplicate protection,
+screenshot hashes. Never commit real PII, cookies, browser profiles, tokens,
+session storage, or raw sensitive HTML.
+
+### Gates before Phase A stops
+
+All local gates green (ruff check, ruff format --check, pyright, non-live
+non-playwright pytest, playwright pytest, `git diff --check`), exact job in
+`review_ready`, real form reached, real CV uploaded, unresolved/high-risk
+handled, `review_plan_hash` frozen, duplicate/submission-history check clean,
+authorization DISABLED, review packet ready.
+
+### Git policy for WQ-8
+
+Push checkpoints after deterministic milestones (initial handoff included);
+verify local == remote; never reset/clean/rebase/amend/force-push; never push
+to `main`; do NOT open/merge the WQ-8 PR without owner/reviewer authorization;
+do not merge into `main` directly. Preserve untracked `tmp_debug_status.py`,
+`tmp_debug_status/`, `tmp_final_pipeline/`.
+
+### Out of scope
+
+No WQ-9 hardening, no embeddings, no field-mapping redesign, no mass
+submission. Do not start other workpackages during WQ-8.
+
+## Existing authorization surface (verified this session)
+
+The controlled-submission stack already provides a strong base that WQ-8 will
+tighten, NOT redesign:
+
+- `submission/models.py`: `SubmissionSnapshot` (deterministic
+  `form_fingerprint` = form structure; `snapshot_hash` = full state incl.
+  values, document content hashes, URL, pending interventions),
+  `SubmissionApproval` (one-time, tied to `application_id` +
+  `snapshot_hash`, consumed after a click, revocable), `SubmissionClaim`
+  (one-time transactional lock against duplicate clicks, consumed after the
+  outcome is recorded), `SubmissionResult` + `SubmissionResultState`
+  (8 terminal states incl. `submitted_confirmed`, `outcome_unknown`,
+  `already_submitted`, `approval_stale`, `submit_control_ambiguous`,
+  `submission_not_allowed`, `validation_failed`, `blocked_user_action`).
+- `submission/coordinator.py`: `SubmissionCoordinator` is the SINGLE entry
+  point that clicks a final submit control; gates are feature kill switch
+  (`settings.enable_real_submission`), active approval, snapshot hash + form
+  fingerprint match, no pending interventions, no unresolved required fields,
+  no unconfirmed high-risk answers, exactly one unambiguous visible/enabled
+  submit control, no unconsumed claim, no consumed `outcome_unknown`, job not
+  already submitted/applied, browser still on approved `application_url`;
+  pre-submit screenshot → click ONCE → bounded confirmation window →
+  post-submit evidence → classify → consume claim+approval → record result.
+- `submission/store.py` + `persistence/models.py`: `SubmissionApprovalRow`,
+  `SubmissionClaimRow`, `SubmissionResultRow`; compare-and-set one-time
+  approval consumption, transactional claim acquisition, idempotent result
+  recording, revocation.
+- `submission/execution_service.py`: shared controlled-submission entry used
+  by CLI `live-submit` and `POST /api/submit/{id}/submit`;
+  `BrowserContextFactory` dependency injection (Playwright default).
+- `submission/status_transitions.py`: WQ-1 policy — `submitted_confirmed →
+  SUBMITTED`; `+` structured `ats_reference_id → APPLIED`; `outcome_unknown →
+  NEEDS_REVIEW`; other states no transition.
+- `core/statuses.py`: `ApplicationStatus` enum incl. `REVIEW_READY`,
+  `SUBMITTED`, `NEEDS_REVIEW`, `APPLIED`; `TERMINAL_STATUSES`; allowed
+  transitions.
+- `browser/submit_interlock.py`: WQ-7 init-script interlock — capture-phase
+  submit blocking, `form.submit()`/`requestSubmit()` overrides,
+  `__wq7_counters` (incl. `navigation_attempts`, `uaa_submit_clicks`,
+  `submit_events`). To be kept armed; the authorized WQ-8 submit path must
+  coexist explicitly.
+
+### WQ-8 gap notes (to be closed in the implementation milestone)
+
+1. Approvals are matched by `snapshot_hash` + `application_id` today; WQ-8
+   requires the approval to additionally be bound to the frozen
+   `review_plan_hash` and to explicit CV/document SHA-256 hashes. The
+   `review_plan_hash` itself (final plan covering application_id, job target,
+   ATS target, planned answers/sources/options, submit control identity,
+   document hashes) is not currently persisted/compared.
+2. No expiration on approvals today (contract requires expiry + one-time).
+3. No absolute "one real submission ever" registry beyond per-job
+   status/claim/approval gates; WQ-8 must make the total one-submission limit
+   explicit and auditable (submit-attempt counter) and stop on any ambiguity.
+4. Classification vocab: contract terms `submitted_confirmed`,
+   `submission_rejected`, `submission_unknown`, `submission_blocked_before_attempt`
+   must map truthfully to the persisted `SubmissionResultState` values
+   (existing `submitted_confirmed`, `validation_failed`, `outcome_unknown`,
+   and the no-click blocked gates respectively).
+5. `UAA_ENABLE_REAL_SUBMISSION` exists as the kill switch; the WQ-8
+   authorization must be an additional, tighter control (single-use, bound to
+   `application_id` + `review_plan_hash` + URL + doc hashes + expiry), enabled
+   only for Phase B by the owner.
 
 ## Planned milestones
 
-1. Initial checkpoint (branch + handoff) — DONE.
-2. Exploration of production modules + WQ-7A/B infra — DONE.
-3. Synthetic identity contract + approved synthetic documents — DONE (commit
-   `417ce97`).
-4. Opt-in synthetic-mutation mode (`UAA_LIVE_SYNTHETIC_MUTATION`), config,
-   incompatibility with real submission, ephemeral browser, mutation budget and
-   interlock evidence — DONE (commit `417ce97`).
-5. Pre-mutation machine-readable plan (frozen/hashed) + field-resolution
-   correctness gate — DONE (commit `417ce97`).
-6. Field-mapper/embedding decision: NOT needed — the value allowlist + source
-   gating (`candidate_profile`/`document_path` only) gives precision without
-   embeddings; revisit only if a labelled-gap benchmark proves otherwise.
-7. Local/hermetic tests (unit + playwright fixture) proving every safety
-   requirement from the WQ-7C contract — DONE (commit `417ce97`).
-8. Live real-ATS mutation proof on currently-open public forms (target policy,
-   verify each target immediately, ≥2 platforms attempted, ≥1 completes) —
-   DONE (Greenhouse Carta + Lever Apply Digital; both reached mutation and
-   stopped pre-submit).
-9. End-to-end vertical slice across the JobHunter process boundary (no hand-
-   fabricated queue, no DB seeding, no JobHunter code changes; STOP if a
-   JobHunter change would be needed).
-10. Evidence under `docs/evidence/wq-7c/`, validation gates, docs updates.
-11. Final PR against `main` via GitHub REST API; six CI checks green; merge
-    via the standard GitHub merge-commit merge — DONE (PR #15, merge `2ac1e00`).
+1. Initial checkpoint (branch + WQ-8 handoff) — DONE (this commit).
+2. Finalize WQ-8 authorization design against the verified submission stack.
+3. Implement single-use authorization (application_id + review_plan_hash +
+   URL + doc hashes + expiry; consumed on initiation; default forbidden;
+   synthetic/real exclusivity kept).
+4. Hermetic tests proving every WQ-8 safety property above.
+5. Full local gate (ruff, pyright, pytest non-live/non-playwright, playwright,
+   git diff --check); push deterministic milestone; verify local==origin.
+6. Phase A live prep: choose target via normal JobHunter workflow; UAA through
+   to `review_ready` on the real form; real CV uploaded; handle
+   unresolved/high-risk; freeze `review_plan_hash`; duplicate check; authorize
+   disabled.
+7. Sanitized review packet (see contract); commit nothing sensitive.
+8. STOP — return `# WQ-8 Owner Review Packet` ending
+   `WQ-8 OWNER APPROVAL REQUIRED` with the exact approval command
+   (application_id + review_plan_hash).
+9. Phase B (only with owner approval): enable authorization, exactly one
+   submit, truthful classification, sanitized evidence, status transition
+   verification, duplicate-block verification, WQ-8 report.
+10. Final PR (only with owner/reviewer authorization to open/merge).
 
 ## Completed work
 
-Milestone: Synthetic orchestration opt-in + bounded full-chain live proof — DONE
-- Added the WQ-7C explicit opt-in to the WQ-6 orchestration service:
-  `OrchestrationRunRow.synthetic_orchestration` column (migration
-  `0014_orchestration_synthetic_mode`), `start(synthetic_orchestration=True)`,
-  `_validate_config(mode, synthetic_orchestration)` (rejects parallel mode,
-  rejects `UAA_ENABLE_REAL_SUBMISSION` and `UAA_LIVE_RECON_ONLY`, requires an
-  explicit absolute pre-existing `UAA_QUEUE_PATH`), `_run_sequential_synthetic`
-  (JobHunter subprocess NOT re-run; queue signature recorded; import via
-  `queue-import` service with `synthetic_mutation=True` so rows are
-  identity-checked and stamped; eligible-before/after diff; ONLY newly imported
-  IDs targeted by the UAA pipeline; durable batch evidence persisted), and the
-  API `OrchestrationStartRequest.synthetic_orchestration` field. Default
-  orchestration behavior unchanged; JobHunter untouched.
-- Hermetic tests `tests/integration/test_orchestration_synthetic.py` (9):
-  parallel+synthetic rejected, real-submission incompatibility rejected,
-  explicit pre-produced queue required (missing path / missing file rejected),
-  happy path (markers stamped, only new IDs targeted, JobHunter not re-run,
-  zero submission rows), non-synthetic row refused, empty-diff runs no
-  pipeline, API start accepts the flag and returns 400 for parallel+synthetic.
-- Full local gate green (all stats in "Tests and exact results" below).
-- Bounded normal-pipeline evaluation from the synthetic workdir
-  (`C:\Users\LOQ\AppData\Local\Temp\opencode\jh_ws_synthetic_20260819`,
-  threshold 1.0 / `german_policy=accept_all`, test-only overrides, unchanged
-  JobHunter `main` `0e8ba2f9`): 6 real AI/Data Working-Student jobs evaluated
-  via the production `run_evaluate` path; only `forensica datalytics GmbH /
-  Werkstudent Business Development & AI` (Indeed, `jk=f9408020f3497cc2`,
-  score 4.0/apply) was exported to `data/application_queue.jsonl` -- 1 row,
-  `application_id=219ecfcc3567cf0fdfb0e107f826127721c90e27cea714526278c3d20b2f9fb7`,
-  `platform=unknown` → canonical-URL identity, candidate_profile =
-  whitelisted synthetic snapshot (Test Candidate / test.candidate@example.com).
-  Bosch BI posting `744000132564529` also evaluated from the real SmartRecruiters
-  API JD (cached normally) → 3.4/skip (verhandlungssicheres Deutsch + Hildesheim)
-  — honest pipeline rejection, no queue row.
-- Bounded live chain (real local UAA server, fresh temp `uaa_data`,
-  `UAA_QUEUE_PATH=<synthetic queue>`, `UAA_LIVE_SYNTHETIC_MUTATION=true`,
-  headless, real submission off): POST `/api/orchestration/start`
-  `{mode:sequential, synthetic_orchestration:true, max_jobs:2, fixture_html}` →
-  status `completed` with `synthetic_orchestration=true`,
-  `jobhunter_pid=null` + stdout "jobhunter production workflow not re-run",
-  `queue_published=true`, `queue_import_state=success`, `queue_imported=1`,
-  `newly_eligible_count=1`, `targeted_ids=[219ecfcc...]`, pipeline pass
-  completed, db job `219ecfcc...` status `review_ready`, both synthetic markers
-  present, `submission_rows=0`.
-- Live synthetic mutation (`live-synthetic-mutation --application-id 219ecfcc...`)
-  against real Bosch SmartRecruiters: (1) one-click UI direct →
-  `status=needs_user_input`, `stopped_reason=security_wall`, 0 fields/uploads,
-  interlock `installed=True blocked=0`, **`submitted=false`** — the page served
-  a **DataDome CAPTCHA wall** (`geo.captcha-delivery.com`, confirmed in the
-  captured `final-page.html`); (2) retry from the posting page →
-  navigation succeeded (`clicks=1` into `oneclick-ui/...`) then the same
-  DataDome wall stopped it (0 fields/uploads, `submitted=false`). Per policy
-  (security wall before mutation → record and STOP, never bypass) no bypass
-  was attempted. Evidence under
-  `C:\Users\LOQ\AppData\Local\Temp\opencode\jh_ws_synthetic_20260819\uaa_data\live-runs\`.
-
-Milestone: End-to-end vertical slice across the JobHunter boundary — DONE
-- Unchanged JobHunter (branch `main` `0e8ba2f9`, zero production-code edits)
-  run from a synthetic workdir (`C:\Users\LOQ\AppData\Local\Temp\opencode\jh_synthetic_20260817_214734`)
-  with a fully synthetic senior-AE persona (`config/profile.yml`, `cv.md`):
-  wrote `data/pipeline.md` with the real Carta Greenhouse posting
-  (`https://job-boards.greenhouse.io/carta/jobs/7822002003`), then
-  `run_evaluate.py --next --threshold 3.0 --german-policy accept_all` →
-  **score 5/5 (skills 5, education 5, location 5, language 5, growth 5),
-  recommendation `apply`**, tailored CV + cover letter PDFs generated
-  (weasyprint via the UAA venv; OpenRouter free model
-  `nvidia/nemotron-3-ultra-550b-a55b:free`; no Google AI, Telegram degraded).
-- `run_export_queue.py` → `data/application_queue.jsonl`: 1 row,
-  `application_id=869bbd6e4ab4...`, `platform=greenhouse`,
-  `external_job_id=null`, `company=Carta`,
-  `title=Account Executive, Legal Services`, absolute artifact paths,
-  `metadata.candidate_profile` = whitelisted synthetic snapshot (no markers).
-- UAA opt-in (this workpackage's only code change, JobHunter untouched):
-  `queue-import --synthetic-mutation` — new CLI flag + service/import plumbing
-  (`cli.py`, `services/queue_import_service.py`,
-  `application_queue/importer.py`) using
-  `synthetic_profile.stamp_synthetic_mutation_metadata()` which stamps
-  `synthetic_test`/`wq7_synthetic` ONLY when `candidate_profile` already IS
-  the WQ-7C synthetic identity (full_name "Test Candidate" AND email
-  "test.candidate@example.com"); any other snapshot is refused per-row.
-- Import executed against a fresh temp `uaa_data`:
-  `python -m universal_auto_applier queue-import --path <abs queue>
-  --synthetic-mutation` → state `success`, total 1 imported 1, errors 0,
-  run_id `1d4ef028`. UAA DB holds the **same application_id**
-  `869bbd6e4ab4...`, status `ready_to_apply`, both synthetic markers present.
-  Identity across the boundary verified: UAA
-  `compute_application_id(platform='greenhouse', external_job_id=None, url=...)`
-  == JobHunter's exported id.
-- Live pre-submit synthetic mutation on the real Carta Greenhouse form:
-  `python -m universal_auto_applier live-synthetic-mutation --application-id
-  869bbd6e4ab4 --headless --timeout-ms 60000` (temp data dir,
-  `UAA_LIVE_SYNTHETIC_MUTATION=true`, real submission off) → ATS reached,
-  19 fields extracted, synthetic CV uploaded (`input[id='resume']`,
-  "approved synthetic document"), `plan_hash=b6763fd5`, 2-pass plan chain
-  (`plan_chain_hashes=2`, chain hash `1101539781`), interlock
-  `installed=True blocked=0` all-zero counters, **`submitted=false`**, stopped
-  `required_fields_unresolved` (`needs_user_input`). Cover-letter upload hit a
-  Playwright locator timeout (hidden remix required-input shadowing) and the
-  "Location (City)" field was mis-targeted to the file input; both are
-  recorded as deferred field-mapping weaknesses — the run stopped safely.
-  Artifacts under `uaa_data/live-runs/869bbd6e4ab4-20260818T153838773260Z/`
-  (report.json, mutation-plan.json + pass-1, trace.zip, screenshots).
-
-Milestone: Live real-ATS synthetic mutation proof (pre-submit) — DONE
-- Queue/store seeding via the production CLI (`queue-import`): synthetic probe
-  queue at `$env:LOCALAPPDATA\Temp\opencode\uaa_wq7c_queue\synthetic_probe_queue.jsonl`
-  → `UAA_DATA_DIR=...\uaa_wq7c_data` (run_id `b032d6d0`, total 3 imported 3).
-- Greenhouse Carta (`fdda3f191ee1...`, `https://job-boards.greenhouse.io/carta/jobs/7822002003`):
-  `live-synthetic-mutation` → 19 fields planned / 10 filled, 1 synthetic CV
-  upload, 2-pass plan chain (`plan_hash=c45c3a53`, chain `d3fbef5f`), stopped
-  `required_fields_unresolved` (safe: location autocomplete, cover-letter
-  upload timeout, unmapped free-text, sensitive/demographic categories never
-  auto-answered), `submitted=false`, interlock all-zero.
-- Lever Apply Digital (`f02ef0fb6ce1...`, `https://jobs.lever.co/applydigital/e67e06b6-48e7-471d-8050-34127416dcf8`):
-  1 safe_apply click → `/apply`, 21 fields filled, 2 synthetic CV uploads,
-  2-pass plan chain (`plan_hash=e3c2cfe6`, chain `6cc80e9b`), interlock blocked
-  1 Lever-page programmatic `form.submit()` (same attribution as WQ-7B: page
-  JS, not UAA — `uaa_submit_clicks=0`, `submit_events=0`), stopped
-  `required_fields_unresolved`, `submitted=false`.
-- Anthropic Greenhouse target superseded by Carta after Defect 1 (recorded in
-  the evidence manifest as superseded, kept as replacement-pool target).
-- Evidence manifest written: `docs/evidence/wq-7c/MANIFEST.md`.
-
-Milestone: Live-proof detector defect fixes (commits `fd155f6`, `aae24d0`,
-`162233d`, pushed, verified):
-- Defect 1 (Greenhouse invisible reCAPTCHA badge → false `captcha_detected`):
-  root cause = widget selector matched `size=invisible` badge iframes AND the
-  badge anchor frame's "protected by reCAPTCHA" body text matched
-  `_CAPTCHA_TERMS`. Fix: selector excludes invisible-badge iframes
-  (`:not([src*='size=invisible'])`), `analyze_page` skips anti-bot widget-frame
-  text (`_CAPTCHA_WIDGET_URL_MARKS`). Genuine `.g-recaptcha`/`.h-captcha`/
-  `[data-sitekey]`/hcaptcha iframes still block.
-- Defect 2 (Lever `cards[<uuid>][fieldN]` → false `payment_required`): payment
-  selector now `input[name*='card' i]:not([name*='cards[' i])`; real card
-  fields (`autocomplete^='cc-'`, `card_number`, `card_cvv`) still block.
-- Regressions (hermetic, playwright): `invisible_recaptcha_badge.html` +
-  `www.recaptcha.net/recaptcha_anchor.html` (form reaches `review_ready`),
-  visible `.g-recaptcha` still blocks, `lever_cards_groups.html` reaches
-  `review_ready`, `payment_wall.html` still blocks.
-
-Milestone: CLI-dispatch defect fix (commit `e838039`, pushed, verified):
-- Reproduced: `python -m universal_auto_applier live-synthetic-mutation` fell
-  through to the dashboard server because `__main__.py`'s dispatch allowlist
-  was stale (WQ-3 era): only `list-jobs`, `browser-session`, `live-dry-run`,
-  `queue-import` were routed.
-- Fix: `cli.py` now declares `CLI_COMMANDS` (single source of truth for every
-  subcommand incl. `live-submit`, `live-dry-run-platforms`,
-  `live-synthetic-mutation`); `__main__.py` imports it lazily and routes
-  argv[0]; the dashboard bootstrap is extracted into `_run_dashboard`.
-- Regression: `tests/unit/test_main_cli_dispatch.py` (9 tests) — parity
-  allowlist==registered parser commands (guards future drift), every CLI
-  command dispatches to `run_command` via `main()`, and empty argv reaches
-  `_run_dashboard` (server path), not the CLI.
-- Gate results at `e838039`: ruff check pass, ruff format pass (202 files),
-  pyright 0/0/0, non-live `pytest -m "not live and not playwright"` =
-  **1238 passed / 268 deselected**, playwright = **265 passed**.
-
-Implementation milestone shipped as commit `417ce97` (pushed, verified):
-- `synthetic_profile.py`: `SyntheticMutationProfile` (Test/Candidate,
-  `test.candidate@example.com`, `+1 555 0199`, empty linkedin, both synthetic
-  markers), `SYNTHETIC_MUTATION_BANNER`-labelled CV/cover PDFs,
-  `sha256_file`/`approved_document_hashes`, `is_synthetic_metadata`,
-  `to_candidate_profile` (linkedin stays None), `__all__` updated.
-- `config.py`: `live_synthetic_mutation` (default False) +
-  `synthetic_mutation_max_mutations` (default 60, 1..200); `model_validator`
-  rejects mutation+real-submission and mutation+recon-only at load; both env
-  vars parsed by `load_settings`.
-- `browser/mutation_plan.py` (NEW): frozen `MutationPlan`/`MutationPlanEntry`
-  with `plan_hash` (SHA-256 of canonical JSON, `generated_at` excluded);
-  `build_mutation_plan()` gates — mutate/skip/block/intervention decisions,
-  `_NEVER_MUTATE_CATEGORIES` skip (legal_declaration, consent_signature,
-  demographic_sensitive, work_authorization, availability), value allowlist
-  `_declared_synthetic_values` (bools only as exact declared Yes/No),
-  `_value_fits_options`/`_normalize_option` guard (mapped "5" never fills a
-  Yes/No radio), confidence < 0.7 skipped, unapproved/unpresent doc blocked,
-  missing-required → `needs_intervention` ("not fabricated").
-- `form_engine/live_executor.py`: `SyntheticMutationExecution` +
-  `execute_live_form_synthetic`/`_run_mutation_pass` (plan frozen+hashed BEFORE
-  mutation, budget consumed per mutation, doc hash re-verified at execution,
-  typed-answer validation, one bounded re-observation pass only if budget
-  remains). Circular import (form_engine→live_executor→mutation_plan→
-  field_mapper→form_engine) resolved with TYPE_CHECKING + lazy import.
-- `browser/live_runner.py`: `run_synthetic_mutation` (refuses non-synthetic
-  profile via getattr markers, refuses `hard_submit_block=False`),
-  `run_in_context_synthetic` made public (artifact_dir param) for production-
-  path tests; interlock armed BEFORE mutation, `mutation-plan.json` persisted,
-  plan_hash recorded, stops at `final_submit_detected` (review_ready), reads
-  interlock counters into errors, `submitted=False` always.
-- `browser/live_models.py`: `LiveRunReport` += `plan_hash`,
-  `mutation_plan_path`.
-- `cli.py`: `live-synthetic-mutation` subcommand + `_live_synthetic_mutation`
-  handler (refuses when mode off exit 2; refuses non-synthetic job metadata;
-  generates synthetic docs under `data_dir/synthetic-docs`; ephemeral profile
-  always; `hard_submit_block=True`; budget clamped to config; overrides job
-  `cv_pdf`/`cover_letter_pdf`; exits 0 review_ready / 3 needs_user_input /
-  1 submitted / 2 error).
-- `tests/unit/test_wq7c_mutation_plan.py` (NEW, 15 tests) + `test_config.py`
-  additions (mode/budget/conflicts).
-- `tests/playwright/test_wq7c_synthetic_mutation.py` (NEW, 7 tests) using the
-  production `run_in_context_synthetic` path over Hygiene/Hydro served
-  greenhouse/lever apply fixtures: synthetic identity only, approved-doc upload
-  only (hash membership), plan frozen+hashed+re-verifiable, interlock armed /
-  zero submit attempts, stops at final submit without submitting, refuses
-  non-synthetic profile and disarmable-interlock config.
-
-Milestone: Natural FULL-workflow same-job live proof (2026-08-19) — DONE
-- Natural automotive-style full workflow from the NORMAL entry point
-  (`run_all.py --threshold 1.0 --german-policy accept_all`) in a throwaway
-  copy of JobHunter (commit `0e8ba2f`, unchanged; only the synthetic
-  `config/profile.yml`/`cv.md` in the workdir): scan → evaluate → tailor →
-  export. First run evaluation failed because the default model list is stale
-  (OpenRouter 404/429 on every model); the chain in the synthetic profile was
-  replaced with 4 verified working free models (no repo change). Successful
-  run EXIT=0 produced `data/application_queue.jsonl` with **2 naturally
-  discovered rows**, both score 4.7/5 `apply`:
-  - Robco "Working Student - Robot Pilot / Data Collection (m/f/d)"
-    (Indeed `jk=ee5808aafe77c034`, München),
-    `application_id=735df4e79a37c1bcdd608fd5dbc46ac6739ebf5372ce03eb5d10bff286ad43d8`;
-  - Siemens "Working Student (f/m/d) Simulation for Physical AI"
-    (Indeed `jk=711dc466890f4b3d`),
-    `application_id=e794e41d295b9391e22444dc8636598e64d69fa00579c6cfa8d2b36b181608dc`.
-  Both `platform=unknown`, `external_job_id=null` → canonical-URL identity;
-  both carry the whitelisted synthetic candidate snapshot (no markers needed —
-  this proof used the full orchestration opt-in path, not `queue-import`).
-  Queue SHA-256 `3032c933b55352e5954cd1c14f9db301a54859939c32cab7032dfc0cc684a2b2`.
-- SAME-JOB ATS mapping verified: Siemens row ↔ official careers portal
-  JobDetail `https://jobs.siemens.com/en_US/externaljobs/JobDetail/516786`
-  (same title/location/company); Robco row ↔ RobCo's Ashby board
-  `https://jobs.ashbyhq.com/robco/9c4d43d5-f2b6-48b5-97f8-f5b0a11f58fa`
-  (same title/location/company, anonymous form, no login).
-- UAA synthetic orchestration against the unedited natural queue (fresh
-  `uaa_data`, server 127.0.0.1:8029, `UAA_ENABLE_REAL_SUBMISSION=false`):
-  POST `/api/orchestration/start {mode:sequential, synthetic_orchestration:true,
-  max_jobs:5}` → run `d1d72c1b-6a69-44ae-95d2-37e1f7d5a44b` `completed`;
-  `queue_hash_before==after` (unedited), `jobhunter_pid=null` ("production
-  workflow not re-run"), `queue_import_state=success`, `queue_imported=2`,
-  `newly_eligible_ids == targeted_ids == processed_ids` == both ids,
-  `pass_count=1`, `errors=[]`. DB: both jobs `needs_user_input` (intervention),
-  `candidate_profile.synthetic_test=true`, `submission_results=0`.
-- Live synthetic mutation — RobCo (primary target): `live-synthetic-mutation
-  --application-id 735df4e7 --start-url https://jobs.ashbyhq.com/robco/9c4d43d5...
-  ` → `needs_user_input`, 1 `safe_apply` click to the `/application` form,
-  **12 fields extracted, 5 filled** (Test/Candidate, test.candidate@example.com,
-  +1 555 0199, Resume=`synthetic-docs\wq7c-test-cv.pdf` approved doc upload),
-  2 `intervention_needed` (Salary Expectations, LinkedIn URL — never
-  fabricated), uploads confirmed 1 ("approved synthetic document"),
-  `plan_hash=11dac7183134f83a5cacec4c736c2f58a18e946dc3fbda540a4da11ce74c2d1a`,
-  2-pass plan chain, interlock `installed=True` all-zero counters,
-  **`submitted=False`**, stopped `required_fields_unresolved`.
-- Live synthetic mutation — Siemens (backup target): `live-synthetic-mutation
-  --application-id e794e41d --start-url .../externaljobs/JobDetail/516786` →
-  `needs_user_input`/`click_failed`: the UserCentrics consent overlay
-  (`div#usercentrics-root`) intercepted the Apply click to
-  `ApplicationMethods?folderId=516786` (30s timeout) in the ephemeral profile
-  (no consent cookies). Security/consent wall before mutation → policy STOP,
-  no bypass; `submitted=False`, interlock armed. (The invocation's shell exit
-  1 was a cp1252 console encode crash while printing the error list; persisted
-  `report.json` is authoritative.)
-- Evidence manifest (sanitized, run-workdir live only, not committed):
-  `C:\Users\LOQ\AppData\Local\Temp\opencode\jh_ws_natural_20260819\live_evidence\MANIFEST.md`.
-  Run artifacts under `...\jh_ws_natural_20260819\live_evidence\<appid>-<ts>\`.
-
-Milestone: Final system-closure proof — evidence finalized — DONE (2026-08-19)
-- Gap 1 (normal discovery) and gap 2 (SAME-JOB identity) closed. The closure
-  chain begins at the normal bounded search entry `run_all.py --threshold 1.0
-  --german-policy accept_all` (no `run_evaluate(mode="url")`, no pipeline.md
-  injection, JobHunter unchanged): live JobSpy scan → 7 naturally discovered
-  jobs evaluated → 2 `apply` rows exported to `application_queue.jsonl`
-  (Robco 4.7, Siemens 4.7; queue SHA-256 `3032c933…`) → UAA synthetic
-  orchestration run `d1d72c1b…` imported exactly those two application_ids
-  (markers stamped, `needs_user_input`, `submission_results=0`) → the **same**
-  Robco job on RobCo's real Ashby board reached: 12 fields extracted, 5 filled
-  (Test/Candidate, test.candidate@example.com, +1 555 0199, approved synthetic
-  CV `wq7c-test-cv.pdf` uploaded, hash `e5dd0dd5…` ∈ approved set), 2
-  interventions never fabricated, 2-pass plan chain
-  (`plan_hash=11dac718…`), interlock installed/all-zero, **`submitted=false`**,
-  stopped `required_fields_unresolved`; Siemens same-job attempt blocked by the
-  UserCentrics consent overlay pre-mutation (no bypass, `submitted=false`).
-  Full per-candidate evidence + SAME-JOB traceability assertion:
-  `docs/evidence/wq-7c/FULL_SAME_JOB_CLOSURE.md`.
-- Independent second run the same day (fresh workdir, same bounded config)
-  re-proved normal discovery live (12 AI/Data Working-Student jobs) but every
-  evaluation returned OpenRouter HTTP 429 — the single key's
-  `free-models-per-day` quota (50/day) was already consumed by earlier
-  same-day runs ("Add 10 credits to unlock 1000 free model requests per day").
-External provider quota; no bypass attempted; evaluation/export stage of the
-   closure rests on the same-day successful natural run above.
-
-Milestone: Final PR, six green CI checks, and merge — DONE (2026-08-19/20)
-- Final documentation reconciliation (final acceptance summary, superseded
-  markers, CURRENT_STATE/NEXT_WORKPACKAGES/WQ7_LOCAL_LIVE_RUN updates) was
-  committed as `395b7dc` on `checkpoint/wq-7c-synthetic-mutation` and pushed
-  (local == origin == `395b7dc`).
-- ONE PR opened against `main` via the GitHub REST API: **PR #15** (head
-  `395b7dc…`, base `main`). All six required CI checks on the exact PR head
-  passed: Linux 3.11 / 3.12 / 3.13 / 3.14 (run `32299389160`),
-  Windows Core / Windows Playwright (run `32299389167`) — all `success`.
-- PR #15 **merged** via the standard GitHub **merge-commit** merge (no squash,
-  no rebase, no local-direct main push): merge commit
-  `2ac1e006fa8119d5d487625a5c36a17b4f4c5c20`, parents `b5e1532f` (old main) +
-  `395b7dc` (PR head). Verified after merge: PR state `MERGED`, PR head
-  `395b7dc…` is an ancestor of `origin/main`. Implementation branch preserved.
-- This handoff's post-merge closure (marking WQ-7C MERGED/COMPLETE) is applied
-  on `checkpoint/wq-7c-post-merge-cleanup` via its own documentation-only PR.
+- Session-start protocol executed: `git fetch origin`; `origin/main` resolved
+  to `76b2e1f166dd56398e7234c733ca24d703d0194a` (PR #16 post-merge-closure
+  merge) and both WQ-7C commits (`2ac1e00` merge, `76b2e1f` closure) verified
+  as ancestors of `origin/main`; working tree clean except preserved untracked
+  `tmp_debug_status.py`, `tmp_debug_status/`, `tmp_final_pipeline/`.
+- GitHub write auth verified via `git push --dry-run origin
+  checkpoint/wq-7c-post-merge-cleanup` → "Everything up-to-date".
+- Read the handoff pack: `AGENTS.md`, `docs/development/CHECKPOINT_POLICY.md`,
+  `docs/handoffs/ACTIVE_WORKPACKAGE.md` (WQ-7C closed handoff),
+  `docs/handoffs/WQ7_LOCAL_LIVE_RUN.md`, `docs/CURRENT_STATE.md`,
+  `docs/NEXT_WORKPACKAGES.md`, `docs/generalization/IMPLEMENTATION_RULES.md`,
+  `docs/generalization/TESTING_STRATEGY.md`,
+  `docs/testing/CONTROLLED_REAL_SUBMISSION_TEST_PLAN.md`.
+- Verified the submission authorization stack (see above): models, coordinator
+  gates/flow, store, execution service, status transitions, statuses,
+  submit interlock, config defaults.
+- Branch `checkpoint/wq-8-controlled-real-submission` created from
+  `origin/main` `76b2e1f`; untracked debug artifacts preserved.
 
 ## Changed files
 
-- `src/universal_auto_applier/services/orchestration_service.py`
-  (`start`/`_run`/`_validate_config`/`_run_sequential_synthetic`,
-  `synthetic_orchestration` param)
-- `src/universal_auto_applier/persistence/models.py`
-  (`OrchestrationRunRow.synthetic_orchestration` column)
-- `src/universal_auto_applier/persistence/orchestration_run_repository.py`
-  (`create_orchestration_run(..., synthetic_orchestration=False)` + dict
-  shapes)
-- `src/universal_auto_applier/api/routes/orchestration.py`
-  (`OrchestrationStartRequest.synthetic_orchestration` + idle shape)
-- `migrations/versions/0014_orchestration_synthetic_mode.py` (NEW)
-- `tests/contract/test_migrations.py` (CURRENT_HEAD → `0014...`)
-- `tests/integration/test_orchestration_synthetic.py` (NEW, 9 tests)
-- `src/universal_auto_applier/synthetic_profile.py`
-  (`is_synthetic_identity_snapshot`, `stamp_synthetic_mutation_metadata`)
-- `src/universal_auto_applier/application_queue/importer.py`
-  (`import_queue_file(synthetic_mutation=...)`, `_stamp_synthetic_mutation`)
-- `src/universal_auto_applier/services/queue_import_service.py`
-  (`run`/`_run_import` propagate `synthetic_mutation`)
-- `src/universal_auto_applier/cli.py` (`queue-import --synthetic-mutation`)
-- `tests/contract/test_importer.py` (stamp/refuse/no-flag tests)
-- `tests/contract/test_queue_import_service.py` (opt-in propagate/refuse)
-- `tests/integration/test_queue_import_api.py` +
-  `tests/integration/test_queue_import_concurrency.py` (mock signatures
-  updated for the new `_run_import` param)
-- `tests/unit/test_main_cli_dispatch.py` (parser flag test)
-- `tests/unit/test_wq7_synthetic_profile.py` (stamp unit tests)
-- `docs/evidence/wq-7c/MANIFEST.md` (NEW)
-- `src/universal_auto_applier/navigator/apply_path_finder.py` (captcha widget
-  selector + widget-frame text skip + payment `cards[` exclusion)
-- `tests/fixtures/live_browser/invisible_recaptcha_badge.html` (NEW)
-- `tests/fixtures/live_browser/www.recaptcha.net/recaptcha_anchor.html` (NEW)
-- `tests/fixtures/live_browser/lever_cards_groups.html` (NEW)
-- `tests/fixtures/live_browser/payment_wall.html` (NEW)
-- `tests/playwright/test_live_browser_executor.py` (4 new tests)
-- `src/universal_auto_applier/__main__.py` (CLI dispatch allowlist → `CLI_COMMANDS`; `_run_dashboard`)
-- `src/universal_auto_applier/cli.py` (`CLI_COMMANDS`)
-- `tests/unit/test_main_cli_dispatch.py` (NEW, 9 tests)
-- `src/universal_auto_applier/synthetic_profile.py`
-- `src/universal_auto_applier/config.py`
-- `src/universal_auto_applier/browser/mutation_plan.py` (NEW)
-- `src/universal_auto_applier/browser/live_models.py`
-- `src/universal_auto_applier/form_engine/live_executor.py`
-- `src/universal_auto_applier/browser/live_runner.py`
-- `src/universal_auto_applier/cli.py`
-- `tests/unit/test_wq7c_mutation_plan.py` (NEW)
-- `tests/unit/test_config.py`
-- `tests/playwright/test_wq7c_synthetic_mutation.py` (NEW)
+- `docs/handoffs/ACTIVE_WORKPACKAGE.md` — replaced with the WQ-8 handoff
+  (this commit).
 
 ## Tests and exact results
 
-Full local gate (all green) at the orchestration-opt-in milestone (uncommitted
-until pushed this session; run HEAD `c9a315e` + working-tree changes):
-- `ruff check src tests migrations` — pass.
-- `ruff format --check src tests migrations` — 203 files clean (2 reformatted).
-- `pyright` — 0 errors, 0 warnings, 0 informations.
-- `pytest -m "not live and not playwright" -q` — **1258 passed, 272 deselected**
-  (includes 9 new `test_orchestration_synthetic.py` and the updated migration
-  contract tests).
-- `pytest tests/playwright -q` — **269 passed**.
-- `git diff --check` — clean; untracked `tmp_debug_status.py`,
-  `tmp_debug_status/`, `tmp_final_pipeline/` preserved.
-
-Full local gate (all green) at commit `6462402` (vertical slice):
-- `ruff check src tests migrations` — pass.
-- `ruff format --check src tests migrations` — 202 files clean.
-- `pyright` — 0 errors, 0 warnings, 0 informations.
-- `pytest -q` (default, non-live) — **1513 passed, 3 skipped** + 5 initial
-  failures in queue-import concurrency mocks (their `_run_import` fakes did
-  not accept the new third param); after updating the mock signatures:
-  `tests/integration/test_queue_import_api.py` +
-  `test_queue_import_concurrency.py` → **25 passed**. Target suites
-  (importer, queue_import_service, cli dispatch, wq7 synthetic profile)
-  → **68 passed**.
-- `git diff --check` — clean; untracked `tmp_debug_status.py`,
-  `tmp_debug_status/`, `tmp_final_pipeline/` preserved.
-
-Full local gate (all green) at commit `162233d` (latest pushed milestone):
-- `ruff check src tests migrations` — pass.
-- `ruff format --check src tests migrations` — 202 files clean.
-- `pyright` — 0 errors, 0 warnings, 0 informations.
-- `pytest -p no:cacheprovider --ignore=tests/live` — **1507 passed**.
-- Related suites (live_browser_executor, wq7b_recon_mode,
-  wq7c_synthetic_mutation, wq7c_mutation_plan) — **48 passed**.
-- Playwright suite — **267 passed** at `aae24d0` (265 baseline + 2 new).
-- `git diff --check` — clean; untracked `tmp_debug_status.py`,
-  `tmp_debug_status/`, `tmp_final_pipeline/` preserved.
-
-Full local gate (all green) at commit `417ce97`:
-- `ruff check src tests migrations` — pass.
-- `ruff format --check src tests migrations` — 201 files clean (3 reformatted).
-- `pyright` — 0 errors, 0 warnings, 0 informations.
-- `pytest -m "not live and not playwright"` — **1229 passed**, 266 deselected
-  (baseline was 1209).
-- `pytest tests/playwright` — **263 passed** (includes 7 new WQ-7C tests).
-- `git diff --check` — clean; only the 10 intended files staged; untracked
-  `tmp_debug_status.py`, `tmp_debug_status/`, `tmp_final_pipeline/` preserved.
+No code changes yet. Baseline (WQ-7C merged head `395b7dc`, recorded in
+`docs/CURRENT_STATE.md`): 1258 non-live/non-playwright passed / 272
+deselected; 269 playwright passed; ruff/pyright clean. Re-run the full gate at
+the implementation milestone.
 
 ## Decisions made
 
-- Deliver the WQ-7C orchestration linkage as a UAA-side explicit opt-in
-  (`synthetic_orchestration=True`) on the existing WQ-6 service rather than
-  editing JobHunter — the production JobHunter workflow is NOT re-run during a
-  synthetic run (the queue is pre-produced by the synthetic pipeline), normal
-  candidate data is still refused at import, and only newly imported IDs are
-  targeted. Default orchestration behavior is byte-for-byte unchanged.
-- Real-ATS mutation against SmartRecruiters/Bosch (one-click UI) is blocked by
-  an external DataDome anti-bot wall served to automated/headless contexts.
-  A security wall before mutation is an explicit STOP condition in this
-  workpackage ("record the blocker and stop", "no CAPTCHA solving/bypass, no
-  anti-bot bypass"); no bypass was attempted. The SmartRecruiters boundary is
-  recorded as proved up to the wall (navigation click into the one-click form
-  URL, `submitted=false`, interlock armed+zero), and the required two-platform
-  live mutation proof (Greenhouse Carta + Lever Apply Digital) already stands.
-- Deliver the vertical-slice cross-boundary markers as a UAA-side opt-in
-  (`queue-import --synthetic-mutation`) rather than editing JobHunter —
-  satisfies "JobHunter untouched" and keeps marker stamping identity-guarded.
-- **SUPERSEDED for final acceptance** — The synthetic persona was changed from
-  "working student" to a senior Account Executive (same Test Candidate /
-  test.candidate@example.com identity) so the unchanged evaluator emits
-  `recommendation: apply` (5/5) against the Carta full-time senior AE JD;
-  only the persona text changed, never UAA or JobHunter code, and the identity
-  contract is unchanged. Replaced by the realistic AI/Data Working-Student
-  persona of the final natural run (see `FINAL_ACCEPTANCE.md`).
-- Field-resolution weaknesses observed in the live run (cover-letter upload
-  locator timeout; "Location (City)" mis-targeted to the file input;
-  "current position" mis-mapped to the eligibility question) are recorded as
-  deferred — do NOT open a field-mapping workpackage now.
-- **SUPERSEDED for final acceptance** — Use JobHunter's normal
-  pipeline.md-driven flow for the Carta row to get proper company/title
-  (avoids the `--url` "Unknown" fallback) while still letting JobHunter,
-  unchanged, do discovery-input→evaluation→tailoring→export. Replaced by the
-  natural `run_all.py` discovery flow (no manual pipeline.md seeding) of the
-  final proof (see `FULL_SAME_JOB_CLOSURE.md`).
-
-- Deliver WQ-7C as a new distinct opt-in mode; recon-only (WQ-7B) is NOT
-  converted into a fill mode.
-- No embeddings — value allowlist + strict `candidate_profile`/`document_path`
-  source gating yields the required precision; documented in milestone 6.
-- Keep the WQ-7C CLI always ephemeral (never reuse saved profiles/cookies).
-- Plan/hash-before-mutation contract; `generated_at` excluded from the hash so
-  identical plans hash identically and the persisted plan re-verifies.
-- Preserve all pre-existing untracked debug artifacts
-  (`tmp_debug_status.py`, `tmp_debug_status/`, `tmp_final_pipeline/`).
-- During the live proof, follow the defect policy (stop → hermetic regression →
-  smallest fix → full gates → push → verify → continue) rather than working
-  around detector false positives. Do not weaken real captcha/payment
-  detection to make a live target succeed; exclude only the specific
-  invisible-badge (`size=invisible`) and Lever `cards[` naming patterns.
-- Anthropic Greenhouse target recorded as superseded by Carta (same platform,
-  same blocker), not as a second failure; the ≥2-platforms proof stands.
+- Reuse (not redesign) the existing controlled-submission stack as the WQ-8
+  authorization base; the new work tightens binding to `review_plan_hash`
+  + doc hashes + expiry + absolute one-submission audit rather than
+  introducing a second submission pathway.
+- Keep the WQ-7 submit interlock armed; the authorized submit goes through the
+  existing single `SubmissionCoordinator` click path.
+- WQ-8 is a two-phase owner-controlled workpackage; the agent stops at the
+  Phase A gate and never self-approves Phase B.
+- Do not modify JobHunter; the real target must arise from its normal
+  workflow.
+- Verify SHAs dynamically at every checkpoint; never trust an embedded SHA.
 
 ## Blockers / risks
 
-- **SmartRecruiters one-click UI (Bosch) serves a DataDome anti-bot wall** to
-  automated/headless browser sessions (`geo.captcha-delivery.com` iframe,
-  confirmed in the captured `final-page.html`); it also appeared on a retry
-  that first navigated from the posting page into the one-click form. Do NOT
-  attempt any bypass; the WQ-7C two-platform live mutation proof already
-  stands (Greenhouse + Lever). Revisit only via a manually-approved run or a
-  different anonymous target.
-- Live ATS availability is externally variable (proven in WQ-7B). Targets
-  verified immediately before each run.
-- Vertical slice depends on the JobHunter repo running a synthetic-profile
-  workflow without production-code changes; if that is impossible, WQ-7C will
-  STOP and report the exact cross-repository blocker.
-- Greenhouse/Lever runtimes evolve (as seen with the invisible reCAPTCHA badge
-  and `cards[` naming); blocker/payment detectors are now narrow but must be
-  revisited if those platforms change their markup again.
+- **Phase A live prep depends on external real resources:** OpenRouter free
+  tier (50 free model requests/day) consumed at times during WQ-7C (HTTP 429);
+  real JobHunter discovery + evaluation will be needed to find the real
+  target. If the quota is exhausted, evaluation/export may need to wait or use
+  the owner's key.
+- Real ATS availability changes (proven in WQ-7A/B); every live target must be
+  verified immediately before a run.
+- Phase B is blocked by design on the owner's explicit matched approval.
+- The owner's real candidate CV/profile must be present and correct in the
+  normal config; missing facts → skip/intervention, never fabricated.
 
 ## Exact next action
 
-WQ-7C is closed. Next workpackage candidate:
+Finish the WQ-8 implementation design milestone. Before editing code, read the
+remaining implementation files for the WQ-7C live/orchestration paths so the
+authorization change does not disturb them: `browser/mutation_plan.py`,
+`form_engine/live_executor.py`, `browser/live_runner.py`,
+`services/orchestration_service.py`, `application_queue/importer.py`,
+`persistence/models.py` (submission/audit rows), migration `0014`,
+`api/routes/orchestration.py`, and `cli.py` (`live-submit` path). Then commit
+this handoff checkpoint and push:
 
-**WQ-8 — one tightly controlled owner-approved real application submission.**
-WQ-8 is **NOT started.** A detailed WQ-8 contract is deliberately NOT defined
-in this cleanup; the owner/reviewer will issue it separately (see
-`docs/NEXT_WORKPACKAGES.md`). This exact-next-action block is intentionally
-idle until WQ-8 (or another workpackage) is pulled into an active workpackage.
+```text
+git add docs/handoffs/ACTIVE_WORKPACKAGE.md
+git commit -m "docs(wq-8): initial WQ-8 handoff - controlled real submission workpackage"
+git push -u origin checkpoint/wq-8-controlled-real-submission
+git rev-parse HEAD
+git rev-parse origin/checkpoint/wq-8-controlled-real-submission
+```
+
+The two resolved values must match. Then implement the single-use
+authorization and its hermetic tests, run the full gate, and push the next
+deterministic milestone.
 
 ## Rules
 
 - Never merge or push to `main` directly. Preserve all `checkpoint/*`
   branches. No reset/clean/rebase/amend/force-push.
 - Only commit what the workpackage asked for; never commit screenshots, PDFs,
-  live-runs, `.uaa_data`, `.env`, browser profiles, traces, or a local
-  database.
+  live-runs, `.uaa_data`, `.env`, browser profiles, traces, real candidate
+  PII, or a local database.
 - Do not embed a "current HEAD" SHA in this file; resolve it dynamically.
