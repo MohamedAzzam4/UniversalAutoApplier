@@ -386,6 +386,13 @@ class OrchestrationRunRow(Base):
     run_id: Mapped[str] = mapped_column(String(64), primary_key=True)
     # sequential | parallel
     mode: Mapped[str] = mapped_column(String(16), index=True)
+    # WQ-7C: True only when the operator explicitly opted into a synthetic
+    # orchestration run. Synthetic runs import a pre-produced synthetic queue
+    # (WQ-7C synthetic markers propagated by the queue-import service, normal
+    # candidate data rejected), never re-run the production JobHunter
+    # workflow, target only the newly imported application IDs, and are
+    # incompatible with real submission.
+    synthetic_orchestration: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     # idle | running | jobhunter_running | importing | pipeline_running
     # | completed | failed | cancelled
     status: Mapped[str] = mapped_column(String(32), index=True)

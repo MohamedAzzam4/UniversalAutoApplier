@@ -89,11 +89,25 @@ class OrchestrationService:
         fixture_html: str | None = None,
         max_jobs: int = 10,
         jobhunter_extra_args: list[str] | None = None,
+        synthetic_orchestration: bool = False,
     ) -> dict[str, Any]:
         """Start a new orchestration run in a background thread.
 
         Returns immediately with the durable run state. The run executes in
         a daemon thread; poll ``GET /api/orchestration/status`` for progress.
+
+        ``synthetic_orchestration`` is the WQ-7C explicit opt-in. When True:
+        - the run imports a PRE-PRODUCED synthetic queue whose rows carry the
+          WQ-7C synthetic identity (markers propagated by the queue-import
+          service; normal candidate data rejected at import);
+        - the production JobHunter workflow is NOT re-run (the queue was
+          produced by the operator's synthetic JobHunter pipeline before this
+          run);
+        - only the newly imported application IDs are targeted by the UAA
+          pipeline;
+        - real submission mode is incompatible and rejected at start.
+        Default (False) is unchanged: the orchestration runs the full
+        JobHunter workflow as before.
 
         Raises:
             OrchestrationConcurrentError: if a run is already active.
@@ -103,6 +117,11 @@ class OrchestrationService:
         if resolved_mode not in ("sequential", "parallel"):
             raise OrchestrationConfigurationError(
                 f"Invalid orchestration mode: {resolved_mode!r} (expected 'sequential' or 'parallel')"
+            )
+        if synthetic_orchestration and resolved_mode != "sequential":
+            raise OrchestrationConfigurationError(
+                "Synthetic orchestration currently supports sequential mode only "
+                f"(requested mode {resolved_mode!r}). Parallel synthetic runs are not supported."
             )
 
         with self._lock:
@@ -115,11 +134,16 @@ class OrchestrationService:
                 )
 
             # Validate configuration before creating the run row.
-            self._validate_config(resolved_mode)
+            self._validate_config(resolved_mode, synthetic_orchestration)
 
             run_id = str(uuid.uuid4())
             with session_scope(self._session_factory) as session:
-                create_orchestration_run(session, run_id=run_id, mode=resolved_mode)
+                create_orchestration_run(
+                    session,
+                    run_id=run_id,
+                    mode=resolved_mode,
+                    synthetic_orchestration=synthetic_orchestration,
+                )
 
             self._cancel_requested.clear()
             self._jobhunter_extra_args = jobhunter_extra_args or []
@@ -139,7 +163,7 @@ class OrchestrationService:
             self._runner = None
             self._thread = threading.Thread(
                 target=self._run,
-                args=(run_id, resolved_mode, fixture_html, max_jobs),
+                args=(run_id, resolved_mode, fixture_html, max_jobs, synthetic_orchestration),
                 daemon=True,
                 name=f"orchestration-{run_id[:8]}",
             )
@@ -400,6 +424,7 @@ class OrchestrationService:
         mode: str,
         fixture_html: str | None,
         max_jobs: int,
+        synthetic_orchestration: bool = False,
     ) -> None:
         """Execute the orchestration run in a background thread.
 
@@ -409,7 +434,9 @@ class OrchestrationService:
         — individual phase methods do not need to close the runner.
         """
         try:
-            if mode == "sequential":
+            if mode == "sequential" and synthetic_orchestration:
+                self._run_sequential_synthetic(run_id, fixture_html, max_jobs)
+            elif mode == "sequential":
                 self._run_sequential(run_id, fixture_html, max_jobs)
             else:
                 self._run_parallel(run_id, fixture_html, max_jobs)
@@ -604,6 +631,221 @@ class OrchestrationService:
         # Wait for the pipeline to reach a terminal state (poll durable state).
         if not self._wait_for_pipeline(run_id):
             return
+
+    def _run_sequential_synthetic(
+        self, run_id: str, fixture_html: str | None, max_jobs: int
+    ) -> None:
+        """Sequential synthetic orchestration (WQ-7C opt-in).
+
+        Sequence:
+        1. The operator's synthetic JobHunter pipeline has already produced a
+           queue in the synthetic workdir (run BEFORE this orchestration).
+        2. This run verifies that queue, imports it through the existing
+           queue-import service WITH ``synthetic_mutation=True`` so every
+           imported row's candidate snapshot is identity-checked and stamped
+           with the WQ-7C synthetic markers (normal candidate data is refused
+           per-row, never stamped).
+        3. It snapshots the eligible application IDs before/after import and
+           targets ONLY the newly imported IDs for the UAA pipeline (the
+           pipeline stays dry-run/review-only; no submission).
+        4. Durable batch evidence (targeted/processed/remaining) is persisted.
+
+        The production JobHunter workflow is NOT re-run: that would touch the
+        production JobHunter repo (real config/candidate data), which is
+        forbidden during a synthetic run. ``queue_published`` is recorded as
+        True because a pre-produced synthetic queue IS the publication.
+        """
+        # Phase 1: verify the pre-produced synthetic queue.
+        self._set_phase(
+            run_id, "verifying_queue", "Synthetic orchestration: verifying pre-produced queue"
+        )
+        if self._settings.queue_path is None:
+            self._mark_failed(run_id, "Synthetic orchestration: queue path not configured")
+            return
+        queue_path = Path(self._settings.queue_path)
+        q_hash_before, q_mtime_before = self._queue_file_signature(queue_path)
+        with session_scope(self._session_factory) as session:
+            update_orchestration_run(
+                session,
+                run_id,
+                queue_hash_before=q_hash_before,
+                queue_mtime_ns_before=q_mtime_before,
+                jobhunter_exit_code=0,
+                jobhunter_finished_at=_utcnow(),
+                jobhunter_stdout=(
+                    "<synthetic orchestration: JobHunter production workflow not "
+                    "re-run; queue pre-produced by the synthetic pipeline>"
+                ),
+                last_action=(
+                    "Synthetic orchestration: JobHunter skipped; "
+                    "verifying the pre-produced synthetic queue"
+                ),
+            )
+
+        if self._cancel_requested.is_set():
+            return
+
+        q_hash_after, q_mtime_after = self._queue_file_signature(queue_path)
+        queue_published = q_hash_after is not None
+        with session_scope(self._session_factory) as session:
+            update_orchestration_run(
+                session,
+                run_id,
+                queue_hash_after=q_hash_after,
+                queue_mtime_ns_after=q_mtime_after,
+                queue_published=queue_published,
+            )
+        if not queue_published:
+            self._mark_failed(
+                run_id,
+                f"Synthetic orchestration: queue file missing at {queue_path}. "
+                "No import or pipeline started.",
+            )
+            return
+        if not self._wait_for_stable_queue(queue_path):
+            self._mark_failed(
+                run_id,
+                f"Queue file not stable at {queue_path}. No import or pipeline started.",
+            )
+            return
+
+        if self._cancel_requested.is_set():
+            return
+
+        # Phase 2: import the synthetic queue with WQ-7C markers propagated.
+        # Snapshot eligible IDs BEFORE import so ONLY newly imported IDs are
+        # targeted by the pipeline continuation.
+        eligible_before = self._snapshot_eligible_ids()
+
+        self._set_phase(run_id, "importing", "Importing synthetic queue (WQ-7C markers)")
+        try:
+            summary = self._queue_import_service.run(
+                path=queue_path,
+                trigger="orchestration-synthetic",
+                synthetic_mutation=True,
+            )
+        except Exception as exc:  # noqa: BLE001 - import failure must not crash
+            self._mark_failed(run_id, f"Queue import failed: {exc}")
+            return
+
+        eligible_after = self._snapshot_eligible_ids()
+        new_ids, new_count = self._compute_newly_eligible(eligible_before, eligible_after)
+
+        with session_scope(self._session_factory) as session:
+            update_orchestration_run(
+                session,
+                run_id,
+                queue_import_run_id=summary.run_id,
+                queue_import_state=summary.state,
+                queue_imported=summary.imported,
+                queue_skipped=summary.skipped,
+                newly_eligible_count=new_count,
+                newly_eligible_ids_json=list(new_ids),
+                last_action=(
+                    f"Synthetic queue import: {summary.state} ({summary.imported} "
+                    f"imported, {new_count} newly eligible)"
+                ),
+            )
+
+        if self._cancel_requested.is_set():
+            return
+
+        if new_count == 0:
+            with session_scope(self._session_factory) as session:
+                update_orchestration_run(
+                    session,
+                    run_id,
+                    targeted_ids_json=[],
+                    processed_ids_json=[],
+                    remaining_ids_json=[],
+                    targeted_count=0,
+                    processed_count=0,
+                    remaining_count=0,
+                    pipeline_run_ids_json=[],
+                    pass_count=0,
+                    last_action=(
+                        "No newly eligible jobs after synthetic import; "
+                        "no pipeline pass was started"
+                    ),
+                )
+            return
+
+        # Phase 3: run the UAA pipeline targeting ONLY the newly imported IDs.
+        self._set_phase(
+            run_id,
+            "pipeline_running",
+            f"Starting UAA pipeline for {new_count} newly imported synthetic IDs",
+        )
+        try:
+            pipeline_state = self._pipeline_worker.start(
+                max_jobs=max_jobs,
+                fixture_html=fixture_html,
+                target_application_ids=list(new_ids),
+            )
+        except RuntimeError as exc:
+            self._persist_batch_evidence(
+                run_id,
+                targeted_ids=list(new_ids),
+                processed_ids=[],
+                remaining_ids=list(new_ids),
+                pipeline_run_ids=[],
+                pass_num=0,
+                last_action=(
+                    f"Pipeline failed to start for synthetic targets: {exc}. "
+                    "Imported jobs remain safely eligible for manual retry."
+                ),
+            )
+            self._mark_failed(
+                run_id,
+                f"Synthetic import succeeded ({summary.imported} imported, "
+                f"{new_count} newly eligible) but pipeline failed to start: {exc}. "
+                "Imported jobs remain safely eligible for manual retry.",
+            )
+            return
+
+        with session_scope(self._session_factory) as session:
+            update_orchestration_run(
+                session,
+                run_id,
+                pipeline_run_id=pipeline_state.get("run_id"),
+                pipeline_state=pipeline_state.get("status"),
+                pipeline_run_ids_json=[pipeline_state.get("run_id")]
+                if pipeline_state.get("run_id")
+                else [],
+                pass_count=1,
+                last_action=f"Pipeline started for synthetic targets: {pipeline_state.get('status')}",
+            )
+
+        if not self._wait_for_pipeline(run_id):
+            self._persist_batch_evidence(
+                run_id,
+                targeted_ids=list(new_ids),
+                processed_ids=[],
+                remaining_ids=list(new_ids),
+                pipeline_run_ids=[pipeline_state.get("run_id")]
+                if pipeline_state.get("run_id")
+                else [],
+                pass_num=1,
+                last_action="Pipeline did not complete successfully for synthetic targets",
+            )
+            return
+
+        # Recompute processed/remaining for the targeted IDs.
+        current_eligible = self._snapshot_eligible_ids()
+        processed = [tid for tid in new_ids if tid not in current_eligible]
+        remaining = [tid for tid in new_ids if tid in current_eligible]
+        self._persist_batch_evidence(
+            run_id,
+            targeted_ids=list(new_ids),
+            processed_ids=processed,
+            remaining_ids=remaining,
+            pipeline_run_ids=[pipeline_state.get("run_id")] if pipeline_state.get("run_id") else [],
+            pass_num=1,
+            last_action=(
+                f"Synthetic pipeline pass completed; "
+                f"{len(processed)}/{new_count} processed, {len(remaining)} remaining"
+            ),
+        )
 
     def _run_parallel(self, run_id: str, fixture_html: str | None, max_jobs: int) -> None:
         """Parallel: UAA pipeline (existing jobs) + JobHunter concurrently.
@@ -1359,16 +1601,53 @@ class OrchestrationService:
                 last_action="Orchestration run completed",
             )
 
-    def _validate_config(self, mode: str) -> None:
+    def _validate_config(self, mode: str, synthetic_orchestration: bool = False) -> None:
         """Validate that all required configuration is present and consistent.
 
         Always resolves JobHunter's actual queue path from config/profile.yml.
         If UAA_JOBHUNTER_QUEUE_OUTPUT is set, it must exactly match.
 
+        In synthetic orchestration mode, the production JobHunter workflow is
+        NOT re-run and normal candidate data must never be touched. A
+        pre-produced synthetic queue path must be configured explicitly via
+        ``UAA_QUEUE_PATH`` / ``UAA_JOBHUNTER_QUEUE`` (or
+        ``UAA_JOBHUNTER_QUEUE_OUTPUT``), real submission mode must be off, and
+        the queue file must already exist.
+
         Raises:
             OrchestrationConfigurationError: if config is incomplete, the
             JobHunter config is malformed, or the UAA override disagrees.
         """
+        if self._settings.enable_real_submission and synthetic_orchestration:
+            raise OrchestrationConfigurationError(
+                "Synthetic orchestration is incompatible with real submission "
+                "mode (UAA_ENABLE_REAL_SUBMISSION is set). A synthetic run never "
+                "submits; refusing to start."
+            )
+        if self._settings.live_recon_only and synthetic_orchestration:
+            raise OrchestrationConfigurationError(
+                "Synthetic orchestration is incompatible with live recon-only "
+                "mode (UAA_LIVE_RECON_ONLY is set)."
+            )
+        if synthetic_orchestration:
+            if self._settings.queue_path is None:
+                raise OrchestrationConfigurationError(
+                    "Synthetic orchestration requires an explicit queue path "
+                    "(set UAA_QUEUE_PATH / UAA_JOBHUNTER_QUEUE to the "
+                    "pre-produced synthetic queue)."
+                )
+            queue_path = Path(self._settings.queue_path)
+            if not queue_path.is_absolute():
+                raise OrchestrationConfigurationError(
+                    f"Synthetic orchestration queue path must be absolute: {queue_path}"
+                )
+            if not queue_path.exists() or not queue_path.is_file():
+                raise OrchestrationConfigurationError(
+                    f"Synthetic orchestration requires a pre-produced queue "
+                    f"file at {queue_path}. Rerun after the synthetic JobHunter "
+                    f"pipeline exports the queue."
+                )
+            return
         if self._settings.jobhunter_repo is None:
             raise OrchestrationConfigurationError(
                 "JobHunter repo path is not configured (set UAA_JOBHUNTER_REPO)"

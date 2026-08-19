@@ -36,11 +36,13 @@ def create_orchestration_run(
     *,
     run_id: str,
     mode: str,
+    synthetic_orchestration: bool = False,
 ) -> OrchestrationRunRow:
     """Create a new durable orchestration run row and flush it."""
     row = OrchestrationRunRow(
         run_id=run_id,
         mode=mode,
+        synthetic_orchestration=synthetic_orchestration,
         status="running",
         current_phase="initializing",
         last_action="Orchestration run created",
@@ -160,6 +162,7 @@ def orchestration_run_to_dict(row: OrchestrationRunRow | None) -> dict[str, Any]
         return {
             "run_id": None,
             "mode": "sequential",
+            "synthetic_orchestration": False,
             "status": "idle",
             "current_phase": "",
             "last_action": "",
@@ -201,6 +204,7 @@ def orchestration_run_to_dict(row: OrchestrationRunRow | None) -> dict[str, Any]
     return {
         "run_id": row.run_id,
         "mode": row.mode,
+        "synthetic_orchestration": bool(row.synthetic_orchestration),
         "status": row.status,
         "current_phase": row.current_phase,
         "last_action": row.last_action,

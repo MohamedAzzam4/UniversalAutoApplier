@@ -4,7 +4,10 @@
 - **Status:** IN PROGRESS (implementation `417ce97` + CLI-dispatch defect fix
   `e838039` + live-proof detector fixes `fd155f6`/`aae24d0`/`162233d` pushed;
   live real-ATS mutation proof on Greenhouse + Lever DONE, **vertical slice
-  (milestone 9) DONE at `6462402`**, evidence finalization + PR pending).
+  (milestone 9) DONE at `6462402`**, **orchestration opt-in (WQ-7C closure
+  link) implemented + full gates green + bounded live chain proven through the
+  real-ATS boundary**, SmartRecruiters real-ATS mutation blocked by external
+  DataDome wall (safe stop, no bypass); evidence finalization + PR pending).
 - **Repository:** `MohamedAzzam4/UniversalAutoApplier`.
 - **PR:** none yet (one PR against `main` will be opened at the end via GitHub
   REST API; no local `gh` shim; do not merge).
@@ -73,7 +76,7 @@
   `plan_hash=b6763fd5`, 2-pass plan chain `1101539781`, interlock installed with
   all-zero counters, **`submitted=false`**, stopped `required_fields_unresolved`
   (visa/LinkedIn/work-history/demographic never auto-answered — correct).
-- **Last updated:** 2026-08-18.
+- **Last updated:** 2026-08-19.
 
 ## Objective
 
@@ -141,6 +144,61 @@ WQ-7C is NOT a real application-submission workpackage.
 11. Final PR against `main` via GitHub REST API; six CI checks green; no merge.
 
 ## Completed work
+
+Milestone: Synthetic orchestration opt-in + bounded full-chain live proof — DONE
+- Added the WQ-7C explicit opt-in to the WQ-6 orchestration service:
+  `OrchestrationRunRow.synthetic_orchestration` column (migration
+  `0014_orchestration_synthetic_mode`), `start(synthetic_orchestration=True)`,
+  `_validate_config(mode, synthetic_orchestration)` (rejects parallel mode,
+  rejects `UAA_ENABLE_REAL_SUBMISSION` and `UAA_LIVE_RECON_ONLY`, requires an
+  explicit absolute pre-existing `UAA_QUEUE_PATH`), `_run_sequential_synthetic`
+  (JobHunter subprocess NOT re-run; queue signature recorded; import via
+  `queue-import` service with `synthetic_mutation=True` so rows are
+  identity-checked and stamped; eligible-before/after diff; ONLY newly imported
+  IDs targeted by the UAA pipeline; durable batch evidence persisted), and the
+  API `OrchestrationStartRequest.synthetic_orchestration` field. Default
+  orchestration behavior unchanged; JobHunter untouched.
+- Hermetic tests `tests/integration/test_orchestration_synthetic.py` (9):
+  parallel+synthetic rejected, real-submission incompatibility rejected,
+  explicit pre-produced queue required (missing path / missing file rejected),
+  happy path (markers stamped, only new IDs targeted, JobHunter not re-run,
+  zero submission rows), non-synthetic row refused, empty-diff runs no
+  pipeline, API start accepts the flag and returns 400 for parallel+synthetic.
+- Full local gate green (all stats in "Tests and exact results" below).
+- Bounded normal-pipeline evaluation from the synthetic workdir
+  (`C:\Users\LOQ\AppData\Local\Temp\opencode\jh_ws_synthetic_20260819`,
+  threshold 1.0 / `german_policy=accept_all`, test-only overrides, unchanged
+  JobHunter `main` `0e8ba2f9`): 6 real AI/Data Working-Student jobs evaluated
+  via the production `run_evaluate` path; only `forensica datalytics GmbH /
+  Werkstudent Business Development & AI` (Indeed, `jk=f9408020f3497cc2`,
+  score 4.0/apply) was exported to `data/application_queue.jsonl` -- 1 row,
+  `application_id=219ecfcc3567cf0fdfb0e107f826127721c90e27cea714526278c3d20b2f9fb7`,
+  `platform=unknown` → canonical-URL identity, candidate_profile =
+  whitelisted synthetic snapshot (Test Candidate / test.candidate@example.com).
+  Bosch BI posting `744000132564529` also evaluated from the real SmartRecruiters
+  API JD (cached normally) → 3.4/skip (verhandlungssicheres Deutsch + Hildesheim)
+  — honest pipeline rejection, no queue row.
+- Bounded live chain (real local UAA server, fresh temp `uaa_data`,
+  `UAA_QUEUE_PATH=<synthetic queue>`, `UAA_LIVE_SYNTHETIC_MUTATION=true`,
+  headless, real submission off): POST `/api/orchestration/start`
+  `{mode:sequential, synthetic_orchestration:true, max_jobs:2, fixture_html}` →
+  status `completed` with `synthetic_orchestration=true`,
+  `jobhunter_pid=null` + stdout "jobhunter production workflow not re-run",
+  `queue_published=true`, `queue_import_state=success`, `queue_imported=1`,
+  `newly_eligible_count=1`, `targeted_ids=[219ecfcc...]`, pipeline pass
+  completed, db job `219ecfcc...` status `review_ready`, both synthetic markers
+  present, `submission_rows=0`.
+- Live synthetic mutation (`live-synthetic-mutation --application-id 219ecfcc...`)
+  against real Bosch SmartRecruiters: (1) one-click UI direct →
+  `status=needs_user_input`, `stopped_reason=security_wall`, 0 fields/uploads,
+  interlock `installed=True blocked=0`, **`submitted=false`** — the page served
+  a **DataDome CAPTCHA wall** (`geo.captcha-delivery.com`, confirmed in the
+  captured `final-page.html`); (2) retry from the posting page →
+  navigation succeeded (`clicks=1` into `oneclick-ui/...`) then the same
+  DataDome wall stopped it (0 fields/uploads, `submitted=false`). Per policy
+  (security wall before mutation → record and STOP, never bypass) no bypass
+  was attempted. Evidence under
+  `C:\Users\LOQ\AppData\Local\Temp\opencode\jh_ws_synthetic_20260819\uaa_data\live-runs\`.
 
 Milestone: End-to-end vertical slice across the JobHunter boundary — DONE
 - Unchanged JobHunter (branch `main` `0e8ba2f9`, zero production-code edits)
@@ -293,6 +351,19 @@ Implementation milestone shipped as commit `417ce97` (pushed, verified):
 
 ## Changed files
 
+- `src/universal_auto_applier/services/orchestration_service.py`
+  (`start`/`_run`/`_validate_config`/`_run_sequential_synthetic`,
+  `synthetic_orchestration` param)
+- `src/universal_auto_applier/persistence/models.py`
+  (`OrchestrationRunRow.synthetic_orchestration` column)
+- `src/universal_auto_applier/persistence/orchestration_run_repository.py`
+  (`create_orchestration_run(..., synthetic_orchestration=False)` + dict
+  shapes)
+- `src/universal_auto_applier/api/routes/orchestration.py`
+  (`OrchestrationStartRequest.synthetic_orchestration` + idle shape)
+- `migrations/versions/0014_orchestration_synthetic_mode.py` (NEW)
+- `tests/contract/test_migrations.py` (CURRENT_HEAD → `0014...`)
+- `tests/integration/test_orchestration_synthetic.py` (NEW, 9 tests)
 - `src/universal_auto_applier/synthetic_profile.py`
   (`is_synthetic_identity_snapshot`, `stamp_synthetic_mutation_metadata`)
 - `src/universal_auto_applier/application_queue/importer.py`
@@ -331,6 +402,18 @@ Implementation milestone shipped as commit `417ce97` (pushed, verified):
 
 ## Tests and exact results
 
+Full local gate (all green) at the orchestration-opt-in milestone (uncommitted
+until pushed this session; run HEAD `c9a315e` + working-tree changes):
+- `ruff check src tests migrations` — pass.
+- `ruff format --check src tests migrations` — 203 files clean (2 reformatted).
+- `pyright` — 0 errors, 0 warnings, 0 informations.
+- `pytest -m "not live and not playwright" -q` — **1258 passed, 272 deselected**
+  (includes 9 new `test_orchestration_synthetic.py` and the updated migration
+  contract tests).
+- `pytest tests/playwright -q` — **269 passed**.
+- `git diff --check` — clean; untracked `tmp_debug_status.py`,
+  `tmp_debug_status/`, `tmp_final_pipeline/` preserved.
+
 Full local gate (all green) at commit `6462402` (vertical slice):
 - `ruff check src tests migrations` — pass.
 - `ruff format --check src tests migrations` — 202 files clean.
@@ -368,6 +451,20 @@ Full local gate (all green) at commit `417ce97`:
 
 ## Decisions made
 
+- Deliver the WQ-7C orchestration linkage as a UAA-side explicit opt-in
+  (`synthetic_orchestration=True`) on the existing WQ-6 service rather than
+  editing JobHunter — the production JobHunter workflow is NOT re-run during a
+  synthetic run (the queue is pre-produced by the synthetic pipeline), normal
+  candidate data is still refused at import, and only newly imported IDs are
+  targeted. Default orchestration behavior is byte-for-byte unchanged.
+- Real-ATS mutation against SmartRecruiters/Bosch (one-click UI) is blocked by
+  an external DataDome anti-bot wall served to automated/headless contexts.
+  A security wall before mutation is an explicit STOP condition in this
+  workpackage ("record the blocker and stop", "no CAPTCHA solving/bypass, no
+  anti-bot bypass"); no bypass was attempted. The SmartRecruiters boundary is
+  recorded as proved up to the wall (navigation click into the one-click form
+  URL, `submitted=false`, interlock armed+zero), and the required two-platform
+  live mutation proof (Greenhouse Carta + Lever Apply Digital) already stands.
 - Deliver the vertical-slice cross-boundary markers as a UAA-side opt-in
   (`queue-import --synthetic-mutation`) rather than editing JobHunter —
   satisfies "JobHunter untouched" and keeps marker stamping identity-guarded.
@@ -403,6 +500,13 @@ Full local gate (all green) at commit `417ce97`:
 
 ## Blockers / risks
 
+- **SmartRecruiters one-click UI (Bosch) serves a DataDome anti-bot wall** to
+  automated/headless browser sessions (`geo.captcha-delivery.com` iframe,
+  confirmed in the captured `final-page.html`); it also appeared on a retry
+  that first navigated from the posting page into the one-click form. Do NOT
+  attempt any bypass; the WQ-7C two-platform live mutation proof already
+  stands (Greenhouse + Lever). Revisit only via a manually-approved run or a
+  different anonymous target.
 - Live ATS availability is externally variable (proven in WQ-7B). Targets
   verified immediately before each run.
 - Vertical slice depends on the JobHunter repo running a synthetic-profile
@@ -414,15 +518,18 @@ Full local gate (all green) at commit `417ce97`:
 
 ## Exact next action
 
-1. **Evidence finalization** — add sanitized vertical-slice evidence under
-   `docs/evidence/wq-7c/` (no cookies/tokens/sessions/raw HTML dumps): the
-   exported queue record's application_id, the UAA query result showing the
-   same application_id + markers, an artifact summary of the live run
-   (plan hash, chain hash, uploads, interlock counters, `submitted=false`),
-   plus the deferred field-mapping notes.
+1. **Evidence finalization** — add sanitized orchestration-opt-in and bounded
+   live-chain evidence under `docs/evidence/wq-7c/` (no cookies/tokens/
+   sessions/raw HTML dumps): the exported queue record's application_id, the
+   UAA query result showing the same application_id + markers, the durable
+   orchestration final state (run_id 2b29cf22, targeted_ids, counts), and the
+   two live-run reports (DataDome wall stop, `submitted=false`), plus the
+   deferred field-mapping notes.
 2. Update `docs/CURRENT_STATE.md`, `docs/WQ7_LOCAL_LIVE_RUN.md`,
    `docs/NEXT_WORKPACKAGES.md`.
-3. Open ONE PR against `main` via GitHub REST API; wait for six CI checks on
+3. Push the orchestration-opt-in commit (branch
+   `checkpoint/wq-7c-synthetic-mutation`), verify local HEAD == origin HEAD.
+4. Open ONE PR against `main` via GitHub REST API; wait for six CI checks on
    the final SHA; do not merge.
 
 ## Rules
