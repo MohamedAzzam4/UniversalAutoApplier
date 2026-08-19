@@ -7,7 +7,11 @@
   (milestone 9) DONE at `6462402`**, **orchestration opt-in (WQ-7C closure
   link) implemented + full gates green + bounded live chain proven through the
   real-ATS boundary**, SmartRecruiters real-ATS mutation blocked by external
-  DataDome wall (safe stop, no bypass); evidence finalization + PR pending).
+  DataDome wall (safe stop, no bypass); **natural full-workflow same-job live
+  proof DONE (normal `run_all.py` entry, unchanged JobHunter: 2 naturally
+  discovered/exported rows → UAA synthetic orchestration → RobCo Ashby form
+  mutated with approved synthetic CV, `submitted=false`; Siemens portal apply
+  blocked by consent overlay, safe stop)**; evidence finalization + PR pending).
 - **Repository:** `MohamedAzzam4/UniversalAutoApplier`.
 - **PR:** none yet (one PR against `main` will be opened at the end via GitHub
   REST API; no local `gh` shim; do not merge).
@@ -349,6 +353,63 @@ Implementation milestone shipped as commit `417ce97` (pushed, verified):
   zero submit attempts, stops at final submit without submitting, refuses
   non-synthetic profile and disarmable-interlock config.
 
+Milestone: Natural FULL-workflow same-job live proof (2026-08-19) — DONE
+- Natural automotive-style full workflow from the NORMAL entry point
+  (`run_all.py --threshold 1.0 --german-policy accept_all`) in a throwaway
+  copy of JobHunter (commit `0e8ba2f`, unchanged; only the synthetic
+  `config/profile.yml`/`cv.md` in the workdir): scan → evaluate → tailor →
+  export. First run evaluation failed because the default model list is stale
+  (OpenRouter 404/429 on every model); the chain in the synthetic profile was
+  replaced with 4 verified working free models (no repo change). Successful
+  run EXIT=0 produced `data/application_queue.jsonl` with **2 naturally
+  discovered rows**, both score 4.7/5 `apply`:
+  - Robco "Working Student - Robot Pilot / Data Collection (m/f/d)"
+    (Indeed `jk=ee5808aafe77c034`, München),
+    `application_id=735df4e79a37c1bcdd608fd5dbc46ac6739ebf5372ce03eb5d10bff286ad43d8`;
+  - Siemens "Working Student (f/m/d) Simulation for Physical AI"
+    (Indeed `jk=711dc466890f4b3d`),
+    `application_id=e794e41d295b9391e22444dc8636598e64d69fa00579c6cfa8d2b36b181608dc`.
+  Both `platform=unknown`, `external_job_id=null` → canonical-URL identity;
+  both carry the whitelisted synthetic candidate snapshot (no markers needed —
+  this proof used the full orchestration opt-in path, not `queue-import`).
+  Queue SHA-256 `3032c933b55352e5954cd1c14f9db301a54859939c32cab7032dfc0cc684a2b2`.
+- SAME-JOB ATS mapping verified: Siemens row ↔ official careers portal
+  JobDetail `https://jobs.siemens.com/en_US/externaljobs/JobDetail/516786`
+  (same title/location/company); Robco row ↔ RobCo's Ashby board
+  `https://jobs.ashbyhq.com/robco/9c4d43d5-f2b6-48b5-97f8-f5b0a11f58fa`
+  (same title/location/company, anonymous form, no login).
+- UAA synthetic orchestration against the unedited natural queue (fresh
+  `uaa_data`, server 127.0.0.1:8029, `UAA_ENABLE_REAL_SUBMISSION=false`):
+  POST `/api/orchestration/start {mode:sequential, synthetic_orchestration:true,
+  max_jobs:5}` → run `d1d72c1b-6a69-44ae-95d2-37e1f7d5a44b` `completed`;
+  `queue_hash_before==after` (unedited), `jobhunter_pid=null` ("production
+  workflow not re-run"), `queue_import_state=success`, `queue_imported=2`,
+  `newly_eligible_ids == targeted_ids == processed_ids` == both ids,
+  `pass_count=1`, `errors=[]`. DB: both jobs `needs_user_input` (intervention),
+  `candidate_profile.synthetic_test=true`, `submission_results=0`.
+- Live synthetic mutation — RobCo (primary target): `live-synthetic-mutation
+  --application-id 735df4e7 --start-url https://jobs.ashbyhq.com/robco/9c4d43d5...
+  ` → `needs_user_input`, 1 `safe_apply` click to the `/application` form,
+  **12 fields extracted, 5 filled** (Test/Candidate, test.candidate@example.com,
+  +1 555 0199, Resume=`synthetic-docs\wq7c-test-cv.pdf` approved doc upload),
+  2 `intervention_needed` (Salary Expectations, LinkedIn URL — never
+  fabricated), uploads confirmed 1 ("approved synthetic document"),
+  `plan_hash=11dac7183134f83a5cacec4c736c2f58a18e946dc3fbda540a4da11ce74c2d1a`,
+  2-pass plan chain, interlock `installed=True` all-zero counters,
+  **`submitted=False`**, stopped `required_fields_unresolved`.
+- Live synthetic mutation — Siemens (backup target): `live-synthetic-mutation
+  --application-id e794e41d --start-url .../externaljobs/JobDetail/516786` →
+  `needs_user_input`/`click_failed`: the UserCentrics consent overlay
+  (`div#usercentrics-root`) intercepted the Apply click to
+  `ApplicationMethods?folderId=516786` (30s timeout) in the ephemeral profile
+  (no consent cookies). Security/consent wall before mutation → policy STOP,
+  no bypass; `submitted=False`, interlock armed. (The invocation's shell exit
+  1 was a cp1252 console encode crash while printing the error list; persisted
+  `report.json` is authoritative.)
+- Evidence manifest (sanitized, run-workdir live only, not committed):
+  `C:\Users\LOQ\AppData\Local\Temp\opencode\jh_ws_natural_20260819\live_evidence\MANIFEST.md`.
+  Run artifacts under `...\jh_ws_natural_20260819\live_evidence\<appid>-<ts>\`.
+
 ## Changed files
 
 - `src/universal_auto_applier/services/orchestration_service.py`
@@ -518,16 +579,18 @@ Full local gate (all green) at commit `417ce97`:
 
 ## Exact next action
 
-1. **Evidence finalization** — add sanitized orchestration-opt-in and bounded
-   live-chain evidence under `docs/evidence/wq-7c/` (no cookies/tokens/
-   sessions/raw HTML dumps): the exported queue record's application_id, the
-   UAA query result showing the same application_id + markers, the durable
-   orchestration final state (run_id 2b29cf22, targeted_ids, counts), and the
-   two live-run reports (DataDome wall stop, `submitted=false`), plus the
-   deferred field-mapping notes.
+1. **Evidence finalization** — add sanitized orchestration-opt-in, bounded
+   live-chain, and natural full-workflow same-job proof evidence under
+   `docs/evidence/wq-7c/` (no cookies/tokens/sessions/raw HTML dumps): the
+   natural queue record ids + canonical-URL identity, the UAA orchestration
+   final state (run_id d1d72c1b, queue hash unchanged, targeted_ids/counts),
+   and the two live-run reports (RobCo Ashby mutation `submitted=false`;
+   Siemens consent-overlay stop, `submitted=false`), plus the deferred
+   field-mapping notes. Run-workdir manifest already written at
+   `C:\Users\LOQ\AppData\Local\Temp\opencode\jh_ws_natural_20260819\live_evidence\MANIFEST.md`.
 2. Update `docs/CURRENT_STATE.md`, `docs/WQ7_LOCAL_LIVE_RUN.md`,
-   `docs/NEXT_WORKPACKAGES.md`.
-3. Push the orchestration-opt-in commit (branch
+   `docs/NEXT_WORKPACKAGES.md` (only if any fact in them goes stale).
+3. Push this handoff update (branch
    `checkpoint/wq-7c-synthetic-mutation`), verify local HEAD == origin HEAD.
 4. Open ONE PR against `main` via GitHub REST API; wait for six CI checks on
    the final SHA; do not merge.
