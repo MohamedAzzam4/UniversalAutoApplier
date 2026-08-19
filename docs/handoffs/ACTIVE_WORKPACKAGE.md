@@ -11,7 +11,12 @@
   proof DONE (normal `run_all.py` entry, unchanged JobHunter: 2 naturally
   discovered/exported rows → UAA synthetic orchestration → RobCo Ashby form
   mutated with approved synthetic CV, `submitted=false`; Siemens portal apply
-  blocked by consent overlay, safe stop)**; evidence finalization + PR pending).
+  blocked by consent overlay, safe stop); closure evidence finalized at
+  `docs/evidence/wq-7c/FULL_SAME_JOB_CLOSURE.md`, SAME-JOB identity verified
+  end-to-end; an independent second scan the same day re-proved normal
+  discovery (12 jobs) but its evaluation stage hit the OpenRouter
+  free-models-per-day quota (external 429, no bypass)**;
+  evidence finalization + PR pending).
 - **Repository:** `MohamedAzzam4/UniversalAutoApplier`.
 - **PR:** none yet (one PR against `main` will be opened at the end via GitHub
   REST API; no local `gh` shim; do not merge).
@@ -410,6 +415,32 @@ Milestone: Natural FULL-workflow same-job live proof (2026-08-19) — DONE
   `C:\Users\LOQ\AppData\Local\Temp\opencode\jh_ws_natural_20260819\live_evidence\MANIFEST.md`.
   Run artifacts under `...\jh_ws_natural_20260819\live_evidence\<appid>-<ts>\`.
 
+Milestone: Final system-closure proof — evidence finalized — DONE (2026-08-19)
+- Gap 1 (normal discovery) and gap 2 (SAME-JOB identity) closed. The closure
+  chain begins at the normal bounded search entry `run_all.py --threshold 1.0
+  --german-policy accept_all` (no `run_evaluate(mode="url")`, no pipeline.md
+  injection, JobHunter unchanged): live JobSpy scan → 7 naturally discovered
+  jobs evaluated → 2 `apply` rows exported to `application_queue.jsonl`
+  (Robco 4.7, Siemens 4.7; queue SHA-256 `3032c933…`) → UAA synthetic
+  orchestration run `d1d72c1b…` imported exactly those two application_ids
+  (markers stamped, `needs_user_input`, `submission_results=0`) → the **same**
+  Robco job on RobCo's real Ashby board reached: 12 fields extracted, 5 filled
+  (Test/Candidate, test.candidate@example.com, +1 555 0199, approved synthetic
+  CV `wq7c-test-cv.pdf` uploaded, hash `e5dd0dd5…` ∈ approved set), 2
+  interventions never fabricated, 2-pass plan chain
+  (`plan_hash=11dac718…`), interlock installed/all-zero, **`submitted=false`**,
+  stopped `required_fields_unresolved`; Siemens same-job attempt blocked by the
+  UserCentrics consent overlay pre-mutation (no bypass, `submitted=false`).
+  Full per-candidate evidence + SAME-JOB traceability assertion:
+  `docs/evidence/wq-7c/FULL_SAME_JOB_CLOSURE.md`.
+- Independent second run the same day (fresh workdir, same bounded config)
+  re-proved normal discovery live (12 AI/Data Working-Student jobs) but every
+  evaluation returned OpenRouter HTTP 429 — the single key's
+  `free-models-per-day` quota (50/day) was already consumed by earlier
+  same-day runs ("Add 10 credits to unlock 1000 free model requests per day").
+  External provider quota; no bypass attempted; evaluation/export stage of the
+  closure rests on the same-day successful natural run above.
+
 ## Changed files
 
 - `src/universal_auto_applier/services/orchestration_service.py`
@@ -579,21 +610,22 @@ Full local gate (all green) at commit `417ce97`:
 
 ## Exact next action
 
-1. **Evidence finalization** — add sanitized orchestration-opt-in, bounded
-   live-chain, and natural full-workflow same-job proof evidence under
-   `docs/evidence/wq-7c/` (no cookies/tokens/sessions/raw HTML dumps): the
-   natural queue record ids + canonical-URL identity, the UAA orchestration
-   final state (run_id d1d72c1b, queue hash unchanged, targeted_ids/counts),
-   and the two live-run reports (RobCo Ashby mutation `submitted=false`;
-   Siemens consent-overlay stop, `submitted=false`), plus the deferred
-   field-mapping notes. Run-workdir manifest already written at
-   `C:\Users\LOQ\AppData\Local\Temp\opencode\jh_ws_natural_20260819\live_evidence\MANIFEST.md`.
+1. **PR preparation is complete on evidence** — sanitized closure evidence and
+   the natural same-job proof are recorded (repo doc
+   `docs/evidence/wq-7c/FULL_SAME_JOB_CLOSURE.md` + existing MANIFEST, plus the
+   run-workdir manifest at
+   `C:\Users\LOQ\AppData\Local\Temp\opencode\jh_ws_natural_20260819\live_evidence\MANIFEST.md`).
+   Note: re-running evaluation now is blocked by the external OpenRouter
+   free-tier daily quota on the single configured key (HTTP 429
+   `free-models-per-day`, 50/day); a fresh paid/available key would allow an
+   independent re-run, but it is not required for the standing closure evidence.
 2. Update `docs/CURRENT_STATE.md`, `docs/WQ7_LOCAL_LIVE_RUN.md`,
-   `docs/NEXT_WORKPACKAGES.md` (only if any fact in them goes stale).
-3. Push this handoff update (branch
+   `docs/NEXT_WORKPACKAGES.md` only if any fact in them goes stale.
+3. Push this handoff + evidence update (branch
    `checkpoint/wq-7c-synthetic-mutation`), verify local HEAD == origin HEAD.
 4. Open ONE PR against `main` via GitHub REST API; wait for six CI checks on
-   the final SHA; do not merge.
+   the final SHA; do not merge. If the reviewer requires a fresh independent
+   evaluation run, add an OpenRouter key with remaining free quota first.
 
 ## Rules
 
