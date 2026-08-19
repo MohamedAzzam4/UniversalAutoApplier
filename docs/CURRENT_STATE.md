@@ -4,17 +4,19 @@ Authoritative snapshot of `UniversalAutoApplier` as of the project rebaseline.
 If this document contradicts any older planning doc, this document wins for
 "what is implemented"; the planning doc keeps its architectural authority.
 
-- Reference commit: `cab7a13d0e15c06ae04b4c180d11920a9e70fb97` (`main`,
-  merge of PR #13 — WQ-7B real ATS navigation reconnaissance)
+- Reference commit: `2ac1e006fa8119d5d487625a5c36a17b4f4c5c20` (`main`,
+  merge of PR #15 — WQ-7C controlled synthetic ATS mutation +
+  end-to-end vertical slice, accepted/merged)
 - Coverage: all roadmap phases 0-8, the controlled final submission
-  pipeline, and WQ-1 through WQ-7B are merged to `main` via reviewed PRs.
+  pipeline, and WQ-1 through WQ-7C are merged to `main` via reviewed PRs.
 - Branch work: WQ-2 (JobHunter queue export) lives in the JobHunter repo and
   is merged at JobHunter main `0e8ba2f`. WQ-3 (durable production queue
   import, API, startup import, dashboard Queue Import card), WQ-4 (background
   browser pipeline), WQ-5 (restart recovery), WQ-6 (cross-repo
-  orchestration), WQ-7A (safe live ATS dry-run), and WQ-7B (real ATS
-  navigation reconnaissance) are all merged to `main`. Real field
-  mutation/upload and real submission are still later work.
+  orchestration), WQ-7A (safe live ATS dry-run), WQ-7B (real ATS
+  navigation reconnaissance), and WQ-7C (controlled synthetic ATS mutation)
+  are all merged to `main`. Real **final submission** is still later work
+  (WQ-8); synthetic pre-submit field mutation/upload is proven.
 
 ## What is implemented
 
@@ -38,7 +40,7 @@ If this document contradicts any older planning doc, this document wins for
 | Cross-repo orchestration (WQ-6) | `services/orchestration_service.py`, `services/jobhunter_runner.py`, `api/routes/orchestration.py`, `persistence/orchestration_run_repository.py`, `migrations/0012_orchestration_runs.py`, `migrations/0013_orchestration_durable_evidence.py` | Sequential/parallel orchestration of JobHunter export → UAA import → UAA pipeline. Durable run state with targeted/processed/remaining IDs, all pipeline run IDs, and pass count. Process-level boundary (never imports JobHunter modules). Fail-closed target manifest. Multi-batch continuation with no-progress detection. Never performs final submission. |
 | Live ATS dry-run (WQ-7A) | `browser/live_runner.py`, `browser/submit_interlock.py`, `cli.py`, `execution_mode.py`, `services/live_dry_run_platforms.py`, `synthetic_profile.py` | opt-in live browser dry-run with a hard submit interlock installed before any page script; never clicks final submit. |
 | Recon-only nav (WQ-7B) | `execution_mode.py` (`UAA_LIVE_RECON_ONLY`), `navigator/apply_path_finder.py` (`embed_rank` widget preference), fixtures under `tests/fixtures/recon/`, `docs/evidence/wq-7b/MANIFEST.md` | real public forms reached on Greenhouse + Lever; Workday, SmartRecruiters, iCIMS externally gated; zero typed values, zero uploads, zero UAA submit clicks. |
-| Synthetic ATS mutation (WQ-7C) | `synthetic_profile.py`, `config.py` (`UAA_LIVE_SYNTHETIC_MUTATION` opt-in), `browser/mutation_plan.py`, `form_engine/live_executor.py`, `browser/live_runner.py` (`run_synthetic_mutation`), `browser/submit_interlock.py`, `cli.py` (`live-synthetic-mutation`), `queue-import --synthetic-mutation`, orchestration `synthetic_orchestration` opt-in (migration `0014`), `navigator/apply_path_finder.py` invisible-badge/`cards[` fixes | opt-in only (default off), synthetic identity + approved-document hash enforcement, mutually exclusive with real submission, interlock armed before mutation, plan frozen/hashed pre-mutation, `submitted=false` always. Full-system same-job proof to the pre-submit boundary accepted (see `docs/evidence/wq-7c/`). |
+| Synthetic ATS mutation (WQ-7C) | `synthetic_profile.py`, `config.py` (`UAA_LIVE_SYNTHETIC_MUTATION` opt-in), `browser/mutation_plan.py`, `form_engine/live_executor.py`, `browser/live_runner.py` (`run_synthetic_mutation`), `browser/submit_interlock.py`, `cli.py` (`live-synthetic-mutation`), `queue-import --synthetic-mutation`, orchestration `synthetic_orchestration` opt-in (migration `0014`), `navigator/apply_path_finder.py` invisible-badge/`cards[` fixes | opt-in only (default off), synthetic identity + approved-document hash enforcement, mutually exclusive with real submission, interlock armed before mutation, plan frozen/hashed pre-mutation, `submitted=false` always. Full-system same-job proof to the pre-submit boundary accepted and merged via PR #15 (see `docs/evidence/wq-7c/`). |
 | CI | `verify-windows-py314.yml`, `verify-linux.yml` | Windows+Python 3.14 primary (core + playwright jobs); Linux matrix 3.11-3.14; non-live only (no external live tests in default CI). |
 
 ## Status
@@ -57,11 +59,13 @@ WQ-7B (real ATS navigation reconnaissance) was accepted and merged via PR #13
 (head `adc8c8d`, merge `cab7a13`), closed by PR #14 merge `b5e1532f`.
 
 **WQ-7C (controlled synthetic ATS mutation + end-to-end vertical slice) is
-ACCEPTED by the owner and in flight on
-`checkpoint/wq-7c-synthetic-mutation` (final SHA resolves dynamically; the
-handoff's completion commits `fca07fc…`).** One final reviewed PR against
-`main` will carry WQ-7C; it is NOT merged yet. Once merged, `main` advances
-and this document's reference commit must be updated.
+MERGED / COMPLETE.** It was accepted by the owner and merged to `main` via
+PR #15 (head `395b7dc`, merge commit `2ac1e00`). WQ-7C proved the complete
+core workflow through the **pre-submit boundary** on one job kept identical
+throughout (normal JobHunter discovery → Robco/Ashby official board), with
+`submitted=false`, an all-zero submit interlock, and **zero actual
+applications submitted**. WQ-7C's six final CI checks all passed on the PR
+head (Linux 3.11/3.12/3.13/3.14, Windows Core, Windows Playwright).
 
 Conservative statement of what the **complete core workflow** now proves
 (through the pre-submit boundary):
@@ -92,21 +96,24 @@ RobCo's official Ashby board, `submitted=false`, interlock all-zero). See
 - broad long-run reliability across many jobs / ATS variants;
 - optional field-mapping / embedding optimizations (deliberately deferred).
 
-Latest verified CI (WQ-7B final PR head, `adc8c8d`):
+Latest verified CI (WQ-7C final PR head, `395b7dc` — exactly the six
+required checks, all successful):
 
 ```text
-Linux  runner: 31971929393  -> success
-Windows runner: 31971929343  -> success
+Linux  + Python 3.11   -> success
+Linux  + Python 3.12   -> success
+Linux  + Python 3.13   -> success
+Linux  + Python 3.14   -> success
+Windows Core           -> success
+Windows Playwright     -> success
 ```
-
-WQ-7C's final PR CI conclusions will be recorded in the final report.
 
 ## Test counts (reference run)
 
 ```text
-1209 unit/contract/integration  passed  (WQ-7B merged head, 2026-08-16)
-256  playwright                passed
-1465 total                      passed
+1258 unit/contract/integration  passed  (WQ-7C merged head `395b7dc`, not live/not playwright)
+269  playwright                passed  (WQ-7C merged head `395b7dc`)
+1527 total                      passed
 ```
 
 ## Submission capability (accurate contract)
@@ -165,13 +172,13 @@ in production; none of them are unimplemented core phases. See
    `main`; real concurrent scan/apply production use still awaits the real
    field-mutation/upload stage.
 5. **Real-ATS synthetic field mutation/upload is proven; real submission is
-   not.** WQ-7C (accepted, PR in flight) proved synthetic field typing +
-   approved synthetic document upload on real public forms (Greenhouse,
-   Lever, and the full-system Robco/Ashby trace) stopping pre-submit with
-   `submitted=false` and an all-zero submit interlock. Real **final submit**
-   remains only for the owner-approved staged plan on the user's machine
-   (WQ-8, not started); no real application has ever been submitted from CI,
-   the sandbox, or the synthetic proof runs.
+   not.** WQ-7C (accepted and merged via PR #15) proved synthetic field
+   typing + approved synthetic document upload on real public forms
+   (Greenhouse, Lever, and the full-system Robco/Ashby trace) stopping
+   pre-submit with `submitted=false` and an all-zero submit interlock. Real
+   **final submit** remains only for the owner-approved staged plan on the
+   user's machine (WQ-8, not started); no real application has ever been
+   submitted from CI, the sandbox, or the synthetic proof runs.
 6. **Queue-import concurrency lock is process-local.** The
    `QueueImportService` uses a `threading.Lock` stored on
    `app.state.queue_import_service`. This is safe for the current
