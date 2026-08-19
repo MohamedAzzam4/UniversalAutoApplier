@@ -44,6 +44,17 @@ class OrchestrationStartRequest(BaseModel):
         ),
     )
     max_jobs: int = Field(default=10, ge=1, le=100)
+    synthetic_orchestration: bool = Field(
+        default=False,
+        description=(
+            "WQ-7C explicit opt-in. When True, the run imports a pre-produced "
+            "synthetic queue (WQ-7C markers propagated; normal candidate data "
+            "rejected), does NOT re-run the production JobHunter workflow, and "
+            "targets only newly imported application IDs. Incompatible with "
+            "real submission mode and with parallel mode. Defaults to False "
+            "(full JobHunter workflow, unchanged)."
+        ),
+    )
 
 
 def _require_service(request: Request) -> Any:
@@ -74,6 +85,7 @@ def start_orchestration(request: Request, body: OrchestrationStartRequest) -> di
             mode=body.mode,
             fixture_html=body.fixture_html,
             max_jobs=body.max_jobs,
+            synthetic_orchestration=body.synthetic_orchestration,
         )
     except Exception as exc:
         # Distinguish configuration errors (400) from concurrent errors (409).
@@ -118,6 +130,7 @@ def get_orchestration_status(request: Request) -> dict[str, Any]:
         return {
             "run_id": None,
             "mode": "sequential",
+            "synthetic_orchestration": False,
             "status": "idle",
             "current_phase": "",
             "last_action": "",

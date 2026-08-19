@@ -225,3 +225,42 @@ WQ-7 blocks recognized final form submissions and common browser
 form-submission mechanisms as defense in depth. It does not guarantee
 that no synthetic data, autosave request, upload, draft, or custom
 network request reaches the ATS.
+
+## WQ-7C addendum — controlled synthetic ATS mutation (pre-submit)
+
+WQ-7A/B above ran branch `checkpoint/wq-7-real-ats-dry-runs`. The WQ-7C
+stage runs branch `checkpoint/wq-7c-synthetic-mutation` with the
+`synthetic-mutation` opt-in path (never used for real data, mutually
+exclusive with real submission):
+
+```powershell
+git checkout checkpoint/wq-7c-synthetic-mutation
+
+# Master opt-in (required, default off):
+$env:UAA_ENABLE_LIVE_PLATFORM_DRY_RUN = "true"
+$env:UAA_LIVE_SYNTHETIC_MUTATION = "true"
+
+# From a JobHunter application_queue.jsonl (real discovery path):
+$env:UAA_JOBHUNTER_QUEUE = "C:\path\to\application_queue.jsonl"
+python -m universal_auto_applier queue-import `
+  --queue-import-synthetic-mutation `
+  --queue-file-foreign-key-override runs/queue-import-edge/db.sqlite3
+
+# Or a single job URL driver:
+python -m universal_auto_applier live-synthetic-mutation `
+  --url "<real-public-ats-url>" `
+  --code "research-profile" `
+  --synthetic-cv "<synthetic-cv.pdf>" `
+  --synthetic-image "<synthetic-photo.jpg>" `
+  --headless
+```
+
+Preconditions enforced by the code (not by the operator): synthetic identity
++ approved-document hash allowlists, field-values DOCX—no real candidate PII,
+interlock armed before any page mutation, mutation plan frozen and hashed
+before execution, and `submitted` is always `false`. See
+`docs/generalization/TESTING_STRATEGY.md` and
+`docs/evidence/wq-7c/FULL_SAME_JOB_CLOSURE.md` for the attested run's exact
+commands, environment, and results. `--threshold 1.0` /
+`--german-policy accept_all` were used in the natural proof as TEST-ONLY
+overrides; JobHunter code is unchanged.

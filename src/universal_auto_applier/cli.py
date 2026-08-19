@@ -23,6 +23,22 @@ from universal_auto_applier.persistence.db import (
 from universal_auto_applier.persistence.job_repository import list_application_jobs
 from universal_auto_applier.persistence.migrations import apply_migrations
 
+# Single source of truth for every explicit CLI subcommand. ``__main__.py``
+# routes its argv[0] here so ``python -m universal_auto_applier <command>``
+# dispatches to :func:`run_command` instead of starting the dashboard server.
+# Keep this in sync with the subparsers registered in ``_build_parser``.
+CLI_COMMANDS: frozenset[str] = frozenset(
+    {
+        "list-jobs",
+        "queue-import",
+        "browser-session",
+        "live-dry-run",
+        "live-submit",
+        "live-dry-run-platforms",
+        "live-synthetic-mutation",
+    }
+)
+
 
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="python -m universal_auto_applier")
@@ -42,6 +58,15 @@ def _build_parser() -> argparse.ArgumentParser:
         "--path",
         type=Path,
         help="Optional operator-supplied absolute queue path overriding the configured one.",
+    )
+    queue_import.add_argument(
+        "--synthetic-mutation",
+        action="store_true",
+        help=(
+            "WQ-7C opt-in: stamp synthetic_test/wq7_synthetic markers on every "
+            "row whose candidate snapshot already IS the WQ-7C synthetic identity "
+            "(Test Candidate / test.candidate@example.com). Any other row is refused."
+        ),
     )
 
     session = subparsers.add_parser(
@@ -149,6 +174,45 @@ def _build_parser() -> argparse.ArgumentParser:
     platforms.add_argument("--channel", help="Playwright browser channel, e.g. chrome or msedge.")
     platforms.add_argument("--timeout-ms", type=int)
     platforms.add_argument("--max-steps", type=int)
+
+    synthetic = subparsers.add_parser(
+        "live-synthetic-mutation",
+        help=(
+            "WQ-7C: fill ONE real ATS form with the dedicated synthetic "
+            "mutation identity and approved synthetic documents, stopping "
+            "before final submit. Requires UAA_LIVE_SYNTHETIC_MUTATION=true "
+            "and a synthetic candidate snapshot on the job. Never submits, "
+            "never uses a real candidate."
+        ),
+    )
+    synthetic.add_argument(
+        "--application-id",
+        required=True,
+        help="Full application ID or an unambiguous prefix shown by list-jobs.",
+    )
+    synthetic.add_argument(
+        "--start-url",
+        help="Diagnostic URL override for this run only.",
+    )
+    synthetic.add_argument("--artifacts-dir", type=Path)
+    synthetic.add_argument("--profile-dir", type=Path)
+    synthetic.add_argument(
+        "--ephemeral-profile",
+        action="store_true",
+        help="Do not reuse saved browser cookies/login state.",
+    )
+    display_s = synthetic.add_mutually_exclusive_group()
+    display_s.add_argument("--headless", action="store_true", default=None)
+    display_s.add_argument("--headed", action="store_false", dest="headless")
+    synthetic.add_argument("--channel", help="Playwright browser channel, e.g. chrome or msedge.")
+    synthetic.add_argument("--timeout-ms", type=int)
+    synthetic.add_argument("--max-steps", type=int)
+    synthetic.add_argument(
+        "--max-mutations",
+        type=int,
+        default=None,
+        help="Optional per-run mutation budget (default: Settings value).",
+    )
 
     return parser
 
@@ -506,7 +570,9 @@ def _queue_import(settings: Settings, args: argparse.Namespace) -> int:
     """Import the configured queue through the named import service (WQ-3).
 
     Prints counts and structured row errors. This command never launches a
-    browser and never starts the pipeline.
+    browser and never starts the pipeline. With ``--synthetic-mutation``,
+    rows whose candidate snapshot matches the WQ-7C synthetic identity are
+    stamped with the synthetic markers (identity-guarded per row).
     """
     from universal_auto_applier.services.queue_import_service import (
         QueueImportConcurrentError,
@@ -518,7 +584,11 @@ def _queue_import(settings: Settings, args: argparse.Namespace) -> int:
     try:
         service = QueueImportService(settings, session_factory)
         try:
-            summary = service.run(path=args.path, trigger="cli")
+            summary = service.run(
+                path=args.path,
+                trigger="cli",
+                synthetic_mutation=getattr(args, "synthetic_mutation", False),
+            )
         except QueueImportConfigurationError as exc:
             print(f"error: {exc}", file=sys.stderr)
             return 2
@@ -627,6 +697,108 @@ def _live_dry_run_platforms(settings: Settings, args: argparse.Namespace) -> int
     return 1
 
 
+def _live_synthetic_mutation(settings: Settings, args: argparse.Namespace) -> int:
+    """Run ONE WQ-7C controlled synthetic mutation (never submits)."""
+    if not settings.live_synthetic_mutation:
+        print(
+            "error: WQ-7C synthetic mutation is disabled. Set "
+            "UAA_LIVE_SYNTHETIC_MUTATION=true (it is OFF by default) and "
+            "ensure UAA_ENABLE_REAL_SUBMISSION is not set.",
+            file=sys.stderr,
+        )
+        return 2
+
+    try:
+        job = _find_job(settings, str(args.application_id))
+    except ValueError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 2
+
+    if args.start_url:
+        parts = urlsplit(str(args.start_url))
+        if parts.scheme not in {"http", "https"} or not parts.hostname:
+            print("error: --start-url must be an HTTP(S) URL", file=sys.stderr)
+            return 2
+        job = job.model_copy(update={"url": str(args.start_url)})
+
+    # WQ-7C safety gate: the job's candidate snapshot must be synthetic.
+    from universal_auto_applier.synthetic_profile import is_synthetic_metadata
+
+    if not is_synthetic_metadata(job.metadata):
+        print(
+            "error: this job does not carry a synthetic candidate snapshot "
+            "(UAA_LIVE_SYNTHETIC_MUTATION only runs against synthetic "
+            "identities). Refusing.",
+            file=sys.stderr,
+        )
+        return 2
+
+    headless = settings.browser_headless if args.headless is None else bool(args.headless)
+    # Synthetic mutation always uses an ephemeral browser profile: it never
+    # reuses saved cookies or login state.
+
+    from universal_auto_applier.synthetic_profile import (
+        SyntheticMutationProfile,
+        approved_document_hashes,
+        create_synthetic_mutation_documents,
+    )
+
+    profile = SyntheticMutationProfile()
+    docs_dir = settings.data_dir / "synthetic-docs"
+    cv, cover = create_synthetic_mutation_documents(docs_dir)
+    approved = approved_document_hashes(cv, cover)
+
+    config = LiveBrowserConfig(
+        artifacts_root=args.artifacts_dir or settings.data_dir / "live-runs",
+        profile_dir=None,
+        headless=headless,
+        channel=args.channel or settings.browser_channel,
+        timeout_ms=args.timeout_ms or settings.browser_timeout_ms,
+        max_steps=args.max_steps or settings.browser_max_steps,
+        hard_submit_block=True,  # interlock armed before any mutation
+    )
+    budget = args.max_mutations or settings.synthetic_mutation_max_mutations
+    budget = max(1, min(budget, settings.synthetic_mutation_max_mutations))
+
+    # Point the job's document fields at the approved synthetic files so the
+    # deterministic file mapper proposes ONLY approved synthetic documents.
+    job = job.model_copy(update={"cv_pdf": str(cv), "cover_letter_pdf": str(cover)})
+
+    report = LiveBrowserRunner(config).run_synthetic_mutation(
+        job,
+        profile,
+        approved_document_hashes=approved,
+        mutation_budget=budget,
+    )
+
+    print(f"status: {report.status}")
+    print(f"stopped_reason: {report.stopped_reason}")
+    print(f"final_url: {report.final_url}")
+    print(f"clicks: {len(report.click_path)}")
+    print(f"fields: {len(report.fields)}")
+    print(f"uploads: {len(report.uploads)}")
+    print(f"plan_hash: {report.plan_hash}")
+    print(f"plan_path: {report.mutation_plan_path}")
+    print(f"plan_chain_hashes: {len(report.plan_chain_hashes)}")
+    print(f"plan_chain_hash: {report.plan_chain_hash}")
+    print(f"plan_chain_paths: {len(report.mutation_plan_chain_paths)}")
+    counters = report.submit_interlock
+    if counters is not None:
+        print(f"interlock: installed={counters.installed} blocked={counters.blocked_submissions}")
+    print(f"submitted: {report.submitted}")
+    print(f"report: {report.report_path}")
+    if report.errors:
+        for err in report.errors:
+            print(f"  error: {err}")
+    if report.submitted:
+        return 1
+    if report.status == "review_ready":
+        return 0
+    if report.status == "needs_user_input":
+        return 3
+    return 2
+
+
 def run_command(argv: list[str], settings: Settings) -> int:
     """Run a non-server CLI command and return its process exit code."""
     parser = _build_parser()
@@ -643,6 +815,8 @@ def run_command(argv: list[str], settings: Settings) -> int:
         return _live_submit(settings, args)
     if args.command == "live-dry-run-platforms":
         return _live_dry_run_platforms(settings, args)
+    if args.command == "live-synthetic-mutation":
+        return _live_synthetic_mutation(settings, args)
     parser.error(f"unknown command: {args.command}")
     return 2
 

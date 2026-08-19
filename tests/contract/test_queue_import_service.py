@@ -15,6 +15,7 @@ import pytest
 from universal_auto_applier.config import Settings
 from universal_auto_applier.core.identity import compute_application_id
 from universal_auto_applier.persistence.db import make_session_factory
+from universal_auto_applier.persistence.job_repository import get_application_job
 from universal_auto_applier.persistence.models import Base, QueueImportRunRow
 from universal_auto_applier.services.queue_import_service import (
     QueueImportConcurrentError,
@@ -210,6 +211,88 @@ class TestServiceRun:
         # A second run must succeed — the lock was released.
         summary = service.run(trigger="api")
         assert summary.state == QueueImportState.SUCCESS
+
+
+class TestServiceSyntheticMutation:
+    """``service.run(synthetic_mutation=...)`` propagates the WQ-7C opt-in."""
+
+    def _synthetic_line(
+        self,
+        *,
+        full_name: str = "Test Candidate",
+        email: str = "test.candidate@example.com",
+        external_job_id: str = "syn-1",
+    ) -> str:
+        url = "https://example.com/syn/1"
+        application_id = compute_application_id(
+            platform="greenhouse", external_job_id=external_job_id, url=url
+        )
+        return json.dumps(
+            {
+                "application_id": application_id,
+                "platform": "greenhouse",
+                "source": "greenhouse",
+                "company": "Carta",
+                "title": "Account Executive, Legal Services",
+                "url": url,
+                "location": "London",
+                "job_description": "Full JD",
+                "score": 5.0,
+                "verdict": "apply",
+                "cv_pdf": None,
+                "cover_letter_pdf": None,
+                "status": "evaluated",
+                "external_job_id": external_job_id,
+                "metadata": {
+                    "candidate_profile": {
+                        "full_name": full_name,
+                        "first_name": full_name.split()[0],
+                        "last_name": full_name.split()[-1],
+                        "email": email,
+                        "phone": "+1 555 0199",
+                        "current_position": "Senior Account Executive",
+                        "city": "Test City",
+                        "country": "Syntheticland",
+                    }
+                },
+            }
+        )
+
+    def test_opt_in_stamps_matching_identity(self, tmp_path: Path, session_factory) -> None:
+        queue_path = tmp_path / "queue.jsonl"
+        queue_path.write_text(self._synthetic_line() + "\n", encoding="utf-8")
+        service = QueueImportService(_make_settings(tmp_path, queue_path), session_factory)
+
+        summary = service.run(trigger="cli", synthetic_mutation=True)
+
+        assert summary.state == QueueImportState.SUCCESS
+        assert summary.imported == 1
+        with session_factory() as session:
+            job = get_application_job(
+                session,
+                compute_application_id(
+                    platform="greenhouse", external_job_id="syn-1", url="https://example.com/syn/1"
+                ),
+            )
+        assert job is not None
+        snapshot = job.metadata["candidate_profile"]
+        assert snapshot["synthetic_test"] is True
+        assert snapshot["wq7_synthetic"] is True
+
+    def test_opt_in_refuses_mismatched_identity(self, tmp_path: Path, session_factory) -> None:
+        queue_path = tmp_path / "queue.jsonl"
+        queue_path.write_text(
+            self._synthetic_line(full_name="Real Person", email="real.person@example.com") + "\n",
+            encoding="utf-8",
+        )
+        service = QueueImportService(_make_settings(tmp_path, queue_path), session_factory)
+
+        summary = service.run(trigger="cli", synthetic_mutation=True)
+
+        assert summary.state == QueueImportState.FAILED
+        assert summary.imported == 0
+        assert summary.error_count == 1
+        assert "synthetic-mutation stamp refused" in summary.row_errors[0]["error"]
 
 
 class TestDurability:

@@ -19,7 +19,7 @@ import logging
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, cast
+from typing import TYPE_CHECKING, Any, cast
 
 from playwright.sync_api import Locator, Page
 
@@ -31,6 +31,16 @@ from universal_auto_applier.core.models import (
     FormField,
 )
 from universal_auto_applier.form_engine.fill_engine import fill_form
+from universal_auto_applier.synthetic_profile import (
+    SyntheticMutationProfile,
+    sha256_file,
+)
+
+if TYPE_CHECKING:
+    from universal_auto_applier.browser.mutation_plan import (
+        MutationPlan,
+        MutationPlanEntry,
+    )
 
 logger = logging.getLogger("universal_auto_applier.form_engine.live_executor")
 
@@ -1227,10 +1237,385 @@ def execute_live_form_with_llm(
     return execution
 
 
+@dataclass
+class SyntheticMutationPass:
+    """One frozen mutation pass with its own pre-mutation plan.
+
+    Every pass (the initial extraction pass and each bounded reveal pass)
+    builds and freezes its own plan BEFORE mutating anything. Keeping the
+    passes ordered lets evidence prove that every actual mutation belongs
+    to a hash-verifiable plan.
+    """
+
+    pass_index: int
+    plan: MutationPlan
+    plan_hash: str
+    mutations_performed: int
+    budget_consumed: int
+
+
+@dataclass
+class SyntheticMutationExecution:
+    """Result of one WQ-7C synthetic mutation pass over a live form.
+
+    The frozen :attr:`plan` and its :attr:`plan_hash` are recorded before
+    any mutation happened. Only entries the plan decided ``mutate`` were
+    written; everything else was left untouched.
+
+    :attr:`passes` is the deterministic ordered chain of every frozen plan
+    that ran (initial + each reveal pass). :attr:`plan_chain_hash` covers
+    that whole ordered chain so the persisted evidence proves no mutation
+    happened outside a frozen plan.
+    """
+
+    plan: MutationPlan
+    plan_hash: str
+    mutations_performed: int
+    budget_consumed: int = 0
+    fields: list[LiveFieldRecord] = field(default_factory=list[LiveFieldRecord])
+    uploads: list[LiveUploadRecord] = field(default_factory=list[LiveUploadRecord])
+    validation_errors: list[str] = field(default_factory=list[str])
+    required_unresolved: int = 0
+    passes: list[SyntheticMutationPass] = field(default_factory=list[SyntheticMutationPass])
+    plan_chain_hash: str = ""
+
+
+def plan_chain_hash(plan_hashes: list[str]) -> str:
+    """Deterministic SHA-256 over the ordered chain of per-pass plan hashes.
+
+    The order matters (reveal runs after the initial pass), and the input is
+    the per-pass plan hash — which itself excludes the volatile
+    ``generated_at`` timestamp — so identical chains always re-verify.
+    """
+    canonical = json.dumps(
+        list(plan_hashes),
+        sort_keys=False,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    return hashlib.sha256(canonical).hexdigest()
+
+
+def _entry_to_status(entry: MutationPlanEntry) -> str:
+    """Map a plan decision onto the LiveFieldRecord status vocabulary."""
+    return {
+        "mutate": "filled",
+        "skip": "skipped",
+        "block": "blocked",
+        "needs_intervention": "intervention_needed",
+    }[entry.decision]
+
+
+def _record_for_entry(
+    *,
+    entry: MutationPlanEntry,
+    target: _LiveFieldTarget | None,
+    page: Page,
+    status: str,
+    filled_value: str = "",
+    selected_value: str = "",
+    explanation: str | None = None,
+) -> LiveFieldRecord:
+    """Build the evidence record for one plan entry."""
+    return LiveFieldRecord(
+        page_url=page.url,
+        selector=target.selector_hint if target else entry.selector,
+        label=entry.label,
+        field_type=entry.field_type,
+        status=cast(Any, status),
+        source=entry.value_source or None,
+        explanation=explanation if explanation is not None else entry.explanation,
+        field_token=entry.selector,
+        proposed_answer=entry.proposed_value,
+        confidence=entry.confidence,
+        category=entry.category,
+        risk_level=entry.risk_level,
+        requires_confirmation=False,
+        options=entry.options,
+        selected_value=selected_value,
+        filled_value=filled_value,
+    )
+
+
+def _run_mutation_pass(
+    *,
+    page: Page,
+    mutation_profile: SyntheticMutationProfile,
+    job: ApplicationJob,
+    approved_document_hashes: frozenset[str],
+    budget: int,
+    existing_tokens: set[str] | None = None,
+) -> SyntheticMutationExecution:
+    """Extract, plan, and execute one mutation pass (initial or revealed).
+
+    ``existing_tokens`` filters the extraction to fields the caller has not
+    already processed. The plan is built and frozen BEFORE any mutation.
+    """
+    from universal_auto_applier.browser.mutation_plan import build_mutation_plan
+
+    candidate = mutation_profile.to_candidate_profile()
+    targets = _extract_live_fields(page)
+    if existing_tokens:
+        targets = [t for t in targets if t.token not in existing_tokens]
+    if not targets:
+        empty_plan = build_mutation_plan(
+            [],
+            candidate,
+            job,
+            approved_document_hashes=approved_document_hashes,
+            budget=budget,
+            application_id=job.application_id,
+            page_url=page.url,
+        )
+        return SyntheticMutationExecution(
+            plan=empty_plan,
+            plan_hash=empty_plan.plan_hash,
+            mutations_performed=0,
+        )
+
+    plan = build_mutation_plan(
+        [t.field for t in targets],
+        candidate,
+        job,
+        approved_document_hashes=approved_document_hashes,
+        budget=budget,
+        application_id=job.application_id,
+        page_url=page.url,
+    )
+    plan_hash = plan.plan_hash  # frozen BEFORE any mutation
+    target_by_token = {t.token: t for t in targets}
+
+    execution = SyntheticMutationExecution(
+        plan=plan,
+        plan_hash=plan_hash,
+        mutations_performed=0,
+    )
+    budget_remaining = budget
+
+    for entry in plan.entries:
+        target = target_by_token.get(entry.selector)
+        if entry.decision == "mutate":
+            if budget_remaining <= 0:
+                execution.fields.append(
+                    _record_for_entry(
+                        entry=entry,
+                        target=target,
+                        page=page,
+                        status="skipped",
+                        explanation="mutation budget exhausted",
+                    )
+                )
+                continue
+            if entry.proposed_value is None:
+                execution.fields.append(
+                    _record_for_entry(
+                        entry=entry,
+                        target=target,
+                        page=page,
+                        status="blocked",
+                        explanation="mutate entry has no proposed value",
+                    )
+                )
+                continue
+            # Defense in depth: re-verify document hashes at execution time.
+            if entry.value_source == "document_path" and entry.proposed_value:
+                doc_path = Path(entry.proposed_value)
+                digest = sha256_file(doc_path) if doc_path.is_file() else ""
+                if digest not in approved_document_hashes:
+                    execution.fields.append(
+                        _record_for_entry(
+                            entry=entry,
+                            target=target,
+                            page=page,
+                            status="blocked",
+                            explanation=(
+                                "Document hash not approved at execution time; upload refused."
+                            ),
+                        )
+                    )
+                    continue
+            if target is None:
+                execution.fields.append(
+                    _record_for_entry(
+                        entry=entry,
+                        target=None,
+                        page=page,
+                        status="failed",
+                        explanation="field target not found in DOM",
+                    )
+                )
+                continue
+            is_valid, reason = validate_typed_answer(
+                target.field.type, entry.proposed_value, target.field.options
+            )
+            if not is_valid:
+                execution.fields.append(
+                    _record_for_entry(
+                        entry=entry,
+                        target=target,
+                        page=page,
+                        status="intervention_needed",
+                        explanation=f"typed-answer validation failed: {reason}",
+                    )
+                )
+                continue
+            try:
+                actual = _execute_field(target, entry.proposed_value)
+                if target.field.type == "file":
+                    page.wait_for_timeout(1_000)
+                elif target.field.type in ("radio", "select", "checkbox"):
+                    page.wait_for_timeout(500)
+                execution.mutations_performed += 1
+                execution.budget_consumed += 1
+                budget_remaining -= 1
+                execution.fields.append(
+                    _record_for_entry(
+                        entry=entry,
+                        target=target,
+                        page=page,
+                        status="filled",
+                        selected_value=actual,
+                        filled_value=actual,
+                    )
+                )
+                if target.field.type == "file":
+                    kind = cast(Any, _document_kind(target))
+                    execution.uploads.append(
+                        LiveUploadRecord(
+                            page_url=page.url,
+                            selector=target.selector_hint,
+                            document_kind=kind,
+                            path=str(entry.proposed_value),
+                            status="uploaded",
+                            message="approved synthetic document",
+                        )
+                    )
+            except Exception as exc:
+                execution.fields.append(
+                    _record_for_entry(
+                        entry=entry,
+                        target=target,
+                        page=page,
+                        status="failed",
+                        explanation=f"Playwright mutation failed: {exc}",
+                    )
+                )
+                logger.warning(
+                    "[%s] wq7c mutation failed selector=%s: %s",
+                    job.application_id[:12],
+                    target.selector_hint,
+                    exc,
+                )
+        else:
+            status = _entry_to_status(entry)
+            execution.fields.append(
+                _record_for_entry(
+                    entry=entry,
+                    target=target,
+                    page=page,
+                    status=status,
+                )
+            )
+            if (
+                target is not None
+                and target.field.required
+                and status
+                in {
+                    "blocked",
+                    "intervention_needed",
+                    "failed",
+                }
+            ):
+                execution.required_unresolved += 1
+
+    return execution
+
+
+def execute_live_form_synthetic(
+    page: Page,
+    mutation_profile: SyntheticMutationProfile,
+    job: ApplicationJob,
+    *,
+    approved_document_hashes: frozenset[str],
+    mutation_budget: int,
+) -> SyntheticMutationExecution:
+    """Fill the current rendered form page with WQ-7C synthetic data only.
+
+    The mutation PLAN is built and frozen (hashed) before any field is
+    touched. Only entries the plan decided ``mutate`` are executed, in
+    order, consuming ``mutation_budget`` per field; everything else is
+    recorded and left untouched. Document uploads are only ever performed
+    for files whose SHA-256 is in ``approved_document_hashes``.
+
+    After the initial pass, one bounded re-observation pass handles newly
+    revealed conditional fields the same way. Passive/non-fill inputs
+    (submit buttons, hidden inputs) are never mutated, and final submission
+    is never triggered here.
+    """
+    execution = _run_mutation_pass(
+        page=page,
+        mutation_profile=mutation_profile,
+        job=job,
+        approved_document_hashes=approved_document_hashes,
+        budget=mutation_budget,
+    )
+
+    # Deterministic ordered plan chain: the initial pass is always pass 0;
+    # each bounded reveal pass appends a new frozen plan. EVERY actual
+    # mutation must belong to one of these hash-verifiable plans.
+    passes: list[SyntheticMutationPass] = [
+        SyntheticMutationPass(
+            pass_index=0,
+            plan=execution.plan,
+            plan_hash=execution.plan_hash,
+            mutations_performed=execution.mutations_performed,
+            budget_consumed=execution.budget_consumed,
+        )
+    ]
+
+    # Single bounded re-observation for conditionally revealed fields.
+    remaining_budget = mutation_budget - execution.budget_consumed
+    existing_tokens = {f.field_token for f in execution.fields if f.field_token}
+    if existing_tokens and remaining_budget >= 1:
+        revealed = _run_mutation_pass(
+            page=page,
+            mutation_profile=mutation_profile,
+            job=job,
+            approved_document_hashes=approved_document_hashes,
+            budget=remaining_budget,
+            existing_tokens=existing_tokens,
+        )
+        # Merge revealed fields/records into the main execution. The
+        # budget is shared: revealed mutations count against it.
+        execution.mutations_performed += revealed.mutations_performed
+        execution.budget_consumed += revealed.budget_consumed
+        execution.fields.extend(revealed.fields)
+        execution.uploads.extend(revealed.uploads)
+        execution.required_unresolved += revealed.required_unresolved
+        passes.append(
+            SyntheticMutationPass(
+                pass_index=1,
+                plan=revealed.plan,
+                plan_hash=revealed.plan_hash,
+                mutations_performed=revealed.mutations_performed,
+                budget_consumed=revealed.budget_consumed,
+            )
+        )
+
+    execution.passes = passes
+    execution.plan_chain_hash = plan_chain_hash([p.plan_hash for p in passes])
+    execution.fields = consolidate_fields(execution.fields)
+    execution.validation_errors = _validation_errors(page)
+    return execution
+
+
 __all__ = [
     "LiveFormExecution",
+    "SyntheticMutationExecution",
+    "SyntheticMutationPass",
     "execute_live_form",
+    "execute_live_form_synthetic",
     "execute_live_form_with_llm",
+    "plan_chain_hash",
     "validate_typed_answer",
     "compute_field_token",
     "consolidate_fields",

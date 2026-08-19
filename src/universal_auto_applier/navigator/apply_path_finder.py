@@ -66,6 +66,16 @@ _SUBMITTED_TERMS = (
     "application received",
     "bewerbung eingegangen",
 )
+# Anti-bot widget frames (reCAPTCHA/hCaptcha anchors) always contain the
+# phrase "protected by reCAPTCHA" in their body. Those frames are the widget
+# itself — not page content — and their text must not be mistaken for a
+# challenge signal (Greenhouse renders such a badge on every job board).
+_CAPTCHA_WIDGET_URL_MARKS = (
+    "recaptcha.net",
+    "google.com/recaptcha",
+    "gstatic.com/recaptcha",
+    "hcaptcha.com",
+)
 _EXPIRED_TERMS = (
     "job expired",
     "position no longer available",
@@ -281,13 +291,19 @@ def _detect_blocker(page: Page, text: str) -> str | None:
     ):
         return "login_required"
 
+    # Only a user-facing captcha challenge blocks. Many ATS boards (for
+    # example every Greenhouse job board) embed a fixed, off-screen
+    # `size=invisible` reCAPTCHA badge on every page; that badge is not a
+    # challenge the applicant must solve, so it must not stop navigation.
+    # Visible checkbox widgets (`.g-recaptcha`/`.h-captcha`) and
+    # explicitly-sized challenge iframes still count as blockers.
+    captcha_widget_selector = (
+        "iframe[src*='recaptcha']:not([src*='size=invisible']), "
+        "iframe[src*='hcaptcha'], "
+        ".g-recaptcha, .h-captcha, [data-sitekey]"
+    )
     if any(term in text for term in _CAPTCHA_TERMS) or any(
-        _has_visible(
-            frame,
-            "iframe[src*='recaptcha'], iframe[src*='hcaptcha'], "
-            ".g-recaptcha, .h-captcha, [data-sitekey]",
-        )
-        for frame in frames
+        _has_visible(frame, captcha_widget_selector) for frame in frames
     ):
         return "captcha_detected"
 
@@ -295,7 +311,15 @@ def _detect_blocker(page: Page, text: str) -> str | None:
         return "security_wall"
 
     if any(term in text for term in _PAYMENT_TERMS) or any(
-        _has_visible(frame, "input[autocomplete^='cc-'], input[name*='card' i]") for frame in frames
+        _has_visible(
+            frame,
+            # Only real payment-card fields count as a payment wall. Lever
+            # names its form sections ``cards[<uuid>][fieldN]``; the bare
+            # ``cards[`` array-group convention is not a payment field and
+            # must not be mistaken for one.
+            "input[autocomplete^='cc-'], input[name*='card' i]:not([name*='cards[' i])",
+        )
+        for frame in frames
     ):
         return "payment_required"
     return None
@@ -311,6 +335,12 @@ def analyze_page(page: Page) -> LivePageAnalysis:
     visible_forms = 0
 
     for frame in page.frames:
+        if any(mark in frame.url for mark in _CAPTCHA_WIDGET_URL_MARKS):
+            # The widget's own iframe is the captcha badge itself, not page
+            # content; its body text ("protected by reCAPTCHA") would
+            # otherwise match _CAPTCHA_TERMS and block every board that
+            # merely embeds an invisible badge.
+            continue
         all_text_parts.append(_frame_text(frame))
         clickables.extend(_collect_clickables(frame))
         controls, files, signals = _application_control_counts(frame)

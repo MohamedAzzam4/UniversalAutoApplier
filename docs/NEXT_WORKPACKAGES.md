@@ -219,12 +219,26 @@ fixture behavior.
   imposed unsupported conditions after permitted replacement attempts; zero
   typed values, zero uploads, zero UAA submit clicks; no applications
   submitted.
-- **WQ-7C is the next proposed controlled stage** — controlled synthetic
-  field fill + synthetic document upload, with final submission forbidden.
-  Its detailed contract is not yet defined; it will be issued separately by
-  the owner/reviewer.
+- **WQ-7C complete** (accepted; one final PR against `main` in flight on
+  `checkpoint/wq-7c-synthetic-mutation`) — controlled **synthetic** field
+  fill + synthetic document upload on real public ATS forms, final submission
+  forbidden: component proofs on Greenhouse + Lever, then the accepted
+  full-system same-job proof (normal JobHunter discovery → Robco/Ashby form
+  mutated with the approved synthetic CV, `submitted=false`, submit interlock
+  all-zero, `test.candidate@example.com` identity constant throughout). Docs
+  and evidence: `docs/evidence/wq-7c/` (manifest, same-job closure,
+  `FINAL_ACCEPTANCE.md`). The OpenRouter 429 on an independent same-day
+  re-evaluation is external and does not invalidate the successful proof.
+- **Superseded intermediate WQ-7C experiments are audit history only** — the
+  senior Account-Executive persona variant and the pipeline.md-seeded Carta
+  flow were abandoned in favor of the natural AI/Data Working-Student
+  discovery proof described above; both are explicitly marked SUPERSEDED in
+  `docs/handoffs/ACTIVE_WORKPACKAGE.md` and `docs/evidence/wq-7c/`.
+- **Real submission is still out of scope for WQ-7C.** Nothing in WQ-7C is a
+  real-application test; the next controlled stage is WQ-8 below.
 
 ## WQ-8 — One staged controlled real submission using the sanctioned plan
+(NOT STARTED — successor to the accepted WQ-7C pre-submit proof)
 
 **Objective.** On the user's machine, execute exactly one manually approved
 real submission following the staged plan, and prove WQ-1 transitions and
@@ -237,11 +251,12 @@ evidence.
 in `review_ready`; skipping the backup step.
 
 **Acceptance criteria.** Not in CI; user-witnessed screenshot and DB state
-per the plan.
+per the plan (`docs/testing/CONTROLLED_REAL_SUBMISSION_TEST_PLAN.md`).
 
 **Required tests.** Only the plan stages, not CI.
 
-**Predecessor/dependency.** WQ-1 (so the transitions exist).
+**Predecessor/dependency.** WQ-1 (so the transitions exist), WQ-7C (accepted
+pre-submit boundary).
 
 ## WQ-9 — Live adapter hardening and Siemens regression verification
 
@@ -260,6 +275,40 @@ visible errors.
 **Required tests.** Re-created Siemens adapter tests; regression.
 
 **Predecessor/dependency.** WQ-1, WQ-4.
+
+## WQ-10 — Long-run reliability and footprint hardening (NOT STARTED)
+
+**Objective.** Broaden what WQ-7C proved pre-submit: stress the fill/mutation
+boundary across more jobs and ATS variants, tighten evidence cleanup, and
+improve error classification for runtime drift.
+
+**Concrete behavior.** Deterministic re-runs over a bounded job set; stable
+evidence layout; visible errors for platform changes; no new bypasses.
+
+**Forbidden shortcuts.** Adding more live ATS runs to default CI; touching
+submit safety.
+
+**Acceptance criteria.** Re-runs produce equivalent mutation outcomes;
+reporting remains consistent; no false `submitted`.
+
+**Required tests.** Contract + regression on mutation-plan and
+evidence-writing paths.
+
+**Predecessor/dependency.** WQ-7C merged.
+
+## Optional — Field-resolution/embedding optimization (NOT STARTED)
+
+**Objective.** After operational correctness: optional semantic
+field-mapping upgrade (e.g., embeddings) to reduce skipped fields.
+
+**Concrete behavior.** Deterministic, reversible; strict value-source gating
+kept; never auto-answers a field that needs confirmation.
+
+**Forbidden shortcuts.** Any behavior that relaxes WQ-7C's
+never-auto-answer / intervention guarantees.
+
+**Predecessor/dependency.** WQ-7C merged, WQ-10; deliberately deferred from
+WQ-7C.
 
 ## Optional — UI polish (after operational correctness)
 

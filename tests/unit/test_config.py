@@ -104,3 +104,41 @@ def test_load_settings_rejects_invalid_port() -> None:
 def test_load_settings_rejects_invalid_submit_mode() -> None:
     with pytest.raises(ValueError):
         load_settings(env={"UAA_SUBMIT_MODE": "auto_submit_please"})
+
+
+def test_load_settings_mutation_off_by_default() -> None:
+    settings = load_settings(env={})
+    assert settings.live_synthetic_mutation is False
+    assert settings.synthetic_mutation_max_mutations == 60
+
+
+def test_load_settings_mutation_enabled_explicitly() -> None:
+    settings = load_settings(env={"UAA_LIVE_SYNTHETIC_MUTATION": "true"})
+    assert settings.live_synthetic_mutation is True
+
+
+def test_load_settings_rejects_mutation_with_real_submission() -> None:
+    with pytest.raises(ValueError, match="mutually exclusive"):
+        load_settings(
+            env={
+                "UAA_LIVE_SYNTHETIC_MUTATION": "true",
+                "UAA_ENABLE_REAL_SUBMISSION": "true",
+            }
+        )
+
+
+def test_load_settings_rejects_mutation_with_recon_only() -> None:
+    with pytest.raises(ValueError, match="mutually exclusive"):
+        load_settings(
+            env={
+                "UAA_LIVE_SYNTHETIC_MUTATION": "true",
+                "UAA_LIVE_RECON_ONLY": "true",
+            }
+        )
+
+
+def test_load_settings_rejects_invalid_mutation_budget() -> None:
+    with pytest.raises(ValueError):
+        load_settings(env={"UAA_SYNTHETIC_MUTATION_MAX_MUTATIONS": "0"})
+    with pytest.raises(ValueError):
+        load_settings(env={"UAA_SYNTHETIC_MUTATION_MAX_MUTATIONS": "500"})

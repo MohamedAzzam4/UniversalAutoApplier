@@ -190,11 +190,13 @@ class TestPostImport:
         block_event = threading.Event()
         acquired_event = threading.Event()
 
-        def blocking_run_import(source: Path, trigger: str) -> Any:  # noqa: ARG001
+        def blocking_run_import(
+            source: Path, trigger: str, synthetic_mutation: bool = False
+        ) -> Any:  # noqa: ARG002
             """Block inside _run_import after the lock is acquired."""
             acquired_event.set()
             block_event.wait(timeout=10)
-            return original_run_import(source, trigger)
+            return original_run_import(source, trigger, synthetic_mutation)
 
         service._run_import = blocking_run_import  # type: ignore[method-assign]  # noqa: SLF001
 

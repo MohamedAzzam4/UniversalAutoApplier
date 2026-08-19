@@ -163,8 +163,16 @@ class QueueImportService:
         self,
         path: Path | None = None,
         trigger: str = "api",
+        synthetic_mutation: bool = False,
     ) -> QueueImportRunSummary:
         """Import the configured queue (or an operator-supplied absolute path).
+
+        Args:
+            path: Optional operator-supplied absolute queue path.
+            trigger: Human-readable trigger label for the durable run record.
+            synthetic_mutation: WQ-7C opt-in. When True, every imported row's
+                candidate snapshot is stamped with the synthetic-markers flag
+                (identity-guarded per row; mismatched snapshots are refused).
 
         Raises:
             QueueImportConfigurationError: no absolute path is available.
@@ -186,11 +194,16 @@ class QueueImportService:
         if not self._lock.acquire(blocking=False):
             raise QueueImportConcurrentError("a queue import is already running")
         try:
-            return self._run_import(resolved, trigger)
+            return self._run_import(resolved, trigger, synthetic_mutation)
         finally:
             self._lock.release()
 
-    def _run_import(self, source: Path, trigger: str) -> QueueImportRunSummary:
+    def _run_import(
+        self,
+        source: Path,
+        trigger: str,
+        synthetic_mutation: bool = False,
+    ) -> QueueImportRunSummary:
         run_id = uuid.uuid4().hex
         started_at = _utcnow()
 
@@ -211,7 +224,9 @@ class QueueImportService:
             )
 
         try:
-            import_result = import_queue_file(source, self._session_factory)
+            import_result = import_queue_file(
+                source, self._session_factory, synthetic_mutation=synthetic_mutation
+            )
         except Exception as exc:  # noqa: BLE001 - any importer failure must be recorded durably
             logger.exception("queue import crashed; recording failed run")
             return self._persist(

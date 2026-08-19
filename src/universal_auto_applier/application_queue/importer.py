@@ -191,6 +191,7 @@ def _validate_and_build_job(line_number: int, raw_line: str) -> ApplicationJob |
 def import_queue_file(
     path: Path,
     session_factory: sessionmaker[Session],
+    synthetic_mutation: bool = False,
 ) -> ImportResult:
     """Import a JobHunter ``application_queue.jsonl`` file.
 
@@ -198,6 +199,12 @@ def import_queue_file(
         path: Path to the JSONL file.
         session_factory: A SQLAlchemy session factory bound to the target
             database.
+        synthetic_mutation: WQ-7C opt-in. When True, every imported row's
+            ``metadata.candidate_profile`` snapshot is stamped with the
+            ``synthetic_test``/``wq7_synthetic`` markers — but ONLY when the
+            snapshot already matches the WQ-7C synthetic identity. Any row
+            whose snapshot does not match is refused (row-specific error),
+            never stamped.
 
     Returns:
         An :class:`ImportResult` with counts and any row-level errors.
@@ -219,6 +226,16 @@ def import_queue_file(
             continue
 
         job = outcome
+
+        if synthetic_mutation:
+            stamped = _stamp_synthetic_mutation(job, line_number, raw_line)
+            if isinstance(stamped, ImportRowError):
+                result.errors.append(stamped)
+                result.skipped += 1
+                logger.warning("[line %d] skipped: %s", line_number, stamped.error)
+                continue
+            job = stamped
+
         with session_scope(session_factory) as session:
             upsert_application_job(session, job)
         result.imported += 1
@@ -237,6 +254,31 @@ def import_queue_file(
         len(result.errors),
     )
     return result
+
+
+def _stamp_synthetic_mutation(
+    job: ApplicationJob,
+    line_number: int,
+    raw_line: str,
+) -> ApplicationJob | ImportRowError:
+    """Stamp WQ-7C synthetic markers on a job's metadata (identity-guarded).
+
+    Uses :func:`synthetic_profile.stamp_synthetic_mutation_metadata`, which
+    refuses (via ValueError) to stamp a snapshot that is not already the
+    WQ-7C synthetic identity. Stamp failures become row-specific import
+    errors so a non-synthetic row can never sneak a synthetic marker in.
+    """
+    from universal_auto_applier.synthetic_profile import stamp_synthetic_mutation_metadata
+
+    try:
+        stamped_metadata = stamp_synthetic_mutation_metadata(job.metadata)
+    except ValueError as exc:
+        return ImportRowError(
+            line_number=line_number,
+            raw_line=raw_line,
+            error=f"synthetic-mutation stamp refused: {exc}",
+        )
+    return job.model_copy(update={"metadata": stamped_metadata})
 
 
 __all__ = [
