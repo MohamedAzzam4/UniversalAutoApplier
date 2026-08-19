@@ -1,16 +1,22 @@
-# Active Workpackage — WQ-7C (ACCEPTED — PR IN FLIGHT)
+# Active Workpackage — WQ-7C (MERGED / COMPLETE)
 
 - **WP ID:** WQ-7C — Controlled Synthetic ATS Mutation + End-to-End Vertical Slice.
-- **Status:** **ACCEPTED by the owner** — full-system same-job proof (normal
-  JobHunter discovery → Robco/Ashby pre-submit mutation) reviewed and accepted.
-  Final deliverables: `docs/evidence/wq-7c/FINAL_ACCEPTANCE.md`,
-  `docs/evidence/wq-7c/FULL_SAME_JOB_CLOSURE.md`. ONE final PR against `main`
-  is opened via the GitHub REST API (no local `gh` shim; do not merge); six CI
-  checks are awaited on the final PR SHA. WQ-8 is NOT started. Superseded
-  intermediate decisions are explicitly marked below.
+- **Status:** **MERGED / COMPLETE** — the full-system same-job proof (normal
+  JobHunter discovery → Robco/Ashby pre-submit mutation) was reviewed,
+  accepted by the owner, and merged to `main` via **PR #15** (head
+  `395b7dc…`, merge commit `2ac1e00…`). WQ-7C's six final CI checks all passed
+  on the PR head (Linux 3.11/3.12/3.13/3.14, Windows Core, Windows Playwright).
+  Final local gates: `ruff` pass, `pyright` 0/0/0, non-live/non-playwright
+  **1258 passed** / 272 deselected, Playwright **269 passed**. Evidence:
+  `docs/evidence/wq-7c/FINAL_ACCEPTANCE.md`, `FULL_SAME_JOB_CLOSURE.md`,
+  `MANIFEST.md`. `submitted=false`, submit interlock all-zero, **zero real
+  applications submitted**. WQ-8 is NOT started. The implementation branch
+  `checkpoint/wq-7c-synthetic-mutation` is preserved (do not delete). Superseded
+  intermediate decisions are explicitly marked below and remain audit history.
 - **Repository:** `MohamedAzzam4/UniversalAutoApplier`.
-- **PR:** none yet (one PR against `main` will be opened at the end via GitHub
-  REST API; no local `gh` shim; do not merge).
+- **PR:** **#15 — MERGED** (`https://github.com/MohamedAzzam4/UniversalAutoApplier/pull/15`,
+  head `395b7d…`, merge commit `2ac1e00…`, closed via the standard GitHub
+  merge-commit merge).
 - **Branch:** `checkpoint/wq-7c-synthetic-mutation`.
 - **Base SHA:** resolve dynamically (see command block below). The branch was
   created from the exact `origin/main` at WQ-7C start — the PR #14 merge
@@ -76,7 +82,7 @@
   `plan_hash=b6763fd5`, 2-pass plan chain `1101539781`, interlock installed with
   all-zero counters, **`submitted=false`**, stopped `required_fields_unresolved`
   (visa/LinkedIn/work-history/demographic never auto-answered — correct).
-- **Last updated:** 2026-08-19.
+- **Last updated:** 2026-08-20 (post-merge closure).
 
 ## Objective
 
@@ -141,7 +147,8 @@ WQ-7C is NOT a real application-submission workpackage.
    fabricated queue, no DB seeding, no JobHunter code changes; STOP if a
    JobHunter change would be needed).
 10. Evidence under `docs/evidence/wq-7c/`, validation gates, docs updates.
-11. Final PR against `main` via GitHub REST API; six CI checks green; no merge.
+11. Final PR against `main` via GitHub REST API; six CI checks green; merge
+    via the standard GitHub merge-commit merge — DONE (PR #15, merge `2ac1e00`).
 
 ## Completed work
 
@@ -429,8 +436,25 @@ Milestone: Final system-closure proof — evidence finalized — DONE (2026-08-1
   evaluation returned OpenRouter HTTP 429 — the single key's
   `free-models-per-day` quota (50/day) was already consumed by earlier
   same-day runs ("Add 10 credits to unlock 1000 free model requests per day").
-  External provider quota; no bypass attempted; evaluation/export stage of the
-  closure rests on the same-day successful natural run above.
+External provider quota; no bypass attempted; evaluation/export stage of the
+   closure rests on the same-day successful natural run above.
+
+Milestone: Final PR, six green CI checks, and merge — DONE (2026-08-19/20)
+- Final documentation reconciliation (final acceptance summary, superseded
+  markers, CURRENT_STATE/NEXT_WORKPACKAGES/WQ7_LOCAL_LIVE_RUN updates) was
+  committed as `395b7dc` on `checkpoint/wq-7c-synthetic-mutation` and pushed
+  (local == origin == `395b7dc`).
+- ONE PR opened against `main` via the GitHub REST API: **PR #15** (head
+  `395b7dc…`, base `main`). All six required CI checks on the exact PR head
+  passed: Linux 3.11 / 3.12 / 3.13 / 3.14 (run `32299389160`),
+  Windows Core / Windows Playwright (run `32299389167`) — all `success`.
+- PR #15 **merged** via the standard GitHub **merge-commit** merge (no squash,
+  no rebase, no local-direct main push): merge commit
+  `2ac1e006fa8119d5d487625a5c36a17b4f4c5c20`, parents `b5e1532f` (old main) +
+  `395b7dc` (PR head). Verified after merge: PR state `MERGED`, PR head
+  `395b7dc…` is an ancestor of `origin/main`. Implementation branch preserved.
+- This handoff's post-merge closure (marking WQ-7C MERGED/COMPLETE) is applied
+  on `checkpoint/wq-7c-post-merge-cleanup` via its own documentation-only PR.
 
 ## Changed files
 
@@ -606,18 +630,13 @@ Full local gate (all green) at commit `417ce97`:
 
 ## Exact next action
 
-1. **Final documentation reconciliation is complete** — final acceptance
-   summary (`docs/evidence/wq-7c/FINAL_ACCEPTANCE.md`), same-job closure
-   evidence (`FULL_SAME_JOB_CLOSURE.md`), superseded decisions marked in this
-   handoff, `docs/CURRENT_STATE.md` + `docs/NEXT_WORKPACKAGES.md` reconciled,
-   WQ-7C operational notes added to `docs/handoffs/WQ7_LOCAL_LIVE_RUN.md`.
-2. Push the final documentation commit (branch
-   `checkpoint/wq-7c-synthetic-mutation`), verify local HEAD == origin HEAD.
-3. Open ONE PR against `main` via the GitHub REST API with the final SHA;
-   wait for all six required CI checks (Linux 3.11/3.12/3.13/3.14, Windows
-   Core, Windows Playwright); do NOT merge. Do not start WQ-8.
-4. Deliver the final `# WQ-7C Final Acceptance and PR Report` with all
-   evidence, gate counts, PR URL, and CI conclusions.
+WQ-7C is closed. Next workpackage candidate:
+
+**WQ-8 — one tightly controlled owner-approved real application submission.**
+WQ-8 is **NOT started.** A detailed WQ-8 contract is deliberately NOT defined
+in this cleanup; the owner/reviewer will issue it separately (see
+`docs/NEXT_WORKPACKAGES.md`). This exact-next-action block is intentionally
+idle until WQ-8 (or another workpackage) is pulled into an active workpackage.
 
 ## Rules
 

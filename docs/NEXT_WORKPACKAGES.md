@@ -207,7 +207,7 @@ fixture behavior.
 
 **Predecessor/dependency.** WQ-3 (API/state ready to capture evidence).
 
-**Progress (merged to `main`, 2026-08-16).**
+**Progress (WQ-7A/B merged 2026-08-16; WQ-7C merged 2026-08-20 via PR #15).**
 
 - **WQ-7A complete** — safe live ATS dry-run infrastructure merged
   (`6326e4e`): opt-in live browser dry-run, hard submit interlock installed
@@ -219,14 +219,14 @@ fixture behavior.
   imposed unsupported conditions after permitted replacement attempts; zero
   typed values, zero uploads, zero UAA submit clicks; no applications
   submitted.
-- **WQ-7C complete** (accepted; one final PR against `main` in flight on
-  `checkpoint/wq-7c-synthetic-mutation`) — controlled **synthetic** field
-  fill + synthetic document upload on real public ATS forms, final submission
-  forbidden: component proofs on Greenhouse + Lever, then the accepted
-  full-system same-job proof (normal JobHunter discovery → Robco/Ashby form
-  mutated with the approved synthetic CV, `submitted=false`, submit interlock
-  all-zero, `test.candidate@example.com` identity constant throughout). Docs
-  and evidence: `docs/evidence/wq-7c/` (manifest, same-job closure,
+- **WQ-7C complete and merged** (PR #15, head `395b7dc…`, merge `2ac1e00…`; six
+  required CI checks green) — controlled **synthetic** field fill + synthetic
+  document upload on real public ATS forms, final submission forbidden:
+  component proofs on Greenhouse + Lever, then the accepted full-system
+  same-job proof (normal JobHunter discovery → Robco/Ashby form mutated with
+  the approved synthetic CV, `submitted=false`, submit interlock all-zero,
+  `test.candidate@example.com` identity constant throughout). Docs and
+  evidence: `docs/evidence/wq-7c/` (manifest, same-job closure,
   `FINAL_ACCEPTANCE.md`). The OpenRouter 429 on an independent same-day
   re-evaluation is external and does not invalidate the successful proof.
 - **Superseded intermediate WQ-7C experiments are audit history only** — the
