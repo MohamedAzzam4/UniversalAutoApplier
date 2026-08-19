@@ -1,5 +1,11 @@
 # WQ-7C Evidence Manifest — Live Real-ATS Synthetic Mutation Proof (pre-submit)
 
+> **Index note (final acceptance):** this manifest is the component-level
+> real-ATS evidence (Greenhouse + Lever). The authoritative WQ-7C acceptance
+> evidence is `FULL_SAME_JOB_CLOSURE.md` (full-system Robco/Ashby trace) and
+> the final acceptance summary is `FINAL_ACCEPTANCE.md`, both in this
+> directory.
+
 Status: **READY for review** (both supported ATS platforms reached, mutated,
 and stopped pre-submit; two UAA detector defects found, fixed, regression-tested,
 and pushed during the proof).

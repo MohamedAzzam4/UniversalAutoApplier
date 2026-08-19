@@ -1,22 +1,13 @@
-# Active Workpackage — WQ-7C (IN PROGRESS)
+# Active Workpackage — WQ-7C (ACCEPTED — PR IN FLIGHT)
 
 - **WP ID:** WQ-7C — Controlled Synthetic ATS Mutation + End-to-End Vertical Slice.
-- **Status:** IN PROGRESS (implementation `417ce97` + CLI-dispatch defect fix
-  `e838039` + live-proof detector fixes `fd155f6`/`aae24d0`/`162233d` pushed;
-  live real-ATS mutation proof on Greenhouse + Lever DONE, **vertical slice
-  (milestone 9) DONE at `6462402`**, **orchestration opt-in (WQ-7C closure
-  link) implemented + full gates green + bounded live chain proven through the
-  real-ATS boundary**, SmartRecruiters real-ATS mutation blocked by external
-  DataDome wall (safe stop, no bypass); **natural full-workflow same-job live
-  proof DONE (normal `run_all.py` entry, unchanged JobHunter: 2 naturally
-  discovered/exported rows → UAA synthetic orchestration → RobCo Ashby form
-  mutated with approved synthetic CV, `submitted=false`; Siemens portal apply
-  blocked by consent overlay, safe stop); closure evidence finalized at
-  `docs/evidence/wq-7c/FULL_SAME_JOB_CLOSURE.md`, SAME-JOB identity verified
-  end-to-end; an independent second scan the same day re-proved normal
-  discovery (12 jobs) but its evaluation stage hit the OpenRouter
-  free-models-per-day quota (external 429, no bypass)**;
-  evidence finalization + PR pending).
+- **Status:** **ACCEPTED by the owner** — full-system same-job proof (normal
+  JobHunter discovery → Robco/Ashby pre-submit mutation) reviewed and accepted.
+  Final deliverables: `docs/evidence/wq-7c/FINAL_ACCEPTANCE.md`,
+  `docs/evidence/wq-7c/FULL_SAME_JOB_CLOSURE.md`. ONE final PR against `main`
+  is opened via the GitHub REST API (no local `gh` shim; do not merge); six CI
+  checks are awaited on the final PR SHA. WQ-8 is NOT started. Superseded
+  intermediate decisions are explicitly marked below.
 - **Repository:** `MohamedAzzam4/UniversalAutoApplier`.
 - **PR:** none yet (one PR against `main` will be opened at the end via GitHub
   REST API; no local `gh` shim; do not merge).
@@ -560,18 +551,23 @@ Full local gate (all green) at commit `417ce97`:
 - Deliver the vertical-slice cross-boundary markers as a UAA-side opt-in
   (`queue-import --synthetic-mutation`) rather than editing JobHunter —
   satisfies "JobHunter untouched" and keeps marker stamping identity-guarded.
-- The synthetic persona was changed from "working student" to a senior
-  Account Executive (same Test Candidate / test.candidate@example.com identity)
-  so the unchanged evaluator emits `recommendation: apply` (5/5) against the
-  Carta full-time senior AE JD; only the persona text changed, never UAA or
-  JobHunter code, and the identity contract is unchanged.
+- **SUPERSEDED for final acceptance** — The synthetic persona was changed from
+  "working student" to a senior Account Executive (same Test Candidate /
+  test.candidate@example.com identity) so the unchanged evaluator emits
+  `recommendation: apply` (5/5) against the Carta full-time senior AE JD;
+  only the persona text changed, never UAA or JobHunter code, and the identity
+  contract is unchanged. Replaced by the realistic AI/Data Working-Student
+  persona of the final natural run (see `FINAL_ACCEPTANCE.md`).
 - Field-resolution weaknesses observed in the live run (cover-letter upload
   locator timeout; "Location (City)" mis-targeted to the file input;
   "current position" mis-mapped to the eligibility question) are recorded as
   deferred — do NOT open a field-mapping workpackage now.
-- Use JobHunter's normal pipeline.md-driven flow for the Carta row to get
-  proper company/title (avoids the `--url` "Unknown" fallback) while still
-  letting JobHunter, unchanged, do discovery-input→evaluation→tailoring→export.
+- **SUPERSEDED for final acceptance** — Use JobHunter's normal
+  pipeline.md-driven flow for the Carta row to get proper company/title
+  (avoids the `--url` "Unknown" fallback) while still letting JobHunter,
+  unchanged, do discovery-input→evaluation→tailoring→export. Replaced by the
+  natural `run_all.py` discovery flow (no manual pipeline.md seeding) of the
+  final proof (see `FULL_SAME_JOB_CLOSURE.md`).
 
 - Deliver WQ-7C as a new distinct opt-in mode; recon-only (WQ-7B) is NOT
   converted into a fill mode.
@@ -610,22 +606,18 @@ Full local gate (all green) at commit `417ce97`:
 
 ## Exact next action
 
-1. **PR preparation is complete on evidence** — sanitized closure evidence and
-   the natural same-job proof are recorded (repo doc
-   `docs/evidence/wq-7c/FULL_SAME_JOB_CLOSURE.md` + existing MANIFEST, plus the
-   run-workdir manifest at
-   `C:\Users\LOQ\AppData\Local\Temp\opencode\jh_ws_natural_20260819\live_evidence\MANIFEST.md`).
-   Note: re-running evaluation now is blocked by the external OpenRouter
-   free-tier daily quota on the single configured key (HTTP 429
-   `free-models-per-day`, 50/day); a fresh paid/available key would allow an
-   independent re-run, but it is not required for the standing closure evidence.
-2. Update `docs/CURRENT_STATE.md`, `docs/WQ7_LOCAL_LIVE_RUN.md`,
-   `docs/NEXT_WORKPACKAGES.md` only if any fact in them goes stale.
-3. Push this handoff + evidence update (branch
+1. **Final documentation reconciliation is complete** — final acceptance
+   summary (`docs/evidence/wq-7c/FINAL_ACCEPTANCE.md`), same-job closure
+   evidence (`FULL_SAME_JOB_CLOSURE.md`), superseded decisions marked in this
+   handoff, `docs/CURRENT_STATE.md` + `docs/NEXT_WORKPACKAGES.md` reconciled,
+   WQ-7C operational notes added to `docs/handoffs/WQ7_LOCAL_LIVE_RUN.md`.
+2. Push the final documentation commit (branch
    `checkpoint/wq-7c-synthetic-mutation`), verify local HEAD == origin HEAD.
-4. Open ONE PR against `main` via GitHub REST API; wait for six CI checks on
-   the final SHA; do not merge. If the reviewer requires a fresh independent
-   evaluation run, add an OpenRouter key with remaining free quota first.
+3. Open ONE PR against `main` via the GitHub REST API with the final SHA;
+   wait for all six required CI checks (Linux 3.11/3.12/3.13/3.14, Windows
+   Core, Windows Playwright); do NOT merge. Do not start WQ-8.
+4. Deliver the final `# WQ-7C Final Acceptance and PR Report` with all
+   evidence, gate counts, PR URL, and CI conclusions.
 
 ## Rules
 

@@ -38,33 +38,68 @@ If this document contradicts any older planning doc, this document wins for
 | Cross-repo orchestration (WQ-6) | `services/orchestration_service.py`, `services/jobhunter_runner.py`, `api/routes/orchestration.py`, `persistence/orchestration_run_repository.py`, `migrations/0012_orchestration_runs.py`, `migrations/0013_orchestration_durable_evidence.py` | Sequential/parallel orchestration of JobHunter export → UAA import → UAA pipeline. Durable run state with targeted/processed/remaining IDs, all pipeline run IDs, and pass count. Process-level boundary (never imports JobHunter modules). Fail-closed target manifest. Multi-batch continuation with no-progress detection. Never performs final submission. |
 | Live ATS dry-run (WQ-7A) | `browser/live_runner.py`, `browser/submit_interlock.py`, `cli.py`, `execution_mode.py`, `services/live_dry_run_platforms.py`, `synthetic_profile.py` | opt-in live browser dry-run with a hard submit interlock installed before any page script; never clicks final submit. |
 | Recon-only nav (WQ-7B) | `execution_mode.py` (`UAA_LIVE_RECON_ONLY`), `navigator/apply_path_finder.py` (`embed_rank` widget preference), fixtures under `tests/fixtures/recon/`, `docs/evidence/wq-7b/MANIFEST.md` | real public forms reached on Greenhouse + Lever; Workday, SmartRecruiters, iCIMS externally gated; zero typed values, zero uploads, zero UAA submit clicks. |
-| CI | `verify-windows-py314.yml`, `verify-linux.yml` | Windows+Python 3.14 primary; Linux matrix 3.11-3.14. |
+| Synthetic ATS mutation (WQ-7C) | `synthetic_profile.py`, `config.py` (`UAA_LIVE_SYNTHETIC_MUTATION` opt-in), `browser/mutation_plan.py`, `form_engine/live_executor.py`, `browser/live_runner.py` (`run_synthetic_mutation`), `browser/submit_interlock.py`, `cli.py` (`live-synthetic-mutation`), `queue-import --synthetic-mutation`, orchestration `synthetic_orchestration` opt-in (migration `0014`), `navigator/apply_path_finder.py` invisible-badge/`cards[` fixes | opt-in only (default off), synthetic identity + approved-document hash enforcement, mutually exclusive with real submission, interlock armed before mutation, plan frozen/hashed pre-mutation, `submitted=false` always. Full-system same-job proof to the pre-submit boundary accepted (see `docs/evidence/wq-7c/`). |
+| CI | `verify-windows-py314.yml`, `verify-linux.yml` | Windows+Python 3.14 primary (core + playwright jobs); Linux matrix 3.11-3.14; non-live only (no external live tests in default CI). |
 
 ## Status
 
-`main` is at `cab7a13d0e15c06ae04b4c180d11920a9e70fb97` (WQ-7B real ATS
-navigation reconnaissance merged via reviewed PR #13). Merge history note:
+`main` is at `b5e1532f763b5c5f4e86d36061d7f175158415c8` (post-merge closure of
+PR #14 after WQ-7B). Merge history note:
 commit `2cf3f18` introduced the controlled-submission content directly onto
 `main` (a local squash onto main) rather than through a reviewed PR. PR #3
 (`controlled-final-submission`, head `f5b2055`) was then merged as `f7c49f7`
 carrying the same tree — an empty duplicate commit. Harmless: the tree is
 correct and clean; history must NOT be rewritten. From now on, every change
 to `main` arrives through exactly one reviewed-PR merge — never
-commit/squash to main first and also merge the PR. Latest verified:
+commit/squash to main first and also merge the PR.
+
+WQ-7B (real ATS navigation reconnaissance) was accepted and merged via PR #13
+(head `adc8c8d`, merge `cab7a13`), closed by PR #14 merge `b5e1532f`.
+
+**WQ-7C (controlled synthetic ATS mutation + end-to-end vertical slice) is
+ACCEPTED by the owner and in flight on
+`checkpoint/wq-7c-synthetic-mutation` (final SHA resolves dynamically; the
+handoff's completion commits `fca07fc…`).** One final reviewed PR against
+`main` will carry WQ-7C; it is NOT merged yet. Once merged, `main` advances
+and this document's reference commit must be updated.
+
+Conservative statement of what the **complete core workflow** now proves
+(through the pre-submit boundary):
 
 ```text
-Linux  runner: 31971929393  (PR #13 / main branch, WQ-7B final head)  -> success
-Windows runner: 31971929343  (PR #13 / main branch, WQ-7B final head) -> success
+JobHunter search/discovery
+-> evaluation
+-> tailoring
+-> generated synthetic artifacts
+-> queue export
+-> UAA import/orchestration
+-> same-job ATS navigation
+-> field resolution
+-> synthetic field mutation
+-> synthetic document upload
+-> safe pre-submit stop
 ```
 
-WQ-7B (real ATS navigation reconnaissance) was accepted under the
-owner-approved amendment and merged via PR #13 (head `adc8c8d`, merge
-`cab7a13`). Real public application forms were reached on Greenhouse and
-Lever; Workday, SmartRecruiters, and iCIMS were classified as externally
-gated / externally imposed unsupported conditions after permitted
-replacement attempts. All six required CI checks passed on the final PR
-head. JobHunter WQ-2 (atomic `application_queue.jsonl` export) is merged at
-JobHunter main `0e8ba2f`.
+This was demonstrated end-to-end on one job kept identical throughout (Robco →
+RobCo's official Ashby board, `submitted=false`, interlock all-zero). See
+`docs/evidence/wq-7c/FULL_SAME_JOB_CLOSURE.md` (authoritative) and
+`docs/evidence/wq-7c/FINAL_ACCEPTANCE.md`.
+
+**Explicitly NOT proven** (do not claim complete):
+
+- real application submission (WQ-8, not started);
+- production operation with the owner's real candidate data;
+- broad long-run reliability across many jobs / ATS variants;
+- optional field-mapping / embedding optimizations (deliberately deferred).
+
+Latest verified CI (WQ-7B final PR head, `adc8c8d`):
+
+```text
+Linux  runner: 31971929393  -> success
+Windows runner: 31971929343  -> success
+```
+
+WQ-7C's final PR CI conclusions will be recorded in the final report.
 
 ## Test counts (reference run)
 
@@ -129,13 +164,14 @@ in production; none of them are unimplemented core phases. See
    UAA import → UAA pipeline orchestration with durable run state is on
    `main`; real concurrent scan/apply production use still awaits the real
    field-mutation/upload stage.
-5. **Real ATS navigation is verified; real field mutation/upload and real
-   submission are not.** WQ-7B merged real navigation reconnaissance: forms
-   on Greenhouse + Lever reached, Workday/SmartRecruiters/iCIMS externally
-   gated, zero typed values/uploads/submits. Real field typing, document
-   upload, and final submit remain gated by the controlled test plan on the
-   user's machine; no real submission has been executed from CI or a
-   sandbox. (WQ-7C next proposed stage; WQ-8)
+5. **Real-ATS synthetic field mutation/upload is proven; real submission is
+   not.** WQ-7C (accepted, PR in flight) proved synthetic field typing +
+   approved synthetic document upload on real public forms (Greenhouse,
+   Lever, and the full-system Robco/Ashby trace) stopping pre-submit with
+   `submitted=false` and an all-zero submit interlock. Real **final submit**
+   remains only for the owner-approved staged plan on the user's machine
+   (WQ-8, not started); no real application has ever been submitted from CI,
+   the sandbox, or the synthetic proof runs.
 6. **Queue-import concurrency lock is process-local.** The
    `QueueImportService` uses a `threading.Lock` stored on
    `app.state.queue_import_service`. This is safe for the current
@@ -144,6 +180,15 @@ in production; none of them are unimplemented core phases. See
    so concurrent imports from different processes are not rejected.
    Multi-process deployment would require database-backed or
    distributed locking.
+7. **Not proven: production operation with real candidate data.** Only
+   synthetic identities/documents were used in WQ-7C; owner-validated real
+   candidate data handling is future hardening, not demonstrated.
+8. **Not proven: broad long-run reliability across many jobs / ATS
+   variants.** WQ-7C exercised a bounded set of real platforms/forms; burst
+   reliability and ATS runtime drift are future work (WQ-9 hardening).
+9. **Field-resolution/embedding optimization is deliberately deferred.**
+   WQ-7C used deterministic label allowlisting + strict value-source gating;
+   no embeddings were added and no mapper optimization was performed.
 
 ## Environment
 
