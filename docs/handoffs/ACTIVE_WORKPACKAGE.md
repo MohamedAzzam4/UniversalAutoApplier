@@ -2,11 +2,12 @@
 
 - **WP ID:** WQ-8 — One staged, owner-approved, controlled real application
   submission.
-- **Status:** **IN PROGRESS** (implementation milestone committed + pushed;
-  next: Phase A live prep). WQ-8 succeeds the accepted WQ-7C pre-submit proof
-  (merged via PR #15, merge `2ac1e00`; post-merge closure merged via PR #16,
-  merge `76b2e1f`). **No real application has ever been submitted** from any
-  UAA run (CI, sandbox, or proof runs).
+- **Status:** **IN PROGRESS** (implementation + canonical JobHunter runtime
+  configured; next: Phase A live discovery via JobHunter workflow). WQ-8
+  succeeds the accepted WQ-7C pre-submit proof (merged via PR #15, merge
+  `2ac1e00`; post-merge closure merged via PR #16, merge `76b2e1f`). **No real
+  application has ever been submitted** from any UAA run (CI, sandbox, or
+  proof runs).
 - **Repository:** `MohamedAzzam4/UniversalAutoApplier`.
 - **PR:** none yet (do NOT open/merge a WQ-8 PR without explicit owner/reviewer
   authorization).
@@ -295,6 +296,21 @@ tighten, NOT redesign:
     converted-submission refusal, expiry), `wq8-status` (read-only).
   - Hermetic tests: `tests/unit/test_wq8_authorization.py` (18),
     `tests/playwright/test_wq8_interlock.py` (7).
+- **Canonical JobHunter runtime configured for Phase A** (non-git, local only;
+  nothing committed): fresh `.venv` in
+  `D:\Programming\Antigravity-Projects\JobHunter` built from `requirements.txt`
+  with `python-jobspy==1.1.82 --no-deps` + pinned `numpy==2.4.6`,
+  `pandas==2.3.3`, `beautifulsoup4<5`, `markdownify<0.14`, `regex<2025`,
+  `tls-client<2` (matches the proven operational venv in
+  `D:\Programming\Antigravity-Projects\job_apply\jobhunter_venv`); `.env`
+  created in the canonical repo with only the required API keys copied locally
+  from the owner's existing `job_apply/.env` (OpenRouter `sk-or-*` x4 +
+  `GOOGLE_AI_API_KEY`/2, no Telegram), verified gitignored before writing and
+  values never printed; `data/`, `reports/`, `output/`, `logs/` created.
+  Health check: python-jobspy detected, cv.md/profile.yml/portals.yml present,
+  OpenRouter connectivity flagged 429 rate-limited on free tier (known WQ-7C
+  issue; profile model chain `google/gemma-4-26b-a4b-it:free` etc. differs
+  from `run_health.py`'s hardcoded fallbacks).
 
 ## Changed files
 
