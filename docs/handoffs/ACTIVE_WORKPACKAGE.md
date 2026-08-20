@@ -2,11 +2,11 @@
 
 - **WP ID:** WQ-8 — One staged, owner-approved, controlled real application
   submission.
-- **Status:** **IN PROGRESS** (Phase A: prepare + review packet). Branch just
-  created from `origin/main`; no code changes yet. WQ-8 succeeds the accepted
-  WQ-7C pre-submit proof (merged via PR #15, merge `2ac1e00`; post-merge
-  closure merged via PR #16, merge `76b2e1f`). **No real application has ever
-  been submitted** from any UAA run (CI, sandbox, or proof runs).
+- **Status:** **IN PROGRESS** (implementation milestone committed + pushed;
+  next: Phase A live prep). WQ-8 succeeds the accepted WQ-7C pre-submit proof
+  (merged via PR #15, merge `2ac1e00`; post-merge closure merged via PR #16,
+  merge `76b2e1f`). **No real application has ever been submitted** from any
+  UAA run (CI, sandbox, or proof runs).
 - **Repository:** `MohamedAzzam4/UniversalAutoApplier`.
 - **PR:** none yet (do NOT open/merge a WQ-8 PR without explicit owner/reviewer
   authorization).
@@ -23,7 +23,7 @@
   ```
 
   The two resolved values must match before handoff/review.
-- **Last updated:** 2026-08-20 (WQ-8 initial handoff checkpoint).
+- **Last updated:** 2026-08-20 (implementation milestone `431dc07` pushed).
 
 ## Objective
 
@@ -226,13 +226,16 @@ tighten, NOT redesign:
 ## Planned milestones
 
 1. Initial checkpoint (branch + WQ-8 handoff) — DONE (this commit).
-2. Finalize WQ-8 authorization design against the verified submission stack.
+2. Finalize WQ-8 authorization design against the verified submission stack —
+   DONE (`docs/evidence/wq-8/DESIGN.md`, `bc1f8eb`).
 3. Implement single-use authorization (application_id + review_plan_hash +
    URL + doc hashes + expiry; consumed on initiation; default forbidden;
-   synthetic/real exclusivity kept).
-4. Hermetic tests proving every WQ-8 safety property above.
+   synthetic/real exclusivity kept) — DONE (`431dc07`).
+4. Hermetic tests proving every WQ-8 safety property above — DONE (18 unit +
+   7 interlock, all green).
 5. Full local gate (ruff, pyright, pytest non-live/non-playwright, playwright,
-   git diff --check); push deterministic milestone; verify local==origin.
+   git diff --check); push deterministic milestone; verify local==origin —
+   DONE (`431dc07`, local==origin verified).
 6. Phase A live prep: choose target via normal JobHunter workflow; UAA through
    to `review_ready` on the real form; real CV uploaded; handle
    unresolved/high-risk; freeze `review_plan_hash`; duplicate check; authorize
@@ -266,18 +269,72 @@ tighten, NOT redesign:
   submit interlock, config defaults.
 - Branch `checkpoint/wq-8-controlled-real-submission` created from
   `origin/main` `76b2e1f`; untracked debug artifacts preserved.
+- WQ-8 design finalized: `docs/evidence/wq-8/DESIGN.md` (commit `bc1f8eb`,
+  pushed).
+- **Implementation milestone completed** (commit `431dc07`, pushed):
+  - Migration `0015_submission_authorization` + `SubmissionAuthorizationRow`;
+    `tests/contract/test_migrations.py` `CURRENT_HEAD` updated.
+  - `submission/authorization.py`: `MAX_TOTAL_REAL_SUBMISSIONS = 1`,
+    public `CLICKED_ATTEMPT_STATES`, `compute_review_plan_hash`,
+    `build_review_plan`, `compute_frozen_review_plan_hash`,
+    `SubmissionAuthorization`, `make_authorization_id`.
+  - `submission/authorization_store.py`: persisted single-use auth with
+    absolute-limit + expiry + idempotent creation + compare-and-set consume.
+  - `browser/submit_interlock.py`: one-shot browser allowance
+    (`arm_authorized_submit`/`disarm_authorized_submit`, `authorized_submits`
+    counter); interlock stays default armed.
+  - `submission/coordinator.py`: WQ-8 gate #12 (`_check_wq8_authorization_db`),
+    binding validation `_validate_wq8_binding` (→ `APPROVAL_STALE`),
+    consume-before-click `_check_and_consume_wq8_authorization`,
+    arm/disarm around the single click, `interlock-before/after-click.json`
+    artifacts.
+  - `submission/execution_service.py`: interlock installed on the controlled
+    submit path only when an active authorization exists (else unchanged).
+  - `cli.py`: `wq8-review-packet`, `wq8-authorize` (owner-only, exact plan
+    hash, `UAA_ENABLE_REAL_SUBMISSION=true`, `review_ready`,
+    converted-submission refusal, expiry), `wq8-status` (read-only).
+  - Hermetic tests: `tests/unit/test_wq8_authorization.py` (18),
+    `tests/playwright/test_wq8_interlock.py` (7).
 
 ## Changed files
 
-- `docs/handoffs/ACTIVE_WORKPACKAGE.md` — replaced with the WQ-8 handoff
-  (this commit).
+- `docs/handoffs/ACTIVE_WORKPACKAGE.md` — WQ-8 handoff (initial commit
+  `eae9569b`).
+- `docs/evidence/wq-8/DESIGN.md` — WQ-8 authorization design (commit
+  `bc1f8eb`).
+- `migrations/versions/0015_submission_authorization.py` — NEW
+  `submission_authorizations` table.
+- `src/universal_auto_applier/submission/authorization.py` — NEW.
+- `src/universal_auto_applier/submission/authorization_store.py` — NEW.
+- `src/universal_auto_applier/persistence/models.py` —
+  `SubmissionAuthorizationRow`.
+- `src/universal_auto_applier/browser/submit_interlock.py` — one-shot
+  authorized-allowance.
+- `src/universal_auto_applier/submission/coordinator.py` — WQ-8 gate + bind/
+  consume/arm/disarm wiring.
+- `src/universal_auto_applier/submission/execution_service.py` — conditional
+  interlock install.
+- `src/universal_auto_applier/cli.py` — `wq8-review-packet`/`wq8-authorize`/
+  `wq8-status`.
+- `tests/contract/test_migrations.py` — `CURRENT_HEAD` → `0015`.
+- `tests/unit/test_wq8_authorization.py` — NEW (18 tests).
+- `tests/playwright/test_wq8_interlock.py` — NEW (7 tests).
 
 ## Tests and exact results
 
-No code changes yet. Baseline (WQ-7C merged head `395b7dc`, recorded in
-`docs/CURRENT_STATE.md`): 1258 non-live/non-playwright passed / 272
-deselected; 269 playwright passed; ruff/pyright clean. Re-run the full gate at
-the implementation milestone.
+- `ruff check src tests migrations` → 0 errors.
+- `ruff format --check src tests migrations` → 0 errors.
+- `pyright` (project config `include = ["src/universal_auto_applier"]`) → 0
+  errors.
+- `pytest -m "not live and not playwright"` → **1261 passed** (272
+  deselected).
+- `pytest tests/playwright` → **276 passed**.
+- `tests/contract/test_migrations.py` → **13 passed** (head
+  `0015_submission_authorization`).
+- `tests/unit/test_wq8_authorization.py` → **18 passed**.
+- `tests/playwright/test_wq8_interlock.py` → **7 passed**.
+- `git diff --check` clean; commit `431dc07` contains only WQ-8 files (6
+  modified + 5 new; +2291/−20).
 
 ## Decisions made
 
@@ -286,7 +343,17 @@ the implementation milestone.
   + doc hashes + expiry + absolute one-submission audit rather than
   introducing a second submission pathway.
 - Keep the WQ-7 submit interlock armed; the authorized submit goes through the
-  existing single `SubmissionCoordinator` click path.
+  existing single `SubmissionCoordinator` click path, using a one-shot
+  browser allowance armed immediately before the click and disarmed in
+  `finally` (never a bypass of the interlock).
+- `review_plan_hash` canonicalized (sort_keys, strip `generated_at`,
+  field_token/document sort, machine-independent paths) so identical plans
+  hash identically; validated at authorize AND submit.
+- Script-driven `form.submit()`/`requestSubmit()` remain defense-in-depth
+  over-blocked; the coordinator's real click is the ONLY signal reaching the
+  page handler (verified in Playwright).
+- Auth consumption happens on the held page before the click; gate failures
+  consume the claim (if locally acquired) so no retry path exists.
 - WQ-8 is a two-phase owner-controlled workpackage; the agent stops at the
   Phase A gate and never self-approves Phase B.
 - Do not modify JobHunter; the real target must arise from its normal
@@ -305,29 +372,34 @@ the implementation milestone.
 - Phase B is blocked by design on the owner's explicit matched approval.
 - The owner's real candidate CV/profile must be present and correct in the
   normal config; missing facts → skip/intervention, never fabricated.
+- The implementation milestone (`431dc07`) is pushed and verified == origin;
+  no further risk there.
 
 ## Exact next action
 
-Finish the WQ-8 implementation design milestone. Before editing code, read the
-remaining implementation files for the WQ-7C live/orchestration paths so the
-authorization change does not disturb them: `browser/mutation_plan.py`,
-`form_engine/live_executor.py`, `browser/live_runner.py`,
-`services/orchestration_service.py`, `application_queue/importer.py`,
-`persistence/models.py` (submission/audit rows), migration `0014`,
-`api/routes/orchestration.py`, and `cli.py` (`live-submit` path). Then commit
-this handoff checkpoint and push:
+1. Update the WQ-8 todo checklist: implementation, CLI, hermetic tests —
+   completed. Phase A live prep — in progress.
+2. Before Phase A live prep, read the remaining WQ-7C live/orchestration
+   files so the authorization change does not disturb them:
+   `browser/mutation_plan.py`, `form_engine/live_executor.py`,
+   `browser/live_runner.py`, `services/orchestration_service.py`,
+   `application_queue/importer.py`, `api/routes/orchestration.py`,
+   `api/routes/submit.py`, `api/models/submission.py`,
+   `candidate_profile_loader.py`.
+3. Phase A live prep via the normal JobHunter workflow: discover/evaluate/
+   tailor ONE real currently-open Germany AI/ML/Data Working-Student role on a
+   safe simple ATS (prefer one already exercised in WQ-7C); export to UAA;
+   orchestrate through to `review_ready` on the real form with the real CV
+   uploaded; handle unresolved/high-risk fields; freeze `review_plan_hash`
+   via `wq8-review-packet`; confirm duplicate/submission-history check clean;
+   authorization stays DISABLED.
+4. Write the sanitized review packet (no real PII committed) and STOP at the
+   `WQ-8 OWNER APPROVAL REQUIRED` gate. Never self-approve Phase B.
 
-```text
-git add docs/handoffs/ACTIVE_WORKPACKAGE.md
-git commit -m "docs(wq-8): initial WQ-8 handoff - controlled real submission workpackage"
-git push -u origin checkpoint/wq-8-controlled-real-submission
-git rev-parse HEAD
-git rev-parse origin/checkpoint/wq-8-controlled-real-submission
-```
-
-The two resolved values must match. Then implement the single-use
-authorization and its hermetic tests, run the full gate, and push the next
-deterministic milestone.
+Phase B (owner-gated): `wq8-authorize --application-id <id>
+--review-plan-hash <frozen> --expires-in-hours <n> --confirm` then the
+UNCHANGED `live-submit --approval-id <id>`, truthful classification, sanitized
+evidence under `docs/evidence/wq-8/`, no final PR without owner authorization.
 
 ## Rules
 
