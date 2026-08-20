@@ -24,7 +24,8 @@
   ```
 
   The two resolved values must match before handoff/review.
-- **Last updated:** 2026-08-20 (implementation milestone `431dc07` pushed).
+- **Last updated:** 2026-08-20 (remaining-shortlist inspection milestone; awaiting
+  owner target selection).
 
 ## Objective
 
@@ -311,6 +312,11 @@ tighten, NOT redesign:
   OpenRouter connectivity flagged 429 rate-limited on free tier (known WQ-7C
   issue; profile model chain `google/gemma-4-26b-a4b-it:free` etc. differs
   from `run_health.py`'s hardcoded fallbacks).
+- **Remaining-shortlist inspection milestone completed** (dry-run/
+  navigation-only; nothing evaluated/tailored/exported/filled/uploaded/
+  submitted): all previously-unverified candidate roles inspected and
+  classified (PwC, msg, Maisel, MDT, forensica, AIBE@FAU FAUstairs). Full
+  detail in `docs/evidence/wq-8/TARGET_INSPECTION.md`.
 
 ## Changed files
 
@@ -335,6 +341,9 @@ tighten, NOT redesign:
 - `tests/contract/test_migrations.py` — `CURRENT_HEAD` → `0015`.
 - `tests/unit/test_wq8_authorization.py` — NEW (18 tests).
 - `tests/playwright/test_wq8_interlock.py` — NEW (7 tests).
+- `docs/evidence/wq-8/TARGET_INSPECTION.md` — NEW per-role inspection matrix
+  (all 12 shortlist roles inspected; ATS, login/CAPTCHA status, form gates,
+  role-fit notes).
 
 ## Tests and exact results
 
@@ -394,22 +403,23 @@ tighten, NOT redesign:
 ## Exact next action
 
 1. Update the WQ-8 todo checklist: implementation, CLI, hermetic tests —
-   completed. Phase A live prep — in progress.
-2. Before Phase A live prep, read the remaining WQ-7C live/orchestration
-   files so the authorization change does not disturb them:
-   `browser/mutation_plan.py`, `form_engine/live_executor.py`,
-   `browser/live_runner.py`, `services/orchestration_service.py`,
-   `application_queue/importer.py`, `api/routes/orchestration.py`,
-   `api/routes/submit.py`, `api/models/submission.py`,
-   `candidate_profile_loader.py`.
-3. Phase A live prep via the normal JobHunter workflow: discover/evaluate/
-   tailor ONE real currently-open Germany AI/ML/Data Working-Student role on a
-   safe simple ATS (prefer one already exercised in WQ-7C); export to UAA;
-   orchestrate through to `review_ready` on the real form with the real CV
-   uploaded; handle unresolved/high-risk fields; freeze `review_plan_hash`
-   via `wq8-review-packet`; confirm duplicate/submission-history check clean;
-   authorization stays DISABLED.
-4. Write the sanitized review packet (no real PII committed) and STOP at the
+   completed. Remaining-shortlist inspection (owner-selected path) —
+   completed. await owner WQ-8 target selection.
+2. Present the final consolidated inspection matrix
+   (`docs/evidence/wq-8/TARGET_INSPECTION.md`) and the ranked recommendation
+   to the owner; await explicit selection of the WQ-8 target role (Siemens
+   517336 recommended primary; Agile Robots Sim2Real, msg 411, Maisel, MEAG
+   are the anonymous no-login alternatives). Do NOT default-select.
+3. On selection, run the canonical JobHunter workflow (scan+eval+tailor+
+   export) for the chosen role → verify `data/application_queue.jsonl` in the
+   canonical repo → set `UAA_JOBHUNTER_REPO`.
+4. Phase A live prep via the normal workflow: discover/evaluate/
+   tailor ONE real currently-open Germany AI/ML/Data Working-Student role;
+   export to UAA; orchestrate through to `review_ready` on the real form with
+   the real CV uploaded; handle unresolved/high-risk fields; freeze
+   `review_plan_hash` via `wq8-review-packet`; confirm duplicate/submission-
+   history check clean; authorization stays DISABLED.
+5. Write the sanitized review packet (no real PII committed) and STOP at the
    `WQ-8 OWNER APPROVAL REQUIRED` gate. Never self-approve Phase B.
 
 Phase B (owner-gated): `wq8-authorize --application-id <id>
