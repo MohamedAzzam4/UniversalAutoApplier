@@ -18,6 +18,7 @@ The counters are readable via ``page.evaluate("__wq7_counters")``.
 
 from __future__ import annotations
 
+import json
 import logging
 from typing import TYPE_CHECKING, Any
 
@@ -38,12 +39,49 @@ INTERLOCK_SCRIPT = """
         request_submit_calls: 0,
         dispatch_submit_events: 0,
         blocked_submissions: 0,
-        navigation_attempts: 0
+        navigation_attempts: 0,
+        authorized_submits: 0
     };
     window.__wq7_blocked_details = [];
 
+    // WQ-8 one-shot authorized-submit allowance. While armed, the FIRST
+    // submit signal is allowed through (consuming the allowance); every
+    // later signal is blocked again. The coordinator arms it immediately
+    // before its owner-authorized click and disarms it in a finally block,
+    // so the allowance is never persistent.
+    window.__wq8_submit_authorization = {armed: false, token: null};
+    function consumeAuthorizedSubmit(present) {
+        // present(token) records which layer consumed the allowance.
+        var auth = window.__wq8_submit_authorization;
+        if (auth && auth.armed) {
+            auth.armed = false;
+            if (present && auth.token) { present(auth.token); }
+            auth.token = null;
+            window.__wq7_counters.authorized_submits++;
+            return true;
+        }
+        return false;
+    }
+    function grantAuthorizedSubmit(token) {
+        window.__wq8_submit_authorization.armed = true;
+        window.__wq8_submit_authorization.token = token;
+        return true;
+    }
+    function clearAuthorizedSubmit() {
+        window.__wq8_submit_authorization.armed = false;
+        window.__wq8_submit_authorization.token = null;
+        return true;
+    }
+    // Exposed for the coordinator (arm/disarm are one-time evaluate calls).
+    window.__wq8_arm_submit_authorization = grantAuthorizedSubmit;
+    window.__wq8_clear_submit_authorization = clearAuthorizedSubmit;
+
     // 1. Capture-phase submit event listener — blocks ALL submit events.
     document.addEventListener('submit', function(e) {
+        if (consumeAuthorizedSubmit()) {
+            // Exactly one owner-authorized submit passes through.
+            return;
+        }
         window.__wq7_counters.submit_events++;
         window.__wq7_counters.blocked_submissions++;
         window.__wq7_blocked_details.push({
@@ -58,7 +96,11 @@ INTERLOCK_SCRIPT = """
 
     // 2. Override HTMLFormElement.prototype.submit
     var origSubmit = HTMLFormElement.prototype.submit;
+    var origRequestSubmit = HTMLFormElement.prototype.requestSubmit;
     HTMLFormElement.prototype.submit = function() {
+        if (consumeAuthorizedSubmit()) {
+            return origSubmit.apply(this, arguments);
+        }
         window.__wq7_counters.form_submit_calls++;
         window.__wq7_counters.blocked_submissions++;
         window.__wq7_blocked_details.push({
@@ -77,6 +119,9 @@ INTERLOCK_SCRIPT = """
             // Freeze form.submit
             Object.defineProperty(form, 'submit', {
                 value: function() {
+                    if (consumeAuthorizedSubmit()) {
+                        return origSubmit.apply(form, arguments);
+                    }
                     window.__wq7_counters.form_submit_calls++;
                     window.__wq7_counters.blocked_submissions++;
                     window.__wq7_blocked_details.push({
@@ -93,6 +138,9 @@ INTERLOCK_SCRIPT = """
             if (typeof form.requestSubmit === 'function') {
                 Object.defineProperty(form, 'requestSubmit', {
                     value: function() {
+                        if (consumeAuthorizedSubmit()) {
+                            return origRequestSubmit.apply(form, arguments);
+                        }
                         window.__wq7_counters.request_submit_calls++;
                         window.__wq7_counters.blocked_submissions++;
                         window.__wq7_blocked_details.push({
@@ -139,8 +187,10 @@ INTERLOCK_SCRIPT = """
 
     // 3. Override HTMLFormElement.prototype.requestSubmit
     if (HTMLFormElement.prototype.requestSubmit) {
-        var origRequestSubmit = HTMLFormElement.prototype.requestSubmit;
         HTMLFormElement.prototype.requestSubmit = function() {
+            if (consumeAuthorizedSubmit()) {
+                return origRequestSubmit.apply(this, arguments);
+            }
             window.__wq7_counters.request_submit_calls++;
             window.__wq7_counters.blocked_submissions++;
             window.__wq7_blocked_details.push({
@@ -161,6 +211,9 @@ INTERLOCK_SCRIPT = """
     var origDispatchEvent = EventTarget.prototype.dispatchEvent;
     EventTarget.prototype.dispatchEvent = function(event) {
         if (event && event.type === 'submit') {
+            if (consumeAuthorizedSubmit()) {
+                return origDispatchEvent.call(this, event);
+            }
             window.__wq7_counters.dispatch_submit_events++;
             window.__wq7_counters.blocked_submissions++;
             window.__wq7_blocked_details.push({
@@ -218,12 +271,13 @@ def read_counters(page: Page) -> dict[str, int]:
     - dispatch_submit_events: number of dispatched submit events blocked
     - blocked_submissions: total blocked submission attempts
     - navigation_attempts: number of beforeunload events
+    - authorized_submits: number of one-shot owner-authorized passes
     """
     try:
         result = page.evaluate(  # type: ignore[attr-defined]
             "() => window.__wq7_counters || {submit_events: 0, form_submit_calls: 0, "
             "request_submit_calls: 0, dispatch_submit_events: 0, blocked_submissions: 0, "
-            "navigation_attempts: 0}"
+            "navigation_attempts: 0, authorized_submits: 0}"
         )
         return result
     except Exception:  # noqa: BLE001
@@ -234,7 +288,43 @@ def read_counters(page: Page) -> dict[str, int]:
             "dispatch_submit_events": 0,
             "blocked_submissions": 0,
             "navigation_attempts": 0,
+            "authorized_submits": 0,
         }
+
+
+def arm_authorized_submit(page: Page, token: str) -> bool:
+    """Arm the one-shot authorized-submit allowance for exactly one signal.
+
+    WQ-8 only: the coordinator arms this immediately before its
+    owner-authorized submit click and disarms it in a ``finally``. While
+    armed, the FIRST submit signal (submit event, ``form.submit()``,
+    ``requestSubmit()``, or dispatched submit event) passes through; every
+    later signal is blocked again. Returns True on success.
+    """
+    try:
+        page.evaluate(  # type: ignore[attr-defined]
+            "() => !!window.__wq8_arm_submit_authorization(" + json.dumps(token) + ")"
+        )
+        return True
+    except Exception:  # noqa: BLE001
+        logger.warning("[wq7-interlock] Failed to arm authorized submit allowance")
+        return False
+
+
+def disarm_authorized_submit(page: Page) -> bool:
+    """Clear the one-shot authorized-submit allowance.
+
+    Called in a ``finally`` so the allowance can never leak past the
+    coordinator's click. Returns True on success.
+    """
+    try:
+        page.evaluate(  # type: ignore[attr-defined]
+            "() => !!window.__wq8_clear_submit_authorization()"
+        )
+        return True
+    except Exception:  # noqa: BLE001
+        logger.warning("[wq7-interlock] Failed to disarm authorized submit allowance")
+        return False
 
 
 def read_blocked_details(page: Page) -> list[dict[str, Any]]:
@@ -258,6 +348,8 @@ def is_interlock_installed(page: Page) -> bool:
 
 __all__ = [
     "INTERLOCK_SCRIPT",
+    "arm_authorized_submit",
+    "disarm_authorized_submit",
     "install_interlock",
     "read_counters",
     "read_blocked_details",

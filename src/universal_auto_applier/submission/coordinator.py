@@ -11,16 +11,15 @@ Gates (ALL must pass for a click to occur):
    application ID.
 3. The approval's ``snapshot_hash`` matches the current snapshot hash
    (computed from the live page).
-4. No pending interventions remain for this application.
-5. No unresolved required fields remain.
-6. No high-risk answer lacks explicit user confirmation.
-7. Exactly one unambiguous final-submit control is visible and enabled.
-8. No previous unconsumed submission claim exists (prevents duplicate
-   clicks from concurrent requests / double-clicks / process restart).
-9. No previous consumed claim with outcome ``outcome_unknown`` (blocks
-   automatic retry after an uncertain outcome).
-10. The application is not already in a submitted/applied state.
+...
 11. The browser is still on the approved application URL.
+12. WQ-8 gate — ACTIVE ONLY when a single-use submission authorization
+    exists for this application. When present it must bind to the exact
+    application ID, job identity, target URL, frozen ``review_plan_hash``
+    and CV/document content hashes, and it is consumed (compare-and-set)
+    immediately before the click. A consumed/revoked/expired authorization
+    blocks submission. When no authorization exists, this gate is a no-op
+    (existing behavior is unchanged).
 
 If any gate fails, the coordinator returns a
 :class:`SubmissionResult` with the appropriate state and ``clicked=False``.
@@ -29,13 +28,15 @@ No click occurs.
 If all gates pass, the coordinator:
 1. Acquires a transactional one-time claim.
 2. Rechecks all gates.
-3. Captures a pre-submit screenshot.
-4. Clicks the submit control ONCE.
-5. Waits for a bounded confirmation period.
-6. Captures post-submit evidence (URL, screenshot, DOM).
-7. Classifies the result.
-8. Consumes the claim and approval.
-9. Records the result for audit.
+3. (WQ-8) Consumes the single-use authorization and arms the browser
+   one-shot authorized-submit allowance.
+4. Captures a pre-submit screenshot.
+5. Clicks the submit control ONCE.
+6. Waits for a bounded confirmation period.
+7. Captures post-submit evidence (URL, screenshot, DOM).
+8. Classifies the result.
+9. Consumes the claim and approval.
+10. Records the result for audit.
 
 See ``docs/generalization/DRY_RUN_LEVELS.md`` Level 3 and
 ``docs/testing/CONTROLLED_REAL_SUBMISSION_TEST_PLAN.md``.
@@ -60,6 +61,15 @@ from universal_auto_applier.core.statuses import ApplicationStatus
 from universal_auto_applier.navigator.apply_path_finder import analyze_page
 from universal_auto_applier.persistence.db import session_scope
 from universal_auto_applier.persistence.job_repository import get_application_job
+from universal_auto_applier.submission.authorization import (
+    build_review_plan,
+    compute_review_plan_hash,
+)
+from universal_auto_applier.submission.authorization_store import (
+    authorization_to_model,
+    consume_authorization,
+    get_active_authorization,
+)
 from universal_auto_applier.submission.models import (
     SubmissionResult,
     SubmissionResultState,
@@ -303,9 +313,219 @@ class SubmissionCoordinator:
                     state=SubmissionResultState.ALREADY_SUBMITTED,
                 )
 
+            # Gate 8 (WQ-8): active only when a single-use authorization
+            # exists for this application.
+            wq8 = self._check_wq8_authorization_db(session, application_id, current_snapshot, job)
+            if wq8 is not None:
+                return wq8
+
         # Gates 5, 6, 7, 11 require the live page and are checked in
         # execute_submission (they cannot be checked without a browser).
         return GateResult(allowed=True)
+
+    # ------------------------------------------------------------------
+    # WQ-8 single-use authorization gate
+    # ------------------------------------------------------------------
+
+    def _find_any_authorization(
+        self,
+        session: Any,
+        application_id: str,
+    ) -> Any | None:
+        """Return ANY authorization row for an application (any state)."""
+        from sqlalchemy import select
+
+        from universal_auto_applier.persistence.models import (
+            SubmissionAuthorizationRow,
+        )
+
+        stmt = (
+            select(SubmissionAuthorizationRow)
+            .where(SubmissionAuthorizationRow.application_id == application_id)
+            .order_by(SubmissionAuthorizationRow.created_at.desc())
+        )
+        return session.execute(stmt).scalars().first()
+
+    @staticmethod
+    def _validate_wq8_binding(
+        auth: Any,
+        current_snapshot: SubmissionSnapshot,
+        job: Any | None,
+    ) -> GateResult | None:
+        """Validate the authorization binds to the current form/job state.
+
+        Returns None when the bindings all match, or the failing
+        :class:`GateResult` otherwise.
+        """
+        if auth.application_id != current_snapshot.application_id:
+            return GateResult(
+                allowed=False,
+                reason="WQ-8 authorization belongs to a different application",
+                state=SubmissionResultState.APPROVAL_STALE,
+            )
+        if auth.application_url != current_snapshot.application_url:
+            return GateResult(
+                allowed=False,
+                reason="WQ-8 authorization URL does not match the current application URL",
+                state=SubmissionResultState.APPROVAL_STALE,
+            )
+        if job is not None:
+            if auth.job_company and job.company != auth.job_company:
+                return GateResult(
+                    allowed=False,
+                    reason="WQ-8 authorization company does not match the current job",
+                    state=SubmissionResultState.APPROVAL_STALE,
+                )
+            if auth.job_title and job.title != auth.job_title:
+                return GateResult(
+                    allowed=False,
+                    reason="WQ-8 authorization title does not match the current job",
+                    state=SubmissionResultState.APPROVAL_STALE,
+                )
+            plan = build_review_plan(
+                application_id=current_snapshot.application_id,
+                company=job.company,
+                job_title=job.title,
+                application_url=job.url,
+                fields=current_snapshot.fields,
+                documents=current_snapshot.documents,
+                submit_control_text=(
+                    current_snapshot.submit_control.text if current_snapshot.submit_control else ""
+                ),
+                submit_control_selector=(
+                    current_snapshot.submit_control.selector
+                    if current_snapshot.submit_control
+                    else ""
+                ),
+                submit_control_frame_url=(
+                    current_snapshot.submit_control.frame_url
+                    if current_snapshot.submit_control
+                    else ""
+                ),
+                pending_intervention_count=current_snapshot.pending_intervention_count,
+            )
+            frozen = compute_review_plan_hash(plan)
+            if frozen != auth.review_plan_hash:
+                return GateResult(
+                    allowed=False,
+                    reason=(
+                        f"WQ-8 review plan hash mismatch: authorized "
+                        f"{auth.review_plan_hash[:12]} != current {frozen[:12]}"
+                    ),
+                    state=SubmissionResultState.APPROVAL_STALE,
+                )
+        doc_hashes = sorted(d.content_hash for d in current_snapshot.documents if d.content_hash)
+        if sorted(auth.document_hashes or []) != doc_hashes:
+            return GateResult(
+                allowed=False,
+                reason="WQ-8 authorization document hashes do not match the current documents",
+                state=SubmissionResultState.APPROVAL_STALE,
+            )
+        return None
+
+    def _check_wq8_authorization_db(
+        self,
+        session: Any,
+        application_id: str,
+        current_snapshot: SubmissionSnapshot | None,
+        job: Any | None,
+    ) -> GateResult | None:
+        """WQ-8 DB-side gate. Returns a blocking :class:`GateResult` when an
+        authorization exists but is invalid/inactive, or None when the gate
+        is satisfied (including the no-authorization no-op case)."""
+        auth_row = get_active_authorization(session, application_id)
+        if auth_row is None:
+            # No active authorization. If any non-active authorization exists
+            # for this application, the one-shot is spent or invalidated —
+            # real submission must be blocked.
+            any_auth = self._find_any_authorization(session, application_id)
+            if any_auth is not None:
+                return GateResult(
+                    allowed=False,
+                    reason=("WQ-8 authorization is not active (consumed/revoked/expired)"),
+                    state=SubmissionResultState.SUBMISSION_NOT_ALLOWED,
+                )
+            return None
+        auth = authorization_to_model(auth_row)
+        if auth.application_id != application_id:
+            return GateResult(
+                allowed=False,
+                reason="WQ-8 authorization belongs to a different application",
+                state=SubmissionResultState.APPROVAL_STALE,
+            )
+        if job is not None and auth.application_url != job.url:
+            return GateResult(
+                allowed=False,
+                reason="WQ-8 authorization URL does not match the current job URL",
+                state=SubmissionResultState.APPROVAL_STALE,
+            )
+        if (
+            current_snapshot is not None
+            and self._validate_wq8_binding(auth, current_snapshot, job) is not None
+        ):
+            return self._validate_wq8_binding(auth, current_snapshot, job)
+        return None
+
+    def _check_and_consume_wq8_authorization(
+        self,
+        *,
+        application_id: str,
+        approval_id: str,
+        current_snapshot: SubmissionSnapshot,
+    ) -> tuple[SubmissionResult | None, bool]:
+        """Consume the single-use authorization immediately before the click.
+
+        Returns ``(None, True)`` when an active authorization bound to the
+        current state was consumed (the click may proceed armed). Returns
+        ``(SubmissionResult, False)`` for any blocking mismatch (result is
+        already recorded), and ``(None, False)`` when no authorization
+        exists (gate inactive — existing behavior unchanged).
+        """
+        with session_scope(self._session_factory) as session:
+            job = get_application_job(session, application_id)
+            auth_row = get_active_authorization(session, application_id)
+            if auth_row is None:
+                any_auth = self._find_any_authorization(session, application_id)
+                if any_auth is None:
+                    return None, False
+                result = SubmissionResult(
+                    application_id=application_id,
+                    approval_id=approval_id,
+                    snapshot_hash_at_submit=current_snapshot.snapshot_hash,
+                    state=SubmissionResultState.SUBMISSION_NOT_ALLOWED,
+                    clicked=False,
+                    error_message=("WQ-8 authorization is not active (consumed/revoked/expired)"),
+                )
+                record_result(session, result)
+                return result, False
+            auth = authorization_to_model(auth_row)
+            binding = self._validate_wq8_binding(auth, current_snapshot, job)
+            if binding is not None:
+                result = SubmissionResult(
+                    application_id=application_id,
+                    approval_id=approval_id,
+                    snapshot_hash_at_submit=current_snapshot.snapshot_hash,
+                    state=binding.state,
+                    clicked=False,
+                    error_message=binding.reason,
+                )
+                record_result(session, result)
+                return result, False
+            if not consume_authorization(session, auth.authorization_id):
+                result = SubmissionResult(
+                    application_id=application_id,
+                    approval_id=approval_id,
+                    snapshot_hash_at_submit=current_snapshot.snapshot_hash,
+                    state=SubmissionResultState.SUBMISSION_NOT_ALLOWED,
+                    clicked=False,
+                    error_message=(
+                        "WQ-8 authorization could not be consumed "
+                        "(concurrent request or already spent)"
+                    ),
+                )
+                record_result(session, result)
+                return result, False
+        return None, True
 
     # ------------------------------------------------------------------
     # Approval management
@@ -514,7 +734,33 @@ class SubmissionCoordinator:
         else:
             claim_id = ""  # Claim already acquired by execution service
 
+        # --- WQ-8 single-use authorization gate ---
+        # Active only when an authorization exists for this application. When
+        # present it must bind to the current state and is consumed (compare-
+        # and-set) NOW — immediately before the click, exactly once.
+        wq8_result, wq8_armed = self._check_and_consume_wq8_authorization(
+            application_id=application_id,
+            approval_id=approval_id,
+            current_snapshot=current_snapshot,
+        )
+        if wq8_result is not None:
+            logger.warning(
+                "[%s] WQ-8 authorization gate failed: %s (state=%s)",
+                application_id[:12],
+                wq8_result.error_message,
+                wq8_result.state,
+            )
+            if claim_id:
+                with session_scope(self._session_factory) as session:
+                    consume_claim(session, claim_id, state=wq8_result.state)
+            return wq8_result
+
         # --- Browser interaction ---
+        import json as _json
+        import uuid as _uuid
+
+        from universal_auto_applier.browser.submit_interlock import read_counters
+
         page: Page | None = None
         pre_submit_screenshot: str | None = None
         post_submit_screenshot: str | None = None
@@ -577,6 +823,30 @@ class SubmissionCoordinator:
                                             exc,
                                         )
 
+                                # WQ-8: arm the one-shot authorized-submit
+                                # allowance immediately before the click so the
+                                # interlock passes exactly one signal, then
+                                # disarm in the finally below.
+                                if wq8_armed:
+                                    from universal_auto_applier.browser.submit_interlock import (
+                                        arm_authorized_submit,
+                                        disarm_authorized_submit,
+                                    )
+
+                                    wq8_token = _uuid.uuid4().hex
+                                    arm_authorized_submit(page, wq8_token)
+                                    if artifact_dir:
+                                        try:
+                                            artifact_dir.mkdir(parents=True, exist_ok=True)
+                                            (
+                                                artifact_dir / "interlock-before-click.json"
+                                            ).write_text(
+                                                _json.dumps(read_counters(page)),
+                                                encoding="utf-8",
+                                            )
+                                        except (OSError, PlaywrightError):
+                                            pass
+
                                 # Click the submit control ONCE.
                                 logger.info(
                                     "[%s] clicking final submit control: %s",
@@ -585,6 +855,18 @@ class SubmissionCoordinator:
                                 )
                                 locator.click(timeout=self._settings.browser_timeout_ms)
                                 clicked = True
+
+                                # WQ-8: capture interlock counters immediately
+                                # after the click (before any navigation resets
+                                # the per-page init-script state).
+                                if wq8_armed and artifact_dir:
+                                    try:
+                                        (artifact_dir / "interlock-after-click.json").write_text(
+                                            _json.dumps(read_counters(page)),
+                                            encoding="utf-8",
+                                        )
+                                    except (OSError, PlaywrightError):
+                                        pass
 
                                 # Wait for confirmation.
                                 result_state, confirmation_evidence = self._wait_for_confirmation(
@@ -641,6 +923,17 @@ class SubmissionCoordinator:
                 application_id[:12],
             )
         finally:
+            if wq8_armed and page is not None and not page.is_closed():
+                # WQ-8: the one-shot allowance must never leak beyond this
+                # click — disarm it unconditionally in the finally.
+                from universal_auto_applier.browser.submit_interlock import (
+                    disarm_authorized_submit,
+                )
+
+                try:
+                    disarm_authorized_submit(page)
+                except Exception:
+                    pass
             if page is not None and not page.is_closed():
                 try:
                     post_submit_url = post_submit_url or page.url

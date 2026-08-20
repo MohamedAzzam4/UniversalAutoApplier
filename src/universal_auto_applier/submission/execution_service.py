@@ -487,6 +487,30 @@ class SubmissionExecutionService:
                 consume_claim(session, claim_id, state=S.SUBMISSION_NOT_ALLOWED)
             return result
 
+        # WQ-8: install the submit interlock BEFORE any navigation, but ONLY
+        # when an active single-use authorization exists for this application.
+        # Without an authorization the controlled-submit path stays
+        # byte-for-byte unchanged (no interlock install).
+        with session_scope(self._session_factory) as session:
+            from universal_auto_applier.submission.authorization_store import (
+                get_active_authorization,
+            )
+
+            wq8_active = get_active_authorization(session, application_id) is not None
+        log_extra = ""
+        if wq8_active:
+            from universal_auto_applier.browser.submit_interlock import (
+                install_interlock,
+            )
+
+            install_interlock(context)
+            log_extra = " (WQ-8 interlock installed)"
+        logger.info(
+            "[%s] controlled submission browser start%s",
+            application_id[:12],
+            log_extra,
+        )
+
         try:
             page = context.pages[0] if context.pages else context.new_page()
             page.goto(

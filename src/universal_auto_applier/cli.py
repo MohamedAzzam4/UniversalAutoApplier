@@ -36,6 +36,9 @@ CLI_COMMANDS: frozenset[str] = frozenset(
         "live-submit",
         "live-dry-run-platforms",
         "live-synthetic-mutation",
+        "wq8-review-packet",
+        "wq8-authorize",
+        "wq8-status",
     }
 )
 
@@ -213,6 +216,55 @@ def _build_parser() -> argparse.ArgumentParser:
         default=None,
         help="Optional per-run mutation budget (default: Settings value).",
     )
+
+    # WQ-8: review-packet (Phase A freeze), authorize (Phase B), status.
+    rewpkt = subparsers.add_parser(
+        "wq8-review-packet",
+        help=(
+            "Phase A: recompute the frozen review_plan_hash for one application "
+            "and print the owner review packet (sanitized — no filled values, "
+            "no PII). Reads the persisted live review snapshot. Never submits."
+        ),
+    )
+    rewpkt.add_argument("--application-id", required=True)
+    rewpkt.add_argument(
+        "--job-url",
+        help=(
+            "Diagnostic URL override used ONLY for the packet (does not modify "
+            "the stored job). Useful when the stored URL differs from the ATS."
+        ),
+    )
+
+    au = subparsers.add_parser(
+        "wq8-authorize",
+        help=(
+            "Phase B (owner-only): create the single-use real-submission "
+            "authorization. Requires UAA_ENABLE_REAL_SUBMISSION=true, the "
+            "exact frozen review_plan_hash from the review packet, a "
+            "review_ready job, and --confirm. Refuses if the plan hashes "
+            "differ, if any bound identity/URL/document/hash changed, or if a "
+            "real submission already exists."
+        ),
+    )
+    au.add_argument("--application-id", required=True)
+    au.add_argument("--review-plan-hash", required=True)
+    au.add_argument("--expires-in-hours", type=float, default=24.0)
+    au.add_argument(
+        "--confirm",
+        action="store_true",
+        required=True,
+        help="Deliberate owner confirmation to authorize one real submission.",
+    )
+    au.add_argument(
+        "--job-url",
+        help="Diagnostic URL override (recomputed against this URL).",
+    )
+
+    st = subparsers.add_parser(
+        "wq8-status",
+        help="Read-only diagnostic: show WQ-8 authorization state for one application.",
+    )
+    st.add_argument("--application-id", required=True)
 
     return parser
 
@@ -799,6 +851,296 @@ def _live_synthetic_mutation(settings: Settings, args: argparse.Namespace) -> in
     return 2
 
 
+def _load_review_snapshot(
+    session: Any,
+    application_id: str,
+) -> tuple[Any, Any | None]:
+    """Return (job, snapshot) for a review packet.
+
+    Reads the latest persisted approval's snapshot for the application.
+    ``create_approval`` keeps a single active approval; we read it via
+    ``get_active_approval``.
+    """
+    from universal_auto_applier.submission.models import SubmissionSnapshot
+    from universal_auto_applier.submission.store import get_active_approval
+
+    job = list_application_jobs(session)
+    job = next((j for j in job if j.application_id == application_id), None)
+    if job is None:
+        return None, None
+    approval = get_active_approval(session, application_id)
+    if approval is None or not approval.snapshot_json:
+        return job, None
+    return job, SubmissionSnapshot.model_validate(approval.snapshot_json)
+
+
+def _wq8_review_packet(settings: Settings, args: argparse.Namespace) -> int:
+    """Phase A: freeze the review plan and print the owner review packet.
+
+    Sanitized output only — never prints filled values, real emails,
+    phones, addresses, or document paths.
+    """
+    from universal_auto_applier.core.statuses import ApplicationStatus
+    from universal_auto_applier.submission.authorization import (
+        build_review_plan,
+        compute_review_plan_hash,
+    )
+
+    engine, session_factory = _open_store(settings)
+    try:
+        with session_scope(session_factory) as session:
+            job, snapshot = _load_review_snapshot(session, str(args.application_id))
+            if job is None:
+                print(f"ERROR: no application matches {args.application_id!r}")
+                return 2
+            application_id = job.application_id
+            if snapshot is None:
+                print(
+                    f"ERROR: {application_id[:12]} has no review snapshot. "
+                    "Run the live review observation first (dashboard "
+                    "observe endpoint)."
+                )
+                return 2
+            job_url = args.job_url or job.url
+            plan = build_review_plan(
+                application_id=application_id,
+                company=job.company,
+                job_title=job.title,
+                application_url=job_url,
+                fields=snapshot.fields,
+                documents=snapshot.documents,
+                submit_control_text=(
+                    snapshot.submit_control.text if snapshot.submit_control else ""
+                ),
+                submit_control_selector=(
+                    snapshot.submit_control.selector if snapshot.submit_control else ""
+                ),
+                submit_control_frame_url=(
+                    snapshot.submit_control.frame_url if snapshot.submit_control else ""
+                ),
+                pending_intervention_count=snapshot.pending_intervention_count,
+            )
+            frozen_hash = compute_review_plan_hash(plan)
+
+            print("WQ-8 review packet (Phase A freeze; sanitized)")
+            print(f"application_id:      {application_id}")
+            print(f"status:              {str(job.status)}")
+            if job.status != ApplicationStatus.REVIEW_READY:
+                print(f"NOTICE: status is not review_ready (it is {job.status})")
+            print(f"company:             {job.company}")
+            print(f"job_title:           {job.title}")
+            print(f"application_url:     {job_url}")
+            print(f"snapshot_hash:       {snapshot.snapshot_hash}")
+            print(f"review_plan_hash:    {frozen_hash}")
+            print(f"pending_interventions: {snapshot.pending_intervention_count}")
+            high_risk = [f for f in snapshot.fields if f.risk_level == "high"]
+            unconfirmed = [f for f in snapshot.fields if f.requires_confirmation]
+            print(
+                f"fields:              {len(snapshot.fields)} (high-risk {len(high_risk)}, "
+                f"requires-confirmation {len(unconfirmed)})"
+            )
+            print(f"documents:           {len(snapshot.documents)}")
+            print(
+                "document hashes: "
+                + ", ".join(
+                    f"{d.document_kind}={d.content_hash[:12]}"
+                    for d in sorted(snapshot.documents, key=lambda d: d.document_kind)
+                )
+            )
+            if snapshot.submit_control:
+                print(
+                    f"submit_control:      {snapshot.submit_control.text!r} "
+                    f"({snapshot.submit_control.classification})"
+                )
+            print(
+                "\nTo authorize the single real submission, run (see docs/evidence/wq-8/DESIGN.md):"
+            )
+            print(
+                f"  python -m universal_auto_applier wq8-authorize "
+                f"--application-id {application_id[:12]} "
+                f"--review-plan-hash {frozen_hash} --confirm"
+            )
+            return 0
+    finally:
+        engine.dispose()
+
+
+def _wq8_authorize(settings: Settings, args: argparse.Namespace) -> int:
+    """Phase B (owner-only): create the single-use authorization."""
+    from universal_auto_applier.core.statuses import ApplicationStatus
+    from universal_auto_applier.submission.authorization import (
+        build_review_plan,
+        compute_review_plan_hash,
+    )
+
+    if not settings.enable_real_submission:
+        print(
+            "ERROR: UAA_ENABLE_REAL_SUBMISSION is not true. Real submission is disabled by default."
+        )
+        return 2
+    if not args.confirm:
+        print("ERROR: --confirm is required to authorize a real submission.")
+        return 2
+
+    engine, session_factory = _open_store(settings)
+    try:
+        with session_scope(session_factory) as session:
+            from universal_auto_applier.submission.authorization_store import (
+                create_authorization,
+                has_converted_submission,
+            )
+
+            job, snapshot = _load_review_snapshot(session, str(args.application_id))
+            if job is None:
+                print(f"ERROR: no application matches {args.application_id!r}")
+                return 2
+            application_id = job.application_id
+            if snapshot is None:
+                print(
+                    f"ERROR: {application_id[:12]} has no review snapshot. "
+                    "Run the live review observation first."
+                )
+                return 2
+            if job.status != ApplicationStatus.REVIEW_READY:
+                print(
+                    f"ERROR: job status is {job.status}, not review_ready. "
+                    "Only a review_ready job may be authorized."
+                )
+                return 2
+            if has_converted_submission(session):
+                print(
+                    "ERROR: a real submission already exists somewhere. "
+                    "The absolute one-submission limit is consumed."
+                )
+                return 2
+
+            job_url = args.job_url or job.url
+            plan = build_review_plan(
+                application_id=application_id,
+                company=job.company,
+                job_title=job.title,
+                application_url=job_url,
+                fields=snapshot.fields,
+                documents=snapshot.documents,
+                submit_control_text=(
+                    snapshot.submit_control.text if snapshot.submit_control else ""
+                ),
+                submit_control_selector=(
+                    snapshot.submit_control.selector if snapshot.submit_control else ""
+                ),
+                submit_control_frame_url=(
+                    snapshot.submit_control.frame_url if snapshot.submit_control else ""
+                ),
+                pending_intervention_count=snapshot.pending_intervention_count,
+            )
+            current_hash = compute_review_plan_hash(plan)
+            if current_hash != args.review_plan_hash:
+                print(
+                    f"ERROR: review_plan_hash mismatch. Current {current_hash} != "
+                    f"authorized {args.review_plan_hash}. The plan changed since "
+                    "the review packet; return to Phase A and re-freeze."
+                )
+                return 2
+
+            doc_hashes = sorted(d.content_hash for d in snapshot.documents if d.content_hash)
+            from datetime import UTC, datetime, timedelta
+
+            expires_at = datetime.now(UTC) + timedelta(hours=float(args.expires_in_hours))
+            try:
+                auth = create_authorization(
+                    session,
+                    application_id=application_id,
+                    application_url=job_url,
+                    job_company=job.company,
+                    job_title=job.title,
+                    review_plan_hash=current_hash,
+                    document_hashes=doc_hashes,
+                    expires_at=expires_at,
+                )
+            except ValueError as exc:
+                print(f"ERROR: {exc}")
+                return 2
+
+        print("WQ-8 authorization created (single-use, absolute limit=1)")
+        print(f"authorization_id:    {auth.authorization_id}")
+        print(f"application_id:      {application_id}")
+        print(f"review_plan_hash:    {current_hash}")
+        print(f"expires_at:          {auth.expires_at.isoformat()}")
+        print(
+            "Then run the UNCHANGED controlled submit (see "
+            "docs/testing/CONTROLLED_REAL_SUBMISSION_TEST_PLAN.md):"
+        )
+        from universal_auto_applier.submission.store import get_active_approval
+
+        with session_scope(session_factory) as session:
+            approval = get_active_approval(session, application_id)
+        if approval is not None:
+            print(
+                f"  python -m universal_auto_applier live-submit "
+                f"--application-id {application_id[:12]} "
+                f"--approval-id {approval.approval_id} --confirm"
+            )
+        return 0
+    finally:
+        engine.dispose()
+
+
+def _wq8_status(settings: Settings, args: argparse.Namespace) -> int:
+    """Read-only diagnostic: show WQ-8 authorization state."""
+    from universal_auto_applier.submission.authorization_store import (
+        authorization_to_model,
+    )
+
+    engine, session_factory = _open_store(settings)
+    try:
+        with session_scope(session_factory) as session:
+            from sqlalchemy import select
+
+            from universal_auto_applier.persistence.models import (
+                SubmissionAuthorizationRow,
+            )
+
+            job, _snapshot = _load_review_snapshot(session, str(args.application_id))
+            if job is None:
+                print(f"ERROR: no application matches {args.application_id!r}")
+                return 2
+            application_id = job.application_id
+            stmt = (
+                select(SubmissionAuthorizationRow)
+                .where(SubmissionAuthorizationRow.application_id == application_id)
+                .order_by(SubmissionAuthorizationRow.created_at.desc())
+            )
+            rows = session.execute(stmt).scalars().all()
+
+        if not rows:
+            print(f"WQ-8 authorization state for {application_id}: NONE")
+            print("No authorization exists. Real submission is FORBIDDEN.")
+            return 0
+        for row in rows:
+            model = authorization_to_model(row)
+            state = (
+                "ACTIVE"
+                if model.is_active
+                else (
+                    "CONSUMED"
+                    if model.consumed_at
+                    else ("REVOKED" if model.revoked_at else "EXPIRED")
+                )
+            )
+            print(f"authorization_id:  {row.authorization_id}")
+            print(f"  state:           {state}")
+            print(f"  review_plan_hash: {row.review_plan_hash}")
+            print(f"  created_at:      {row.created_at.isoformat()}")
+            if row.consumed_at:
+                print(f"  consumed_at:     {row.consumed_at.isoformat()}")
+            if row.revoked_at:
+                print(f"  revoked_at:      {row.revoked_at.isoformat()}")
+            print(f"  expires_at:      {row.expires_at.isoformat()}")
+        return 0
+    finally:
+        engine.dispose()
+
+
 def run_command(argv: list[str], settings: Settings) -> int:
     """Run a non-server CLI command and return its process exit code."""
     parser = _build_parser()
@@ -817,6 +1159,12 @@ def run_command(argv: list[str], settings: Settings) -> int:
         return _live_dry_run_platforms(settings, args)
     if args.command == "live-synthetic-mutation":
         return _live_synthetic_mutation(settings, args)
+    if args.command == "wq8-review-packet":
+        return _wq8_review_packet(settings, args)
+    if args.command == "wq8-authorize":
+        return _wq8_authorize(settings, args)
+    if args.command == "wq8-status":
+        return _wq8_status(settings, args)
     parser.error(f"unknown command: {args.command}")
     return 2
 

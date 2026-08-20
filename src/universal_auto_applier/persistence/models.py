@@ -300,6 +300,37 @@ class SubmissionResultRow(Base):
     attempted_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
 
 
+class SubmissionAuthorizationRow(Base):
+    """A single-use, expiry-bound real-submission authorization (WQ-8).
+
+    The stricter authorization that must exist and be active for a real
+    submission to proceed. Bound to the application, the job identity, the
+    target URL, the frozen ``review_plan_hash`` and the CV/document content
+    hashes. Consumed compare-and-set as submission initiates. There is at
+    most one total (see the authorization store's absolute-limit enforcement).
+    """
+
+    __tablename__ = "submission_authorizations"
+
+    authorization_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    application_id: Mapped[str] = mapped_column(
+        String(64),
+        ForeignKey("application_jobs.application_id"),
+        index=True,
+    )
+    application_url: Mapped[str] = mapped_column(Text, default="")
+    job_company: Mapped[str] = mapped_column(String(256), default="")
+    job_title: Mapped[str] = mapped_column(String(256), default="")
+    review_plan_hash: Mapped[str] = mapped_column(String(64), index=True)
+    document_hashes_json: Mapped[list[str]] = mapped_column(JSON, default=list)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
+    consumed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
+
+    job: Mapped[ApplicationJobRow] = relationship()
+
+
 class QueueImportRunRow(Base):
     """One durable run of the queue-import service.
 
