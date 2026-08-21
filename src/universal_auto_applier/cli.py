@@ -109,6 +109,11 @@ def _build_parser() -> argparse.ArgumentParser:
     live.add_argument("--channel", help="Playwright browser channel, e.g. chrome or msedge.")
     live.add_argument("--timeout-ms", type=int)
     live.add_argument("--max-steps", type=int)
+    live.add_argument(
+        "--wq8-phase-a",
+        action="store_true",
+        help="WQ-8 Phase A: real-data preparation with submit interlock (real candidate + real CV allowed, final submission impossible, no one-shot armed).",
+    )
 
     submit = subparsers.add_parser(
         "live-submit",
@@ -333,6 +338,7 @@ def _live_dry_run(settings: Settings, args: argparse.Namespace) -> int:
             or settings.browser_profile_dir
             or settings.data_dir / "browser-profile"
         )
+    wq8_phase_a = bool(getattr(args, "wq8_phase_a", False) or settings.wq8_phase_a)
     config = LiveBrowserConfig(
         artifacts_root=args.artifacts_dir or settings.data_dir / "live-runs",
         profile_dir=profile_dir,
@@ -340,6 +346,7 @@ def _live_dry_run(settings: Settings, args: argparse.Namespace) -> int:
         channel=args.channel or settings.browser_channel,
         timeout_ms=args.timeout_ms or settings.browser_timeout_ms,
         max_steps=args.max_steps or settings.browser_max_steps,
+        wq8_phase_a=wq8_phase_a,
     )
     candidate = resolve_candidate_profile(job.metadata, settings.candidate_profile)
 

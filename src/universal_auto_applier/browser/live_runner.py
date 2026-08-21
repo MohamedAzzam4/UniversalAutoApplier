@@ -65,11 +65,16 @@ class LiveBrowserConfig:
     # direct call to ``attempt_submit`` returns "blocked" without clicking.
     # This is the lowest-layer guarantee that no final submission occurs.
     hard_submit_block: bool = False
+    # WQ-8 Phase A: real-data preparation with hard interlock. When True,
+    # the runner installs the WQ-7 browser-side submit interlock BEFORE
+    # navigation (real candidate allowed, real CV upload allowed, final
+    # submission impossible, no one-shot authorized-submit armed).
+    wq8_phase_a: bool = False
     # WQ-7B: When True, the runner is in navigation/observation-only
     # reconnaissance mode. It follows safe apply/continue actions but NEVER
     # fills fields, uploads documents, or clicks submit. It stops at the
     # first application form it detects and records a structural observation
-    # of that form. This is a stricter superset of the WQ-7A dry-run posture.
+    # of that form. This is a stricter superset of the WQ-7A dry-run safety posture.
     recon_only: bool = False
 
     def __post_init__(self) -> None:
@@ -197,13 +202,19 @@ class LiveBrowserRunner:
         seen_actions: set[tuple[str, str, str]] = set()
         self._uaa_submit_clicks = 0
 
-        # WQ-7: Install the browser-side submit interlock BEFORE any page
-        # is created. This intercepts submit events, form.submit(),
-        # requestSubmit(), and dispatched SubmitEvents at the capture phase,
-        # before any site JavaScript can process them.
-        if self._config.hard_submit_block:
+        # WQ-7 / WQ-8 Phase A: Install the browser-side submit interlock
+        # BEFORE any page is created. This intercepts submit events,
+        # form.submit(), requestSubmit(), and dispatched SubmitEvents at the
+        # capture phase, before any site JavaScript can process them.
+        # WQ-8 Phase A reuses the WQ-7 interlock implementation (no second
+        # interlock) — real data + real CV allowed, but submission impossible,
+        # no one-shot allowance armed, no authorization row required.
+        if self._config.hard_submit_block or self._config.wq8_phase_a:
             install_interlock(context)
-            logger.info("[%s] WQ-7 submit interlock installed on context", job.application_id[:12])
+            tag = "WQ-8 Phase A" if self._config.wq8_phase_a else "WQ-7"
+            logger.info(
+                "[%s] %s submit interlock installed on context", job.application_id[:12], tag
+            )
 
         if self._config.capture_trace:
             try:

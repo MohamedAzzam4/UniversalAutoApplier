@@ -183,6 +183,16 @@ class Settings(BaseModel):
     # per approved field and exhausted runs stop mutating (they never submit).
     synthetic_mutation_max_mutations: int = Field(default=60, ge=1, le=200)
 
+    # WQ-8 Phase A: real-data preparation with hard submit interlock. OFF by
+    # default. When True, the live-dry-run preparation for WQ-8 (real
+    # candidate profile + real approved CV) installs the WQ-7 browser-side
+    # submit interlock BEFORE navigation/mutation. Real field filling and
+    # real document upload are allowed, but final submission is technically
+    # impossible, no one-shot authorized-submit is armed, and no
+    # SubmissionAuthorization row is created. UAA_ENABLE_REAL_SUBMISSION
+    # does not make Phase A submit-capable.
+    wq8_phase_a: bool = Field(default=False)
+
     model_config = {"frozen": True, "extra": "ignore"}
 
     @model_validator(mode="after")
@@ -360,4 +370,5 @@ def load_settings(env: dict[str, str] | None = None) -> Settings:
         synthetic_mutation_max_mutations=_parse_int(
             "UAA_SYNTHETIC_MUTATION_MAX_MUTATIONS", 60, 1, 200
         ),
+        wq8_phase_a=_parse_bool(source.get("UAA_WQ8_PHASE_A", "false").strip()),
     )

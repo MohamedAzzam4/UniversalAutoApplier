@@ -81,8 +81,17 @@ _LABEL_PATTERNS: list[tuple[str, str, str]] = [
 
 # File field patterns.
 _FILE_FIELD_PATTERNS: list[tuple[str, str, str]] = [
-    (r"resume|cv", "cv_pdf", "File field matched 'resume/cv'"),
-    (r"cover.*letter", "cover_letter_pdf", "File field matched 'cover letter'"),
+    (r"resume|cv|lebenslauf", "cv_pdf", "File field matched 'resume/cv/lebenslauf'"),
+    (
+        r"cover.*letter|anschreiben",
+        "cover_letter_pdf",
+        "File field matched 'cover letter/anschreiben'",
+    ),
+    (
+        r"bewerbungsunterlagen|unterlagen|anlage|dokumente",
+        "cv_pdf",
+        "File field matched 'Bewerbungsunterlagen/Unterlagen'",
+    ),
 ]
 
 _QUESTION_ANSWER_KEYS: tuple[str, ...] = (
