@@ -41,26 +41,7 @@ def job_with_cv(tmp_path: Path) -> ApplicationJob:
     )
 
 
-def test_bewerbungsunterlagen_maps_to_cv(
-    candidate: CandidateProfile, job_with_cv: ApplicationJob
-) -> None:
-    field = FormField(
-        selector="lf-test",
-        name="attachmentFile",
-        label="Vollständige Bewerbungsunterlagen:",
-        type="file",
-        required=True,
-        nearby_text="Anschreiben, Lebenslauf",
-    )
-    mapping = map_field(field, candidate, job_with_cv)
-    assert mapping is not None
-    assert mapping.value == job_with_cv.cv_pdf
-    assert mapping.source == "document_path"
-
-
-def test_lebenslauf_label_maps_to_cv(
-    candidate: CandidateProfile, job_with_cv: ApplicationJob
-) -> None:
+def test_lebenslauf_maps_to_cv(candidate: CandidateProfile, job_with_cv: ApplicationJob) -> None:
     field = FormField(
         selector="lf-test2",
         name="cv",
@@ -73,15 +54,70 @@ def test_lebenslauf_label_maps_to_cv(
     assert mapping.value == job_with_cv.cv_pdf
 
 
-def test_german_bewerbungsunterlagen_hash_recorded(
+def test_cv_label_maps_to_cv(candidate: CandidateProfile, job_with_cv: ApplicationJob) -> None:
+    field = FormField(selector="lf-cv", name="cv", label="CV", type="file", required=True)
+    mapping = map_field(field, candidate, job_with_cv)
+    assert mapping is not None
+    assert mapping.value == job_with_cv.cv_pdf
+
+
+def test_anschreiben_maps_to_cover_letter(
     candidate: CandidateProfile, job_with_cv: ApplicationJob
 ) -> None:
     field = FormField(
-        selector="lf-test3",
-        name="attachmentFile",
-        label="Vollständige Bewerbungsunterlagen:",
+        selector="lf-cover",
+        name="coverLetter",
+        label="Anschreiben",
         type="file",
-        required=False,
+        required=True,
     )
     mapping = map_field(field, candidate, job_with_cv)
     assert mapping is not None
+    assert mapping.value == job_with_cv.cover_letter_pdf
+
+
+def test_dokumente_not_automatically_cv(
+    candidate: CandidateProfile, job_with_cv: ApplicationJob
+) -> None:
+    field = FormField(selector="lf-doc", name="docs", label="Dokumente", type="file", required=True)
+    assert map_field(field, candidate, job_with_cv) is None
+
+
+def test_weitere_unterlagen_not_automatically_cv(
+    candidate: CandidateProfile, job_with_cv: ApplicationJob
+) -> None:
+    field = FormField(
+        selector="lf-weitere",
+        name="attachmentFile",
+        label="Weitere Unterlagen",
+        type="file",
+        required=False,
+    )
+    assert map_field(field, candidate, job_with_cv) is None
+
+
+def test_zeugnisse_unterlagen_not_automatically_cv(
+    candidate: CandidateProfile, job_with_cv: ApplicationJob
+) -> None:
+    field = FormField(
+        selector="lf-zeug",
+        name="docs",
+        label="Zeugnisse / Unterlagen",
+        type="file",
+        required=False,
+    )
+    assert map_field(field, candidate, job_with_cv) is None
+
+
+def test_vollstaendige_bewerbungsunterlagen_not_automatically_cv(
+    candidate: CandidateProfile, job_with_cv: ApplicationJob
+) -> None:
+    field = FormField(
+        selector="lf-voll",
+        name="attachmentFile",
+        label="Vollständige Bewerbungsunterlagen:",
+        type="file",
+        required=True,
+        nearby_text="Anschreiben, Lebenslauf, Zeugnisse",
+    )
+    assert map_field(field, candidate, job_with_cv) is None

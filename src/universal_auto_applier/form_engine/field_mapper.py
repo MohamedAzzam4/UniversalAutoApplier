@@ -79,18 +79,17 @@ _LABEL_PATTERNS: list[tuple[str, str, str]] = [
     (r"authorized.*work", "work_authorization", "Label matched 'authorized to work'"),
 ]
 
-# File field patterns.
+# File field patterns — narrow, high-precision only.
+# Generic document labels (Unterlagen, Dokumente, Anlagen,
+# Vollständige Bewerbungsunterlagen) are NOT globally mapped to cv_pdf;
+# they are ambiguous and must become interventions / owner document
+# selection unless target-specific evidence proves an exact mapping.
 _FILE_FIELD_PATTERNS: list[tuple[str, str, str]] = [
     (r"resume|cv|lebenslauf", "cv_pdf", "File field matched 'resume/cv/lebenslauf'"),
     (
         r"cover.*letter|anschreiben",
         "cover_letter_pdf",
         "File field matched 'cover letter/anschreiben'",
-    ),
-    (
-        r"bewerbungsunterlagen|unterlagen|anlage|dokumente",
-        "cv_pdf",
-        "File field matched 'Bewerbungsunterlagen/Unterlagen'",
     ),
 ]
 
@@ -284,13 +283,16 @@ def _try_match_label(
 def _try_match_file_field(field: FormField) -> tuple[str, str] | None:
     """Try to match a file field to a document type.
 
-    Returns (job_field, explanation) or None.
+    Only label and name are considered for high-precision mapping.
+    Nearby/help text is intentionally ignored — generic help like
+    'Anschreiben, Lebenslauf, Zeugnisse' near a label
+    'Vollständige Bewerbungsunterlagen' must NOT auto-map to cv_pdf;
+    such ambiguous fields become interventions for owner selection.
     """
     label = _normalize_label(field.label)
-    nearby = _normalize_label(field.nearby_text)
     name = _normalize_label(field.name)
 
-    for text in (label, nearby, name):
+    for text in (label, name):
         if not text:
             continue
         for pattern, job_field, explanation in _FILE_FIELD_PATTERNS:
