@@ -31,6 +31,7 @@ from universal_auto_applier.core.models import (
     ApplicationJob,
     CandidateProfile,
     FieldMapping,
+    FieldOption,
     FormField,
 )
 
@@ -410,6 +411,38 @@ def map_field(
     # Convert bool to string for radio/checkbox/select.
     if isinstance(value, bool):
         value = "Yes" if value else "No"
+
+    # Country locale alias: Germany <-> Deutschland, deterministic only
+    # when label intent is confidently country and exactly one option is
+    # unambiguous. No fuzzy/embedding, no general translation.
+    if source_field == "country" and isinstance(value, str) and field.options:
+        norm_val = _normalize_question(str(value))
+        alias_targets: dict[str, list[str]] = {
+            "germany": ["deutschland", "germany"],
+            "deutschland": ["germany", "deutschland"],
+        }
+        targets = alias_targets.get(norm_val)
+        if targets is not None:
+            matching: list[FieldOption] = []
+            for opt in field.options:
+                nv = _normalize_question(opt.value or "")
+                nl = _normalize_question(opt.label or "")
+                if nv in targets or nl in targets:
+                    matching.append(opt)
+            if len(matching) == 1:
+                chosen = matching[0].value or matching[0].label
+                if not chosen:
+                    return None
+                return FieldMapping(
+                    field_selector=field.selector,
+                    value=chosen,
+                    source=source_name,
+                    confidence=0.95,
+                    requires_user_confirmation=False,
+                    explanation=explanation + " (country alias Germany<->Deutschland)",
+                )
+            if len(matching) != 1:
+                return None
 
     confidence = 0.95 if source_name == "candidate_profile" else 0.50
 
