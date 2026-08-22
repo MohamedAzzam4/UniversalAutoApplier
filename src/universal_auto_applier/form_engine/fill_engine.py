@@ -133,6 +133,23 @@ def _fill_single_field(
                 explanation="Required field has no deterministic mapping",
                 label=field.label,
             )
+        # For ambiguous generic document fields (e.g. Vollständige
+        # Bewerbungsunterlagen, Unterlagen, Dokumente) do not silently
+        # skip even when optional — they require explicit owner document
+        # selection. This prevents auto-uploading CV into the wrong field.
+        if field.type == "file":
+            import re as _re
+
+            _generic_doc_re = r"bewerbungsunterlagen|unterlagen|dokumente|anlage"
+            _hay = " ".join([field.label, field.name, field.nearby_text])
+            if _re.search(_generic_doc_re, _hay, _re.IGNORECASE):
+                return FillResult(
+                    field_selector=field.selector,
+                    field_type=field.type,
+                    status="intervention_needed",
+                    explanation="Ambiguous generic document field requires owner document selection",
+                    label=field.label,
+                )
         return FillResult(
             field_selector=field.selector,
             field_type=field.type,

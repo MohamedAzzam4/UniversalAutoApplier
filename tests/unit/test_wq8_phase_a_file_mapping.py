@@ -121,3 +121,22 @@ def test_vollstaendige_bewerbungsunterlagen_not_automatically_cv(
         nearby_text="Anschreiben, Lebenslauf, Zeugnisse",
     )
     assert map_field(field, candidate, job_with_cv) is None
+
+
+def test_generic_file_optional_becomes_intervention(
+    candidate: CandidateProfile, job_with_cv: ApplicationJob
+) -> None:
+    from universal_auto_applier.form_engine.fill_engine import fill_form
+
+    field = FormField(
+        selector="lf-generic",
+        name="attachmentFile",
+        label="Vollständige Bewerbungsunterlagen:",
+        type="file",
+        required=False,
+        nearby_text="Bitte Unterlagen hochladen",
+    )
+    summary = fill_form([field], candidate, job_with_cv)
+    assert summary.intervention_needed == 1
+    assert summary.results[0].status == "intervention_needed"
+    assert "Ambiguous generic document field" in summary.results[0].explanation
