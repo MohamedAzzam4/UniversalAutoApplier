@@ -339,6 +339,17 @@ def _live_dry_run(settings: Settings, args: argparse.Namespace) -> int:
             or settings.data_dir / "browser-profile"
         )
     wq8_phase_a = bool(getattr(args, "wq8_phase_a", False) or settings.wq8_phase_a)
+    if wq8_phase_a:
+        from universal_auto_applier.synthetic_profile import is_synthetic_metadata
+
+        if is_synthetic_metadata(job.metadata):
+            print(
+                "error: WQ-8 Phase A refuses synthetic candidate snapshot — "
+                "real WQ-8 jobs must use a real candidate profile (is_synthetic_metadata true). "
+                "Refusing.",
+                file=sys.stderr,
+            )
+            return 2
     config = LiveBrowserConfig(
         artifacts_root=args.artifacts_dir or settings.data_dir / "live-runs",
         profile_dir=profile_dir,
