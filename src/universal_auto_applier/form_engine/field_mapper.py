@@ -48,6 +48,8 @@ _LABEL_PATTERNS: list[tuple[str, str, str]] = [
     (r"^last\s*name$", "last_name", "Label matched 'last name'"),
     (r"^full\s*name$", "full_name", "Label matched 'full name'"),
     (r"^name$", "full_name", "Label matched 'name' (assumed full name)"),
+    (r"vorname", "first_name", "Label matched German 'Vorname'"),
+    (r"nachname|familienname", "last_name", "Label matched German 'Nachname/Familienname'"),
     (r"salutation|anrede", "salutation", "Label matched 'salutation'"),
     (r"academic.*title|akademischer.*titel", "academic_title", "Label matched academic title"),
     # Contact fields
@@ -56,6 +58,7 @@ _LABEL_PATTERNS: list[tuple[str, str, str]] = [
     (r"^phone", "phone", "Label matched 'phone'"),
     (r"^mobile", "phone", "Label matched 'mobile'"),
     (r"^tel", "phone", "Label matched 'tel'"),
+    (r"telefon|handy|mobiltelefon", "phone", "Label matched German 'Telefon/Handy'"),
     # URLs
     (r"linkedin", "linkedin_url", "Label matched 'linkedin'"),
     (r"github", "github_url", "Label matched 'github'"),
@@ -66,6 +69,8 @@ _LABEL_PATTERNS: list[tuple[str, str, str]] = [
     (r"^city$", "city", "Label matched 'city'"),
     (r"^country$", "country", "Label matched 'country'"),
     (r"location", "city", "Label matched 'location' (assumed city)"),
+    (r"\bort\b|wohnort|stadt", "city", "Label matched German 'Ort/Wohnort/Stadt'"),
+    (r"\bland\b", "country", "Label matched German 'Land'"),
     # Experience
     (r"years.*experience", "years_of_experience", "Label matched 'years of experience'"),
     (r"experience", "years_of_experience", "Label matched 'experience'"),
@@ -323,7 +328,13 @@ def map_field(
     - Password fields are never mapped.
     - File fields only map to cv_pdf or cover_letter_pdf from the job.
     - File paths must exist on disk.
+    - PLZ/Street fields have no canonical CandidateProfile counterpart and
+      must not be guessed from city/country.
     """
+    # Guard: PLZ / Street have no CandidateProfile field — never invent.
+    _addr_label = _normalize_label(field.label) + " " + _normalize_label(field.name)
+    if re.search(r"plz|postleitzahl|strasse|straße|anschrift", _addr_label, re.IGNORECASE):
+        return None
     # Never map password fields.
     if field.type == "unknown" and "password" in _normalize_label(field.label):
         return None
