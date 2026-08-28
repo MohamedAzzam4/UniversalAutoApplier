@@ -166,7 +166,9 @@ def resolve_intervention_endpoint(
                 form_answers = dict(job.metadata.get("form_answers", {}) or {})
                 # Key by field_label so the deterministic mapper can match
                 # via _try_explicit_job_answer (which normalises field labels).
-                form_answers[field_label] = body.answer if field_label else body.answer
+                # Use field_label if available, otherwise fall back to question.
+                key = field_label if field_label else existing.question
+                form_answers[key] = body.answer
                 job.metadata["form_answers"] = form_answers
                 upsert_application_job(session, job)
 

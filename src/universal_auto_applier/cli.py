@@ -482,7 +482,7 @@ def _persist_interventions(settings: Settings, application_id: str, report: Live
                 field_options = list(field.options)
 
                 llm_metadata: dict[str, Any] | None = None
-                if field.category or field.risk_level or field.evidence_summary:
+                if field.category or field.risk_level or field.evidence_summary or field.label:
                     llm_metadata = {
                         "available_options": field_options,
                         "evidence_summary": field.evidence_summary or "",
@@ -492,6 +492,7 @@ def _persist_interventions(settings: Settings, application_id: str, report: Live
                         "unresolved_reason": field.explanation or "",
                         "field_token": field.field_token or "",
                         "answer_source": field.source or "",
+                        "field_label": field.label,
                     }
                 create_intervention(
                     session,

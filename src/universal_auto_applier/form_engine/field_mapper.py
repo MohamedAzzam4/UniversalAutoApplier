@@ -332,12 +332,20 @@ def map_field(
     - PLZ/Street fields have no canonical CandidateProfile counterpart and
       must not be guessed from city/country.
     """
+    # Never map password fields.
+    if field.type == "unknown" and "password" in _normalize_label(field.label):
+        return None
+
+    # Explicit owner-confirmed per-job answers take precedence over
+    # automatic inference guards. This allows PLZ/Straße to be filled when
+    # the owner has explicitly provided the answer via intervention resolution.
+    explicit_answer = _try_explicit_job_answer(field, job)
+    if explicit_answer is not None:
+        return explicit_answer
+
     # Guard: PLZ / Street have no CandidateProfile field — never invent.
     _addr_label = _normalize_label(field.label) + " " + _normalize_label(field.name)
     if re.search(r"plz|postleitzahl|strasse|straße|anschrift", _addr_label, re.IGNORECASE):
-        return None
-    # Never map password fields.
-    if field.type == "unknown" and "password" in _normalize_label(field.label):
         return None
 
     # Handle file fields.
