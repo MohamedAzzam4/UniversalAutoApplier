@@ -73,6 +73,38 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     if not getattr(app.state, "review_states", None):
         app.state.review_states = {}
 
+    # WQ-8 Phase A: register a production browser context factory for the
+    # review-observation flow (POST /api/submit/{id}/observe). The dashboard's
+    # "Refresh Live Review" button is a review-mode feature available in every
+    # mode (review is the default); the actual submit remains gated by
+    # ``enable_real_submission`` + approval + the submit interlock, never by
+    # the factory's presence.
+    #
+    # Reuse the existing ``PlaywrightContextFactory`` — do not create a second
+    # browser implementation. If a test/harness pre-injected a factory on
+    # ``app.state`` (e.g. ``FixtureContextFactory`` from
+    # ``tests/harness/submission_server.py``), it is preserved unchanged.
+    # Constructing the factory does NOT launch a browser; ``create_context()``
+    # is called per-observation and tears down in the service's ``finally``.
+    if not getattr(app.state, "submission_context_factory", None):
+        from universal_auto_applier.submission.execution_service import (
+            PlaywrightContextFactory,
+        )
+
+        app.state.submission_context_factory = PlaywrightContextFactory(
+            settings=settings,
+            profile_dir=settings.browser_profile_dir,
+            headless=settings.browser_headless,
+            channel=settings.browser_channel,
+        )
+        logger.info(
+            "registered production submission_context_factory "
+            "(headless=%s, channel=%s, profile=%s)",
+            settings.browser_headless,
+            settings.browser_channel,
+            settings.browser_profile_dir,
+        )
+
     # Initialize the background pipeline worker service (WQ-4).
     from universal_auto_applier.services.pipeline_worker_service import (
         PipelineWorkerService,
@@ -160,6 +192,16 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         orch = getattr(app.state, "orchestration_service", None)
         if orch is not None and hasattr(orch, "shutdown"):
             orch.shutdown()
+        # Close the submission context factory if the lifespan owns it
+        # (production case). Test/harness factories are closed by their
+        # owners; calling close() on a never-used PlaywrightContextFactory
+        # is a safe no-op (no browser was launched at startup).
+        ctx_factory = getattr(app.state, "submission_context_factory", None)
+        if ctx_factory is not None and hasattr(ctx_factory, "close"):
+            try:
+                ctx_factory.close()
+            except Exception:  # noqa: BLE001 - shutdown must never crash
+                logger.exception("submission_context_factory close failed")
         if _owns_engine and engine is not None:
             engine.dispose()
 

@@ -739,13 +739,78 @@ class TestNoSensitiveData:
 
 class TestObservationFailure:
     def test_observe_without_context_factory(self, tmp_path: Path) -> None:
+        """The 503 path still exists when no factory is genuinely available.
+
+        The production lifespan now registers a ``PlaywrightContextFactory``
+        by default (WQ-8 snapshot-persistence fix). To prove the 503 guard
+        still fires when a factory is truly absent, we explicitly remove the
+        factory the lifespan just installed.
+        """
         settings = _make_settings(tmp_path)
         job = _make_job(tmp_path)
         engine, sf = _setup(tmp_path, settings, job)
         app = _create_app(settings, engine, sf)
-        # No submission_context_factory registered.
         with TestClient(app) as client:
+            # The lifespan has now registered a production factory. Remove it
+            # to simulate the pre-fix condition and prove the endpoint's 503
+            # guard is still intact.
+            assert app.state.submission_context_factory is not None
+            del app.state.submission_context_factory
             resp = client.post(f"/api/submit/{job.application_id}/observe")
             assert resp.status_code == 503
             assert "no browser context factory" in resp.json()["detail"].lower()
+        engine.dispose()
+
+    def test_production_lifespan_registers_factory(self, tmp_path: Path) -> None:
+        """WQ-8 fix: the production lifespan registers a non-None
+        ``submission_context_factory`` by default, so the observe endpoint
+        is reachable (no longer dead code returning 503).
+        """
+        settings = _make_settings(tmp_path)
+        job = _make_job(tmp_path)
+        engine, sf = _setup(tmp_path, settings, job)
+        app = _create_app(settings, engine, sf)
+        with TestClient(app) as client:
+            assert app.state.submission_context_factory is not None
+            # The factory must be a PlaywrightContextFactory (production), not
+            # a FixtureContextFactory (test harness).
+            from universal_auto_applier.submission.execution_service import (
+                PlaywrightContextFactory,
+            )
+
+            assert isinstance(app.state.submission_context_factory, PlaywrightContextFactory), (
+                "production lifespan must register PlaywrightContextFactory"
+            )
+            # Health check still works.
+            resp = client.get("/api/health")
+            assert resp.status_code == 200
+        engine.dispose()
+
+    def test_pre_injected_factory_preserved_by_lifespan(self, tmp_path: Path) -> None:
+        """WQ-8 fix: a test/harness-injected factory is NOT overwritten by
+        the production lifespan. This preserves the existing fixture-based
+        submission harnesses (submission_server.py, final_pipeline_server.py).
+        """
+        settings = _make_settings(tmp_path)
+        job = _make_job(tmp_path)
+        engine, sf = _setup(tmp_path, settings, job)
+        app = _create_app(settings, engine, sf)
+
+        # Pre-inject a stub factory BEFORE the lifespan runs.
+        from universal_auto_applier.submission.execution_service import (
+            FixtureContextFactory,
+        )
+
+        stub = FixtureContextFactory(headless=True)
+        app.state.submission_context_factory = stub
+
+        with TestClient(app) as client:
+            # The lifespan must NOT have overwritten the pre-injected factory.
+            assert app.state.submission_context_factory is stub, (
+                "lifespan must preserve a pre-injected submission_context_factory"
+            )
+            resp = client.get("/api/health")
+            assert resp.status_code == 200
+        # Test owns the stub factory; close it.
+        stub.close()
         engine.dispose()

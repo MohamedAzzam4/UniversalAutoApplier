@@ -222,6 +222,24 @@ class SubmissionExecutionService:
             logger.error("[%s] no browser context factory configured", application_id[:12])
             return None
 
+        # WQ-8 Phase A: install the established submit interlock BEFORE any
+        # navigation. Observation is a review-mode action — it must never be
+        # able to submit, even if the live page fires ``form.submit()`` /
+        # ``requestSubmit()`` / a dispatched SubmitEvent, or navigates as a
+        # side effect of filling. The interlock stays armed (no one-shot
+        # authorized-submit allowance is ever armed during observation), so
+        # every submit signal is blocked and recorded.
+        #
+        # This reuses the SAME ``install_interlock`` implementation as the
+        # WQ-7 live dry-run (``live_runner.py``) and the WQ-8 controlled
+        # submit path (``_execute_in_browser`` below). No second interlock.
+        from universal_auto_applier.browser.submit_interlock import install_interlock
+
+        install_interlock(context)
+        logger.info(
+            "[%s] observe: submit interlock installed before navigation", application_id[:12]
+        )
+
         try:
             page = context.pages[0] if context.pages else context.new_page()
             page.goto(
