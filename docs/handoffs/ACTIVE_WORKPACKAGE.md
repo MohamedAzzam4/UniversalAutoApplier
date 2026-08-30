@@ -2,12 +2,18 @@
 
 - **WP ID:** WQ-8 — One staged, owner-approved, controlled real application
   submission.
-- **Status:** **IN PROGRESS** (implementation + canonical JobHunter runtime
-  configured; next: Phase A live discovery via JobHunter workflow). WQ-8
-  succeeds the accepted WQ-7C pre-submit proof (merged via PR #15, merge
-  `2ac1e00`; post-merge closure merged via PR #16, merge `76b2e1f`). **No real
-  application has ever been submitted** from any UAA run (CI, sandbox, or
-  proof runs).
+- **Status:** **BLOCKED** (Phase A real run reached `review_ready` with all 14
+  interventions resolved and bridge/regression closure accepted by owner
+  2026-08-30; re-freeze of `review_plan_hash` is blocked by a snapshot-persistence
+  production wiring defect — the official
+  `POST /api/submit/{id}/observe` flow returns 503 because `create_app` never
+  registers `app.state.submission_context_factory`. Details and empirical proof:
+  `docs/evidence/wq-8/FINAL_REVIEW_PACKET.md` §2.2. Old freeze
+  `e9db8621…` is void for authorization. Next: fix + hermetically test the
+  production wiring in the GLM sandbox, merge, then re-observe and re-freeze on
+  this machine. **No real application has ever been submitted** from any UAA
+  run (CI, sandbox, or proof runs); no `wq8-authorize`, no `live-submit` was
+  ever run.)
 - **Repository:** `MohamedAzzam4/UniversalAutoApplier`.
 - **PR:** none yet (do NOT open/merge a WQ-8 PR without explicit owner/reviewer
   authorization).
@@ -24,8 +30,9 @@
   ```
 
   The two resolved values must match before handoff/review.
-- **Last updated:** 2026-08-20 (remaining-shortlist inspection milestone; awaiting
-  owner target selection).
+- **Last updated:** 2026-08-30 (Phase A re-freeze blocked: official observe flow
+  503 — snapshot-persistence production wiring defect; see
+  `docs/evidence/wq-8/FINAL_REVIEW_PACKET.md` §2.2).
 
 ## Objective
 

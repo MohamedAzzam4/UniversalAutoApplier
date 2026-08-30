@@ -3,7 +3,7 @@
 **Application ID:** `fd9a41480fc60a33486a1e338422e8a040e9069f802d1afa92d5849300679b0e`
 **Target:** msg for banking ag — Werkstudent Data & AI / Banking (all genders)
 **ATS:** jobs.msg.group (d.vinci HR-Systems) — anonymous, no login, no CAPTCHA
-**Phase:** A complete — canonical closure, ready for owner review before Phase B
+**Phase:** A bridge/regression closure ACCEPTED by owner; snapshot re-freeze BLOCKED by a production wiring defect (§2.2). NOT ready for Phase B.
 **Branch:** `checkpoint/wq-8-controlled-real-submission`
 **Closure base HEAD:** `95401c0f88025c6e1330b201bdb5471fe7dd5d0d`
 (resolve dynamically — do not trust embedded SHAs:)
@@ -67,6 +67,10 @@ To authorize the single real submission, run (see docs/evidence/wq-8/DESIGN.md):
 - `SubmissionAuthorization` = **NONE** (0 rows in `submission_authorizations`; also
   0 submission results, 0 claims) ✅
 
+**Owner verdict (2026-08-30): this freeze is NOT acceptable for Phase B.** The
+frozen plan covers the empty persisted snapshot (§2.1), so
+`e9db86210192112306c6a1497b6ba776` **must NOT be used for owner authorization.**
+
 ### 2.1 Required honesty caveat — the frozen plan covers an EMPTY snapshot
 
 The persisted review snapshot the packet reads (active approval
@@ -86,9 +90,59 @@ Consequences, stated plainly:
    time and fails closed on mismatch. If the owner re-observes via the dashboard
    (creating a full snapshot), the hash changes and a NEW `wq8-review-packet`
    freeze must be issued before `wq8-authorize`.
-3. This must be resolved before Phase B if the owner wants the authorization
-   bound to the actual reviewed form contents (recommended): re-run the dashboard
-   review observation to persist a full snapshot, then re-freeze.
+3. Resolution required before Phase B: persist a full snapshot through the
+   official dashboard review observation flow, then re-freeze. Attempted
+   2026-08-30 — blocked by a production wiring defect (§2.2).
+
+### 2.2 Official re-observation attempt (2026-08-30) — BLOCKED: production wiring defect
+
+The owner-directed action was to create a NEW persisted review snapshot via the
+existing official dashboard/review observation flow (no manual `snapshot_json`
+construction, no DB patching). What exists and what happened:
+
+- **Official flow (code path is correct):** dashboard "Refresh Live Review"
+  button → `POST /api/submit/{application_id}/observe`
+  (`src/universal_auto_applier/ui/static/app.js:748`) →
+  `observe_snapshot_endpoint` (`src/universal_auto_applier/api/routes/submit.py:281`)
+  → `SubmissionExecutionService.observe_and_persist_snapshot`
+  (`src/universal_auto_applier/submission/execution_service.py:199`) → real
+  navigation + `execute_live_form` + `analyze_page` (submit control) →
+  `build_snapshot` (fields, uploads with SHA-256 content hashes, submit control,
+  pending count) → `create_approval` persistence (revokes the stale empty
+  approval automatically).
+- **Defect:** the endpoint requires `app.state.submission_context_factory`, but
+  the production `create_app` lifespan (`src/universal_auto_applier/api/app.py`)
+  never registers it. Only test harnesses register a factory
+  (`tests/harness/submission_server.py:207`,
+  `tests/harness/final_pipeline_server.py:316` — both `FixtureContextFactory`).
+  In the real local deployment the official observe flow is unreachable dead
+  code, which is exactly why the only persisted snapshot is the stale empty one.
+- **Empirical proof (2026-08-30):** real local server started with
+  `python -m universal_auto_applier` against the real `.uaa_data/uaa.sqlite`
+  (127.0.0.1:8477, `/api/health` → `ready`), then:
+
+  ```text
+  POST /api/submit/fd9a41480fc60a33486a1e338422e8a040e9069f802d1afa92d5849300679b0e/observe
+  → HTTP 503
+    {"detail":"no browser context factory registered; cannot observe live form"}
+  ```
+
+- **Stopped there per owner instruction:** no DB patch, no manual snapshot
+  construction, no `wq8-authorize`, no `live-submit`. Safety invariants
+  re-verified unchanged after the attempt: `submission_authorizations`=0,
+  `submission_results`=0, `submission_claims`=0, job status `review_ready`,
+  `submitted=false`, stale empty approval row (`ed5241a7…`) untouched.
+
+**Classification: snapshot-persistence implementation defect (production
+wiring), not a data problem.** Fix direction for the follow-up sandbox
+workpackage: register a real `PlaywrightContextFactory` on
+`app.state.submission_context_factory` in the production lifespan
+(settings-gated, local-only) and/or persist the review snapshot from the Phase-A
+CLI dry-run when it reaches `review_ready` (via `create_approval`); add
+hermetic regression tests proving the production app exposes a working observe
+flow (stub factory) and that a dry-run reaching `review_ready` persists a
+non-empty snapshot. After that fix is merged, re-run the real observation on
+this machine and re-freeze with `wq8-review-packet`.
 
 ---
 
@@ -163,17 +217,19 @@ Hermetic synthetic tests (no owner PII; fixtures use `Test Candidate` /
 
 ---
 
-## 7. Owner Action Required
+## 7. Status: BLOCKED — snapshot persistence defect
 
-1. **Decision (recommended):** the frozen plan currently covers an empty snapshot
-   (§2.1). Either (a) re-run the dashboard review observation to persist a full
-   snapshot and re-freeze a new `review_plan_hash`, or (b) explicitly accept the
-   empty-snapshot freeze knowing Phase B binding will fail closed on any state
-   change.
-2. Phase B remains **locked**: no `wq8-authorize`, no `live-submit` has been run.
+1. The official re-observation flow cannot run in the production wiring (§2.2),
+   so no new full snapshot and no new frozen `review_plan_hash` could be issued.
+2. `e9db86210192112306c6a1497b6ba776` is **void for authorization purposes**.
+3. Next action: fix and hermetically test the production context-factory wiring
+   (GLM sandbox workpackage), merge, then re-run the real observation on this
+   machine and re-freeze via `wq8-review-packet`. A NEW `snapshot_hash` and NEW
+   `review_plan_hash` are expected at that point.
+4. Phase B remains **locked**: no `wq8-authorize`, no `live-submit` was run.
    Phase B requires `UAA_ENABLE_REAL_SUBMISSION=true` +
-   `wq8-authorize --review-plan-hash <frozen hash> --confirm` +
-   `live-submit --approval-id <id> --confirm`, owner-driven.
+   `wq8-authorize --review-plan-hash <new frozen hash> --confirm` +
+   `live-submit --approval-id <id> --confirm`, owner-driven only.
 
 ---
 
@@ -185,4 +241,4 @@ Hermetic synthetic tests (no owner PII; fixtures use `Test Candidate` /
 live-run report `.uaa_data/live-runs/fd9a41480fc6-20260829T005720988922Z/report.json`
 (local, untracked)
 
-**WQ-8 OWNER APPROVAL REQUIRED**
+**WQ-8 SNAPSHOT PERSISTENCE NEEDS CHANGES**
