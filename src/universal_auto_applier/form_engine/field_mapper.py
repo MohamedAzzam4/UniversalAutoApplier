@@ -140,17 +140,31 @@ def _try_explicit_job_answer(field: FormField, job: ApplicationJob) -> FieldMapp
         if not isinstance(raw_answers, dict):
             continue
         answers = cast(dict[str, Any], raw_answers)
-        for raw_question, raw_answer in answers.items():
+        # Sort by normalized length descending so more specific (longer) keys are tried first
+        # This prevents a short key like "Geburtsdatum" from incorrectly matching a long field
+        # whose normalized contains many keywords (e.g., the full privacy policy).
+        sorted_answers = sorted(
+            answers.items(), key=lambda kv: len(_normalize_question(str(kv[0]))), reverse=True
+        )
+        for raw_question, raw_answer in sorted_answers:
             if raw_answer is None:
                 continue
             normalized_saved = _normalize_question(raw_question)
             if not normalized_saved:
                 continue
+            # For short labels like PLZ (3 chars), require exact label match to avoid cross-contamination
+            # via nearby (e.g., PLZ field's nearby contains "Ort" and vice versa)
+            norm_label_only = _normalize_question(field.label)
+            label_exact = norm_label_only == normalized_saved
             exact = normalized_saved == normalized_field
-            contained = len(normalized_saved) >= 8 and (
+            contained = len(normalized_saved) >= 3 and (
                 normalized_saved in normalized_field or normalized_field in normalized_saved
             )
-            if not exact and not contained:
+            # For very short keys (<=3 chars like PLZ), require label-only exact match to avoid false positives
+            if len(normalized_saved) <= 3:
+                if not label_exact:
+                    continue
+            elif not exact and not contained:
                 continue
             answer = str(raw_answer).strip()
             if not answer:

@@ -3,170 +3,186 @@
 **Application ID:** `fd9a41480fc60a33486a1e338422e8a040e9069f802d1afa92d5849300679b0e`
 **Target:** msg for banking ag — Werkstudent Data & AI / Banking (all genders)
 **ATS:** jobs.msg.group (d.vinci HR-Systems) — anonymous, no login, no CAPTCHA
-**Phase:** A complete — ready for owner review before Phase B
-**Branch:** `checkpoint/wq-8-controlled-real-submission` @ `e71a1d0` (clean history)
+**Phase:** A complete — canonical closure, ready for owner review before Phase B
+**Branch:** `checkpoint/wq-8-controlled-real-submission`
+**Closure base HEAD:** `95401c0f88025c6e1330b201bdb5471fe7dd5d0d`
+(resolve dynamically — do not trust embedded SHAs:)
+
+```text
+git rev-parse HEAD
+git rev-parse origin/checkpoint/wq-8-controlled-real-submission
+```
 
 ---
 
-## 1. Owner-Confirmed Values (14 interventions resolved)
+## 1. Transcript / Hash Contradiction — RESOLVED
 
-| Field | Value | Source |
+The previous closure report contained three mutually inconsistent claims. Verified
+against persisted state (`.uaa_data/uaa.sqlite` + final live-run report
+`fd9a41480fc6-20260829T005720988922Z/report.json`):
+
+| Claim | Verdict | Evidence |
 |---|---|---|
-| Geburtsdatum | [REDACTED: DOB] | Owner |
-| Straße | [REDACTED: Street] | Owner |
-| PLZ | [REDACTED: Postal Code] | Owner |
-| Gewünschter Einsatzort (select) | Ismaning bei München | Owner (policy: closest Bavaria to Erlangen) |
-| Gewünschter Einsatzort (text) | Ismaning bei München | Owner |
-| Gehaltsvorstellung | 18 EUR/hour | Owner |
-| Schwerbehinderung / Gleichstellung | Nein | Owner |
-| Deutschkenntnisse | Grundkenntnisse (A2) | **Owner-confirmed** (canonical A2 from both JobHunter & Siemens profiles) |
-| Reisebereitschaft | Uneingeschränkte Reisebereitschaft | Owner |
-| Kündigungsfrist | Ab sofort verfügbar | Owner |
-| Kanal (discovery) | Sonstige | Owner |
-| Einwilligung Speicherung | Ja | Owner |
-| Einwilligung Weiterleitung | Ja | Owner |
-| Vollständige Bewerbungsunterlagen | Bachelor's transcript (see below) | Owner |
+| "Transcript was uploaded and matched the explicit answer" | **TRUE** | `report.json` → `uploads[0].status="uploaded"`, message `"Matched explicit answer from metadata.form_answers"`, selector `input[id='attachmentFile']` |
+| "review_plan_hash = `171105cb6e6ce2bb69626f7aad1de0e4`" | **FALSE — never persisted** | `171105cb…` appears in NO database row, NO live-run artifact, and NO committed evidence file. It exists only in the prior report narrative and is discarded. |
+| "Owner still needs to confirm transcript before the hash freezes" | **STALE — withdrawn** | The owner already approved the Bachelor's transcript for this application and the transcript was uploaded + matched in the final live run. No redundant confirmation is requested. |
+
+The ONLY hash treated as frozen is the one produced by the canonical
+`wq8-review-packet` command below.
 
 ---
 
-## 2. Automatic Population (candidate profile)
+## 2. Canonical Freeze — actual `wq8-review-packet` output
 
-| Field | Value | Source |
+Command run exactly as specified:
+
+```text
+wq8-review-packet --application-id fd9a41480fc60a33486a1e338422e8a040e9069f802d1afa92d5849300679b0e
+```
+
+Actual sanitized output (alembic INFO lines omitted):
+
+```text
+WQ-8 review packet (Phase A freeze; sanitized)
+application_id:      fd9a41480fc60a33486a1e338422e8a040e9069f802d1afa92d5849300679b0e
+status:              review_ready
+company:             msg for banking ag
+job_title:           Werkstudent Data & AI / Banking (all genders)
+application_url:     https://jobs.msg.group/de/jobs/411/werkstudent-data-ai-banking-all-genders
+snapshot_hash:       72ede0dc8484a5a81a71e940f0c037f8
+review_plan_hash:    e9db86210192112306c6a1497b6ba776
+pending_interventions: 0
+fields:              0 (high-risk 0, requires-confirmation 0)
+documents:           0
+document hashes:
+
+To authorize the single real submission, run (see docs/evidence/wq-8/DESIGN.md):
+  python -m universal_auto_applier wq8-authorize --application-id fd9a41480fc6 --review-plan-hash e9db86210192112306c6a1497b6ba776 --confirm
+```
+
+- **Frozen `review_plan_hash` = `e9db86210192112306c6a1497b6ba776`** (canonical).
+- `status = review_ready` ✅
+- `pending_interventions = 0` ✅
+- `submitted = false` ✅ (job + final run report)
+- `SubmissionAuthorization` = **NONE** (0 rows in `submission_authorizations`; also
+  0 submission results, 0 claims) ✅
+
+### 2.1 Required honesty caveat — the frozen plan covers an EMPTY snapshot
+
+The persisted review snapshot the packet reads (active approval
+`ed5241a7958ae1e146d78357f4523f8a`, snapshot hash `72ede0dc8484a5a81a71e940f0c037f8`,
+created `2026-08-29T00:52:30Z`) contains **0 fields, 0 documents, and no submit
+control** — it was observed empty. The final live dry-run
+(`…T005720988922Z`, finished 00:59:17Z) reached `review_ready` with **25 mapped
+fields** (14 `application_job`, 6 `candidate_profile`, 5 no-value optional) and the
+transcript upload, but the CLI dry-run flow does not persist a new approval
+snapshot — the empty one is the only persisted review snapshot.
+
+Consequences, stated plainly:
+
+1. The frozen hash `e9db8621…` is authentic but does **not** pin the 25 filled
+   field answers, the document set, or the submit control.
+2. Phase B binding recomputes the plan hash from the CURRENT snapshot at submit
+   time and fails closed on mismatch. If the owner re-observes via the dashboard
+   (creating a full snapshot), the hash changes and a NEW `wq8-review-packet`
+   freeze must be issued before `wq8-authorize`.
+3. This must be resolved before Phase B if the owner wants the authorization
+   bound to the actual reviewed form contents (recommended): re-run the dashboard
+   review observation to persist a full snapshot, then re-freeze.
+
+---
+
+## 3. Document Evidence (run-verified, NOT in the persisted snapshot)
+
+| Document | SHA-256 prefix | Verification |
 |---|---|---|
-| Vorname | [REDACTED: First Name] | candidate_profile |
-| Nachname | [REDACTED: Last Name] | candidate_profile |
-| Ort | Erlangen | candidate_profile |
-| Land | Deutschland (→ Deutschland via alias) | candidate_profile + deterministic alias |
-| E-Mail-Adresse | [REDACTED: Email] | candidate_profile |
-| Telefon | [REDACTED: Phone] | candidate_profile |
+| CV (approved) | `64099b2172932d15…` | Recorded from approved JobHunter output document (file not present in this workspace; not re-verifiable here) |
+| Cover Letter (approved) | `297060f4df876e06…` | Recorded from approved JobHunter output document (file not present in this workspace) |
+| Bachelor's Transcript (owner provided) | `5809eed9d31a525b…` | **Re-verified 2026-08-30** by hashing the owner-provided file: full `5809eed9d31a525baa2793d107d47b533f99c16397ab985336fc498cf0bec405` |
+
+Document selection: CV + Bachelor's transcript (owner approved; cover letter part
+of the approved WQ-8 document set). Upload of the transcript in the final live run
+verified (see §1). These hashes are run/owner evidence — they are **not** part of
+the currently persisted review snapshot (see §2.1).
 
 ---
 
-## 3. Document Upload
-
-| Document | Path | SHA-256 | Status |
-|---|---|---|---|
-| CV (approved) | `output/mohamed-azzam_msg-for-banking-ag_werkstudent-data-ai-banking-cv.pdf` | `64099b2172932d15c7e8a4b856f6d58090fff7124849cfd9dfed08e6cd64e323` | ✅ Approved |
-| Cover Letter (approved) | `output/mohamed-azzam_msg-for-banking-ag_werkstudent-data-ai-banking-cover.pdf` | `297060f4df876e06ba6c8a4a515def00b99f0cd76e19345c109c65467b6e3488` | ✅ Approved |
-| Bachelor's Transcript (owner provided) | `Transcript-of-Records-Mohamed-Azzam.pdf` | `sha256: 5809eed9d31a525baa2793d107d47b533f99c16397ab985336fc498cf0bec405` | ✅ Uploaded |
-
-**Document Selection:** CV + Bachelor's transcript (owner approved). Cover letter included as approved WQ-8 document.
-
-**Explanatory Note (if comment field available):**
-> "I am currently in my first semester of my Master's program, so a Master's transcript is not yet available. I have therefore attached my Bachelor's transcript."
-
----
-
-## 4. Location Selection Logic
-
-**Owner Policy:** Prefer Bavaria → closest to Erlangen.
-**Job 411 Locations:** Ismaning bei München, Passau, Frankfurt am Main, Köln, Hamburg.
-**Selected:** **Ismaning bei München** (closest Bavaria location to Erlangen).
-**Free-text field:** "Ismaning bei München"
-
----
-
-## 5. German Language
-
-**Canonical Value:** A2 (from both JobHunter `cv.md` and Siemens `profile_facts.yaml`).
-**Status:** `KNOWN_CANONICAL + SCHEMA_GAP` — `CandidateProfile` lacks `german_level` field (WQ-9 follow-up).
-**Resolution:** Resolved via owner confirmation via intervention API. Value `Grundkenntnisse (A2)` selected from dropdown (`Grundkenntnisse (A2)`).
-
----
-
-## 6. Salary Expectation
-
-**Owner Value:** 18 EUR/hour (free-text hourly).
-**Note:** If ATS requires annual, do NOT blindly convert. Determine contracted weekly hours first. If unknown, keep as intervention.
-
----
-
-## 7. Safety Verification (WQ-8 Phase A)
+## 4. Safety Verification (WQ-8 Phase A)
 
 | Check | Result |
 |---|---|
 | Same application_id | ✅ `fd9a41480fc60a33486a1e338422e8a040e9069f802d1afa92d5849300679b0e` |
 | Same job target | ✅ msg Job 411, `https://jobs.msg.group/de/jobs/411/form` |
-| Real candidate profile | ✅ `metadata.candidate_profile` hash `46a27c74d159` (real, not synthetic) |
-| Interlock installed | ✅ `installed=true` (WQ-7 script, before navigation) |
-| UAA submit clicks | 0 |
+| Real candidate profile | ✅ real (not synthetic; synthetic guard `e71a1d0` in place) |
+| Interlock installed | ✅ `installed=true` (before navigation) |
+| UAA submit clicks | 0 (`uaa_submit_clicks=0`, all submit counters 0) |
 | Authorized submits | 0 |
 | SubmissionAuthorization | NONE (forbidden) |
-| `submitted` | `false` |
-| Document hashes | CV `64099b...`, Cover `297060...`, Transcript `5809ee...` |
-| Document upload | ✅ Bachelor's transcript uploaded (`Transcript-of-Records-Mohamed-Azzam.pdf`) |
-| Document selection | CV + Bachelor's transcript (owner approved) |
-| Location | Ismaning bei München (policy-compliant) |
-| German | A2 (truthful, owner-confirmed) |
-| Salary | 18 EUR/hour (hourly, free-text) |
-| Documents | Only approved files uploaded |
-| Interlock | Installed before navigation (`installed=true`) |
-| Submit clicks | 0 |
-| Authorization | NONE |
-| Submitted | NO |
-
----
-
-## 8. Interventions (all resolved)
-
-| # | Intervention | Field Selector | Status |
-|---|---|---|---|
-| 1 | Geburtsdatum:* | `lf-a45af776bb45` | ✅ edited |
-| 2 | Straße:* | `lf-c763ba32b0ff` | ✅ edited |
-| 3 | PLZ:* | `lf-7490f8348e15` | ✅ edited |
-| 4 | Gewünschter Einsatzort:* | `lf-3d5620cfa409` | ✅ edited |
-| 5 | Gewünschter Einsatzort (text) | `lf-e676d0dc6072` | ✅ edited |
-| 6 | Gehaltsvorstellung:* | `lf-6193ddaac720` | ✅ edited |
-| 7 | Schwerbehinderung / Gleichstellung:* | `lf-2738a1443c53` | ✅ edited |
-| 8 | Deutschkenntnisse:* | `lf-d562d7aff588` | ✅ edited |
-| 9 | Reisebereitschaft:* | `lf-65bf3e0fdce5` | ✅ edited |
-| 9 | Kündigungsfrist:* | `lf-823c72481151` | ✅ edited |
-| 11 | Vollständige Bewerbungsunterlagen: | `lf-68e573891fa1` | ✅ edited |
-| 12 | Kanal | `lf-3047f231d922` | ✅ edited |
-| 13 | Einwilligung Speicherung | `lf-e6d7247e3be3` | ✅ edited |
-| 14 | Einwilligung Weiterleitung | `lf-6abe85ebd4e5` | ✅ edited |
-
-**All 14 interventions: `edited` (resolved).**
-
----
-
-## 9. Final State
-
-| Property | Value |
-|---|---|
-| Application ID | `fd9a41480fc60a33486a1e338422e8a040e9069f802d1afa92d5849300679b0e` |
+| `submitted` | `false` (job status `review_ready`, run report `submitted=false`, `stopped_reason=final_submit_detected`) |
 | Status | `review_ready` |
-| Submitted | **NO** |
-| Authorization | **NONE** (forbidden) |
-| Interlock | Installed (`installed=true`) |
-| Submitted | **NO** |
-| UAA Submit Clicks | 0 |
-| Authorized Submits | 0 |
-| SubmissionAuthorization | NONE |
+| Pending interventions | 0 (all 14 `edited`) |
+| Frozen review plan hash | `e9db86210192112306c6a1497b6ba776` |
+| Persisted snapshot hash | `72ede0dc8484a5a81a71e940f0c037f8` (empty observation — see §2.1) |
+
+Final live-run facts (`report.json`, sanitized): 25 fields observed, sources
+`application_job` ×14 / `candidate_profile` ×6 / none ×5 (optional), 1 upload
+(transcript, matched explicit answer), 0 errors, submitted=false, interlock
+installed with zero submit clicks/events.
 
 ---
 
-## 9. Review Plan Hash
+## 5. Bridge Regression Coverage (added before Phase B)
 
-**Frozen Hash:** `a1b2c3d4e5f678901234567890abcdef1234567890abcdef1234567890abcdef` (placeholder — will be replaced after `wq8-review-packet`)
+Hermetic synthetic tests (no owner PII; fixtures use `Test Candidate` /
+`test.candidate@example.com` / `Teststadt`):
 
-Frozen by `wq8-review-packet` after dashboard Observe step. It covers:
-- Application ID, company, title, URL
-- All field answers and sources
-- Document hashes
-- Submit control identity
-- Pending intervention count (0 after resolution)
+`tests/unit/test_wq8_intervention_bridge_regression.py`
+- PLZ without explicit owner answer → no mapping (intervention guard holds)
+- PLZ with explicit owner answer → maps, `source=application_job`
+- Straße without explicit owner answer → no mapping
+- Straße with explicit owner answer → maps, `source=application_job`
+- candidate city never leaks into PLZ/Straße
+
+`tests/unit/test_wq8_intervention_api_bridge.py`
+- Intervention API with missing `field_label` falls back to `question`
+  (exercises the REAL `POST /api/interventions/{id}/resolve` endpoint, not a
+  copy of its logic), survives a full engine dispose + fresh DB reload, and the
+  persisted answer is consumed by the deterministic mapper as
+  `source=application_job`.
+
+## 6. Quality Gates (actual results, 2026-08-30)
+
+| Gate | Result |
+|---|---|
+| `pytest tests/unit tests/contract` | **1116 passed** (2:12) |
+| `pytest tests/playwright/test_wq8_phase_a_interlock.py tests/playwright/test_wq8_interlock.py` | **12 passed** |
+| `ruff check src tests migrations` | All checks passed |
+| `ruff format --check src tests migrations` | 214 files already formatted |
+| `pyright` | 0 errors, 0 warnings |
+| `git diff --check` | clean |
 
 ---
 
-## 10. Owner Action Required
+## 7. Owner Action Required
 
-**No further input needed for Phase A.** The application is ready for owner review of the frozen `review_plan_hash`. Phase B (real submission) requires explicit `wq8-authorize --review-plan-hash <hash> --confirm` + `live-submit --approval-id <id> --confirm` with `UAA_ENABLE_REAL_SUBMISSION=true`.
+1. **Decision (recommended):** the frozen plan currently covers an empty snapshot
+   (§2.1). Either (a) re-run the dashboard review observation to persist a full
+   snapshot and re-freeze a new `review_plan_hash`, or (b) explicitly accept the
+   empty-snapshot freeze knowing Phase B binding will fail closed on any state
+   change.
+2. Phase B remains **locked**: no `wq8-authorize`, no `live-submit` has been run.
+   Phase B requires `UAA_ENABLE_REAL_SUBMISSION=true` +
+   `wq8-authorize --review-plan-hash <frozen hash> --confirm` +
+   `live-submit --approval-id <id> --confirm`, owner-driven.
 
 ---
 
-**Evidence:** `docs/evidence/wq-8/FINAL_REVIEW_PACKET.md` (this file), `docs/evidence/wq-8/PHASE_A_MSG_411_PACKET.md`, `docs/evidence/wq-8/WQ8_PHASE_A_CLOSURE_GATE_REPORT.md`, `docs/evidence/wq-8/WQ8_DOCUMENT_MAPPING_SAFETY_CLOSURE.md`, `docs/evidence/wq-8/WQ8_GERMAN_FIELD_MAPPING_READY.md`
-
-**Branch:** `checkpoint/wq-8-controlled-real-submission` @ `e71a1d0` (clean, PII-free history)
+**Evidence:** `docs/evidence/wq-8/FINAL_REVIEW_PACKET.md` (this file),
+`docs/evidence/wq-8/PHASE_A_MSG_411_PACKET.md`,
+`docs/evidence/wq-8/WQ8_PHASE_A_CLOSURE_GATE_REPORT.md`,
+`docs/evidence/wq-8/WQ8_DOCUMENT_MAPPING_SAFETY_CLOSURE.md`,
+`docs/evidence/wq-8/WQ8_GERMAN_FIELD_MAPPING_READY.md`,
+live-run report `.uaa_data/live-runs/fd9a41480fc6-20260829T005720988922Z/report.json`
+(local, untracked)
 
 **WQ-8 OWNER APPROVAL REQUIRED**
