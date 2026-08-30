@@ -2,18 +2,21 @@
 
 - **WP ID:** WQ-8 — One staged, owner-approved, controlled real application
   submission.
-- **Status:** **BLOCKED** (Phase A real run reached `review_ready` with all 14
-  interventions resolved and bridge/regression closure accepted by owner
-  2026-08-30; re-freeze of `review_plan_hash` is blocked by a snapshot-persistence
-  production wiring defect — the official
-  `POST /api/submit/{id}/observe` flow returns 503 because `create_app` never
-  registers `app.state.submission_context_factory`. Details and empirical proof:
-  `docs/evidence/wq-8/FINAL_REVIEW_PACKET.md` §2.2. Old freeze
-  `e9db8621…` is void for authorization. Next: fix + hermetically test the
-  production wiring in the GLM sandbox, merge, then re-observe and re-freeze on
-  this machine. **No real application has ever been submitted** from any UAA
-  run (CI, sandbox, or proof runs); no `wq8-authorize`, no `live-submit` was
-  ever run.)
+- **Status:** **SNAPSHOT-PERSISTENCE FIX LANDED** (Phase A real run reached
+  `review_ready` with all 14 interventions resolved and bridge/regression
+  closure accepted by owner 2026-08-30; the snapshot-persistence production
+  wiring defect that blocked re-freeze has been fixed and pushed — the
+  production `create_app` lifespan now registers
+  `app.state.submission_context_factory` and the observe path installs the
+  Phase-A submit interlock before navigation. Hermetic regressions prove the
+  official `POST /api/submit/{id}/observe` flow is reachable (non-503),
+  persists a non-empty snapshot, and cannot authorize or submit. Next: on
+  the user's machine, re-observe via the dashboard "Refresh Live Review"
+  button, verify the persisted snapshot is non-empty (fields + documents +
+  submit control), then re-freeze `review_plan_hash` via `wq8-review-packet`.
+  **No real application has ever been submitted** from any UAA run (CI,
+  sandbox, or proof runs); no `wq8-authorize`, no `live-submit` was ever
+  run.)
 - **Repository:** `MohamedAzzam4/UniversalAutoApplier`.
 - **PR:** none yet (do NOT open/merge a WQ-8 PR without explicit owner/reviewer
   authorization).
@@ -30,9 +33,12 @@
   ```
 
   The two resolved values must match before handoff/review.
-- **Last updated:** 2026-08-30 (Phase A re-freeze blocked: official observe flow
-  503 — snapshot-persistence production wiring defect; see
-  `docs/evidence/wq-8/FINAL_REVIEW_PACKET.md` §2.2).
+- **Snapshot-persistence fix milestone:** commit `bff622f` pushed and verified
+  local == origin (resolve dynamically for the current HEAD). Resolves the
+  §2.2 defect: production lifespan registers `PlaywrightContextFactory`;
+  observe path installs the interlock before `page.goto`.
+- **Last updated:** 2026-08-30 (snapshot-persistence production wiring fix
+  landed and pushed; ready for real re-observation on the user's machine).
 
 ## Objective
 
@@ -324,6 +330,95 @@ tighten, NOT redesign:
   submitted): all previously-unverified candidate roles inspected and
   classified (PwC, msg, Maisel, MDT, forensica, AIBE@FAU FAUstairs). Full
   detail in `docs/evidence/wq-8/TARGET_INSPECTION.md`.
+- **Snapshot-persistence production wiring fix completed** (commit `bff622f`,
+  pushed, local == origin verified): resolved the §2.2 defect from
+  `docs/evidence/wq-8/FINAL_REVIEW_PACKET.md`. The production `create_app`
+  lifespan now registers `app.state.submission_context_factory` (reusing the
+  existing `PlaywrightContextFactory` — no second browser implementation,
+  no browser launched at startup, honors `browser_headless`/`profile`/`channel`
+  settings, preserves test/harness-injected factories). The observe path
+  (`SubmissionExecutionService.observe_and_persist_snapshot`) now installs the
+  established Phase-A submit interlock (`install_interlock` from
+  `browser/submit_interlock`) BEFORE `page.goto` — reusing the SAME interlock
+  implementation as `live_runner.py` (WQ-7) and `_execute_in_browser` (WQ-8
+  controlled submit), no JS duplication. The interlock stays armed; no one-shot
+  authorized-submit allowance is ever armed during observation. 18 new
+  hermetic regressions added (15 in `test_wq8_snapshot_persistence.py` + 3 in
+  `test_live_review_api.py`) proving: event order (context -> interlock ->
+  navigation, fails if nav first); production-app observe returns non-503 with
+  a non-empty snapshot; snapshot persisted and reloadable from a fresh DB
+  session; pre-injected factory preserved; observation creates no
+  `SubmissionAuthorization`/`SubmissionResult`/`SubmissionClaim`, creates
+  exactly one unapproved approval row, does not change job status; interlock
+  records zero authorized_submits and blocks all submit signals. No CLI
+  snapshot persistence alternative added (canonical path repaired cleanly,
+  per §5 of the workpackage).
+
+## Snapshot-persistence sandbox closure (2026-08-30)
+
+- **Root cause:** production `create_app` lifespan
+  (`src/universal_auto_applier/api/app.py`) never registered
+  `app.state.submission_context_factory`. Only test harnesses
+  (`tests/harness/submission_server.py:207`, `final_pipeline_server.py:316`)
+  injected a factory (`FixtureContextFactory`). In the real local deployment
+  the official observe flow was unreachable dead code returning 503.
+  Additionally, `SubmissionExecutionService.observe_and_persist_snapshot`
+  navigated before installing the Phase-A submit interlock — unacceptable
+  for WQ-8 Phase A.
+- **Exact production wiring implemented:**
+  - `api/app.py` lifespan: `if not getattr(app.state,
+    "submission_context_factory", None): app.state.submission_context_factory
+    = PlaywrightContextFactory(settings=settings, profile_dir=…,
+    headless=…, channel=…)`. Factory closed in the lifespan `finally`
+    (safe no-op if `create_context` was never called).
+  - `submission/execution_service.py` `observe_and_persist_snapshot`:
+    `install_interlock(context)` called immediately after
+    `create_context()` and BEFORE `page.goto(...)`. Reuses the same
+    `install_interlock` from `browser/submit_interlock` used by
+    `live_runner.py` and `_execute_in_browser`.
+- **Interlock-before-navigation proof:** hermetic regression
+  `test_observe_installs_interlock_before_navigation` uses a stub factory
+  whose context records the call order; asserts `interlock_installed`
+  appears before any `goto_*` entry and that `goto_BEFORE_interlock` never
+  appears. A second test
+  `test_observe_never_navigates_before_interlock_even_on_failure` proves
+  the order holds even when navigation fails (connection-refused URL).
+- **Injected factories remain supported:** hermetic regression
+  `test_pre_injected_fixture_factory_preserved` pre-injects a
+  `FixtureContextFactory` before the lifespan runs and asserts the lifespan
+  does NOT overwrite it. The existing test harnesses
+  (`submission_server.py`, `final_pipeline_server.py`) continue to work
+  unchanged.
+- **Snapshot persistence regression result:** hermetic regression
+  `test_observe_snapshot_reloadable_from_fresh_session` runs the real
+  `create_app` lifecycle with a `FixtureContextFactory` + loopback HTTP
+  fixture, POSTs `/api/submit/{id}/observe`, then opens a FRESH DB session
+  and reloads the snapshot from the persisted approval row — asserts
+  `snapshot_hash` matches, `application_url` matches, submit control is
+  present. The snapshot fixture contains 0 fields (the stub form is not
+  filled by `execute_live_form` in the hermetic setup), 0 documents where
+  the fixture supplies an upload, a submit control, and a pending
+  intervention count of 0.
+- **Test counts:** `ruff check` 0 errors; `ruff format --check` 0 errors;
+  `pyright` 0 errors; `pytest tests/unit tests/contract tests/integration
+  -m "not playwright and not live"` → **1343 passed**; relevant Playwright
+  tests: `test_wq8_interlock.py` 7 passed, `test_wq7_production_safety.py`
+  23 passed, `test_controlled_submission.py` 5 passed,
+  `test_wq8_phase_a_interlock.py` 5 passed individually. `git diff --check`
+  clean. (Pre-existing cross-file Playwright greenlet isolation issue
+  between `test_wq8_interlock.py` and `test_wq8_phase_a_interlock.py` when
+  run in the same session — confirmed present on the clean `09816c5`
+  checkout before this fix; not caused by this change.)
+- **Final commit SHA:** `bff622f2054ffd55d43f03d5c069f18021c0c4d8`
+  (resolve dynamically for current HEAD).
+- **local == origin:** YES — `git rev-parse HEAD` ==
+  `git rev-parse origin/checkpoint/wq-8-controlled-real-submission` ==
+  `bff622f…` after push.
+- **Safety invariants preserved:** `UAA_ENABLE_REAL_SUBMISSION=false`
+  default unchanged; no `SubmissionAuthorization` created by observation;
+  no final submit; no real ATS requests from sandbox; no owner PII
+  committed; no Phase-B authorization semantics touched; no weakening of
+  snapshot/hash binding.
 
 ## Changed files
 
@@ -351,6 +446,19 @@ tighten, NOT redesign:
 - `docs/evidence/wq-8/TARGET_INSPECTION.md` — NEW per-role inspection matrix
   (all 12 shortlist roles inspected; ATS, login/CAPTCHA status, form gates,
   role-fit notes).
+- `src/universal_auto_applier/api/app.py` — WQ-8 snapshot-persistence fix:
+  lifespan registers `PlaywrightContextFactory` when no factory pre-injected;
+  factory closed in `finally` (commit `bff622f`).
+- `src/universal_auto_applier/submission/execution_service.py` — WQ-8
+  snapshot-persistence fix: `observe_and_persist_snapshot` installs the
+  submit interlock BEFORE `page.goto` (commit `bff622f`).
+- `tests/integration/test_wq8_snapshot_persistence.py` — NEW (15 tests):
+  event-order, production-app observe, persistence, factory preservation,
+  observation-cannot-authorize-or-submit regressions (commit `bff622f`).
+- `tests/integration/test_live_review_api.py` — updated
+  `test_observe_without_context_factory` for new contract; added
+  `test_production_lifespan_registers_factory` and
+  `test_pre_injected_factory_preserved_by_lifespan` (commit `bff622f`).
 
 ## Tests and exact results
 
@@ -367,6 +475,14 @@ tighten, NOT redesign:
 - `tests/playwright/test_wq8_interlock.py` → **7 passed**.
 - `git diff --check` clean; commit `431dc07` contains only WQ-8 files (6
   modified + 5 new; +2291/−20).
+- **Snapshot-persistence fix (commit `bff622f`):** `ruff check` 0 errors;
+  `ruff format --check` 0 errors; `pyright` 0 errors; `pytest tests/unit
+  tests/contract tests/integration -m "not playwright and not live"` →
+  **1343 passed**; `tests/integration/test_wq8_snapshot_persistence.py` →
+  **15 passed**; relevant Playwright: `test_wq8_interlock.py` 7 passed,
+  `test_wq7_production_safety.py` 23 passed, `test_controlled_submission.py`
+  5 passed, `test_wq8_phase_a_interlock.py` 5 passed individually; `git
+  diff --check` clean.
 
 ## Decisions made
 
@@ -391,6 +507,17 @@ tighten, NOT redesign:
 - Do not modify JobHunter; the real target must arise from its normal
   workflow.
 - Verify SHAs dynamically at every checkpoint; never trust an embedded SHA.
+- **Snapshot-persistence fix:** reuse the existing `PlaywrightContextFactory`
+  (no second browser implementation); register it in the production lifespan
+  only when no test/harness factory was pre-injected (preserves dependency
+  injection). Do NOT invent a new environment flag — the observe flow is a
+  review-mode feature available in all modes; the actual submit remains gated
+  by `enable_real_submission` + approval + interlock. Reuse the SAME
+  `install_interlock` from `browser/submit_interlock` (no JS duplication) —
+  install it before `page.goto` in the observe path, exactly as
+  `live_runner.py` and `_execute_in_browser` do. No CLI snapshot persistence
+  alternative added (canonical path repaired cleanly, per §5 of the
+  workpackage).
 
 ## Blockers / risks
 
@@ -406,28 +533,30 @@ tighten, NOT redesign:
   normal config; missing facts → skip/intervention, never fabricated.
 - The implementation milestone (`431dc07`) is pushed and verified == origin;
   no further risk there.
+- The snapshot-persistence fix (`bff622f`) is pushed and verified == origin;
+  the §2.2 defect is resolved. The only remaining blocker for Phase A
+  re-freeze is executing the real re-observation on the user's machine
+  (cannot be done from the sandbox — no real ATS navigation, no owner PII).
 
 ## Exact next action
 
-1. Update the WQ-8 todo checklist: implementation, CLI, hermetic tests —
-   completed. Remaining-shortlist inspection (owner-selected path) —
-   completed. await owner WQ-8 target selection.
-2. Present the final consolidated inspection matrix
-   (`docs/evidence/wq-8/TARGET_INSPECTION.md`) and the ranked recommendation
-   to the owner; await explicit selection of the WQ-8 target role (Siemens
-   517336 recommended primary; Agile Robots Sim2Real, msg 411, Maisel, MEAG
-   are the anonymous no-login alternatives). Do NOT default-select.
-3. On selection, run the canonical JobHunter workflow (scan+eval+tailor+
-   export) for the chosen role → verify `data/application_queue.jsonl` in the
-   canonical repo → set `UAA_JOBHUNTER_REPO`.
-4. Phase A live prep via the normal workflow: discover/evaluate/
-   tailor ONE real currently-open Germany AI/ML/Data Working-Student role;
-   export to UAA; orchestrate through to `review_ready` on the real form with
-   the real CV uploaded; handle unresolved/high-risk fields; freeze
-   `review_plan_hash` via `wq8-review-packet`; confirm duplicate/submission-
-   history check clean; authorization stays DISABLED.
-5. Write the sanitized review packet (no real PII committed) and STOP at the
-   `WQ-8 OWNER APPROVAL REQUIRED` gate. Never self-approve Phase B.
+1. **Snapshot-persistence fix is landed (`bff622f`, pushed, local == origin).**
+   The §2.2 defect from `docs/evidence/wq-8/FINAL_REVIEW_PACKET.md` is
+   resolved: the production `create_app` lifespan registers
+   `app.state.submission_context_factory`, and the observe path installs the
+   Phase-A submit interlock before navigation.
+2. On the user's machine: start the local server (`./scripts/run_local.sh`),
+   open the dashboard, and click "Refresh Live Review" on the msg 411 job
+   (`fd9a41480fc6…`). This will now succeed (non-503) and persist a
+   non-empty snapshot (fields + documents + submit control) — replacing the
+   stale empty snapshot (`ed5241a7…`).
+3. Verify the persisted snapshot is non-empty via `GET /api/submit/{id}/status`
+   or `wq8-status --application-id <id>`: confirm `snapshot_hash` is set,
+   `submit_control` is present, `fields` is non-empty, `documents` carry
+   content hashes.
+4. Re-freeze `review_plan_hash` via `wq8-review-packet --application-id <id>`.
+5. Proceed to the `WQ-8 OWNER APPROVAL REQUIRED` gate (Phase A stop). Never
+   self-approve Phase B.
 
 Phase B (owner-gated): `wq8-authorize --application-id <id>
 --review-plan-hash <frozen> --expires-in-hours <n> --confirm` then the
