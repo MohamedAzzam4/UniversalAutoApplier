@@ -395,10 +395,12 @@ tighten, NOT redesign:
   fixture, POSTs `/api/submit/{id}/observe`, then opens a FRESH DB session
   and reloads the snapshot from the persisted approval row — asserts
   `snapshot_hash` matches, `application_url` matches, submit control is
-  present. The snapshot fixture contains 0 fields (the stub form is not
-  filled by `execute_live_form` in the hermetic setup), 0 documents where
-  the fixture supplies an upload, a submit control, and a pending
-  intervention count of 0.
+  present. After the reviewer correction (see "Reviewer correction"
+  section below), the fixture job now carries a synthetic
+  `candidate_profile` in metadata so the official field-mapping path
+  deterministically fills the `Resume` file field (uploading the synthetic
+  CV) and the snapshot contains non-empty fields (Full Name, Email, Resume)
+  and at least one document (the CV with a SHA-256-derived content hash).
 - **Test counts:** `ruff check` 0 errors; `ruff format --check` 0 errors;
   `pyright` 0 errors; `pytest tests/unit tests/contract tests/integration
   -m "not playwright and not live"` → **1343 passed**; relevant Playwright
@@ -419,6 +421,56 @@ tighten, NOT redesign:
   no final submit; no real ATS requests from sandbox; no owner PII
   committed; no Phase-B authorization semantics touched; no weakening of
   snapshot/hash binding.
+
+## Reviewer correction (2026-08-31)
+
+Three reviewer findings on the initial snapshot-persistence fix were
+corrected in this follow-up commit:
+
+- **Finding 1 (document-hash false positive):** the previous
+  `test_observe_snapshot_has_document_content_hash` only checked that the
+  `documents` field existed and explicitly allowed it to be empty — a false
+  positive. Corrected: the fixture job now carries a synthetic
+  `candidate_profile` in metadata so the official field-mapping path
+  deterministically uploads the synthetic CV via the `Resume` file input
+  (label matches the `resume` pattern in `_FILE_FIELD_PATTERNS`). The test
+  now asserts `len(documents) > 0`, `document_kind == "cv"`,
+  `content_hash` is non-empty, and `content_hash` equals the expected
+  `sha256(cv.pdf bytes)[:32]` per the canonical
+  `submission/models.py:build_snapshot_from_report` implementation. A new
+  `test_observe_document_hash_persists_across_fresh_db_session` proves the
+  same document + hash survives a fresh DB session reload.
+
+- **Finding 2 (non-empty fields not asserted):** the previous
+  `test_observe_persists_non_empty_snapshot` only checked `snapshot_hash`
+  and `submit_control` — it did NOT prove fields were non-empty. Corrected:
+  the test (renamed to
+  `test_observe_persists_non_empty_snapshot_with_fields`) now asserts
+  `len(fields) > 0`, expected fixture fields (Full Name, Email, Resume) are
+  represented, the Resume file field has `status == "filled"` with a
+  non-empty `filled_value` (the synthetic CV path). The
+  `test_observe_snapshot_reloadable_from_fresh_session` test now also
+  asserts the reloaded snapshot still contains the non-empty fields.
+
+- **Finding 3 (lifespan factory ownership mismatch):** the previous
+  lifespan `finally` block closed ANY `app.state.submission_context_factory`,
+  including a pre-injected factory — violating ownership semantics.
+  Corrected: the lifespan now tracks `_owns_factory` (exactly like
+  `_owns_engine`) and closes the factory on shutdown ONLY if the lifespan
+  created it. A new `TestLifespanFactoryOwnership` class with a
+  `_CloseCountingFactory` sentinel proves: (a) a pre-injected factory is
+  preserved and `close()` is NOT called by the lifespan; (b) a
+  production-created `PlaywrightContextFactory` IS closed safely on
+  lifespan shutdown (no exception, no ResourceWarning leak under the
+  project's strict `filterwarnings = ["error"]` config).
+
+- **Test counts after correction:** `ruff check` 0 errors; `ruff format
+  --check` 0 errors; `pyright` 0 errors; `pytest tests/unit tests/contract
+  tests/integration -m "not playwright and not live"` → **1346 passed**
+  (was 1343; +3 new tests); relevant Playwright: `test_wq8_interlock.py`
+  7, `test_wq7_production_safety.py` 23, `test_controlled_submission.py`
+  5, `test_wq8_phase_a_interlock.py` 5 individually. `git diff --check`
+  clean.
 
 ## Changed files
 

@@ -58,6 +58,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     settings.data_dir.mkdir(parents=True, exist_ok=True)
 
     _owns_engine = False
+    _owns_factory = False
     engine: Any = getattr(app.state, "engine", None)
     if engine is None:
         db_url = build_engine_url(settings.data_dir / "uaa.sqlite")
@@ -97,6 +98,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
             headless=settings.browser_headless,
             channel=settings.browser_channel,
         )
+        _owns_factory = True
         logger.info(
             "registered production submission_context_factory "
             "(headless=%s, channel=%s, profile=%s)",
@@ -192,16 +194,19 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         orch = getattr(app.state, "orchestration_service", None)
         if orch is not None and hasattr(orch, "shutdown"):
             orch.shutdown()
-        # Close the submission context factory if the lifespan owns it
-        # (production case). Test/harness factories are closed by their
-        # owners; calling close() on a never-used PlaywrightContextFactory
+        # Close the submission context factory ONLY if the production
+        # lifespan created it. A test/harness-injected factory is owned by
+        # its injector (e.g. submission_server.py closes its own
+        # FixtureContextFactory); the lifespan must not close a factory it
+        # does not own. Calling close() on a never-used PlaywrightContextFactory
         # is a safe no-op (no browser was launched at startup).
-        ctx_factory = getattr(app.state, "submission_context_factory", None)
-        if ctx_factory is not None and hasattr(ctx_factory, "close"):
-            try:
-                ctx_factory.close()
-            except Exception:  # noqa: BLE001 - shutdown must never crash
-                logger.exception("submission_context_factory close failed")
+        if _owns_factory:
+            ctx_factory = getattr(app.state, "submission_context_factory", None)
+            if ctx_factory is not None and hasattr(ctx_factory, "close"):
+                try:
+                    ctx_factory.close()
+                except Exception:  # noqa: BLE001 - shutdown must never crash
+                    logger.exception("submission_context_factory close failed")
         if _owns_engine and engine is not None:
             engine.dispose()
 

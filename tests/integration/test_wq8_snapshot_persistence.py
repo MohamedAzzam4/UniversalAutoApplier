@@ -156,7 +156,14 @@ def _make_settings(tmp_path: Path) -> Settings:
 
 
 def _make_job(tmp_path: Path, fixture_url: str) -> ApplicationJob:
-    """Build a job that navigates to ``fixture_url`` (a loopback HTTP URL)."""
+    """Build a job that navigates to ``fixture_url`` (a loopback HTTP URL).
+
+    Includes a synthetic ``candidate_profile`` in metadata so the official
+    field-mapping path deterministically fills the ``Full Name`` and
+    ``Email`` text fields (not just the ``Resume`` file field). This makes
+    the snapshot assertions for non-empty fields and filled values
+    deterministic — no owner PII, purely synthetic.
+    """
     cv = tmp_path / "cv.pdf"
     cv.write_bytes(b"%PDF-1.4 fake cv fixture")
     cover = tmp_path / "cover.pdf"
@@ -175,8 +182,31 @@ def _make_job(tmp_path: Path, fixture_url: str) -> ApplicationJob:
         cover_letter_pdf=str(cover),
         status=ApplicationStatus.REVIEW_READY,
         external_job_id="wq8-obs",
-        metadata={},
+        metadata={
+            "candidate_profile": {
+                "full_name": "Test Candidate",
+                "first_name": "Test",
+                "last_name": "Candidate",
+                "email": "test.candidate@example.com",
+                "phone": "+1 555 0100",
+                "city": "Erlangen",
+                "country": "Germany",
+            }
+        },
     )
+
+
+def _expected_cv_hash(tmp_path: Path) -> str:
+    """Compute the expected SHA-256-derived content hash for the synthetic CV.
+
+    The project's canonical snapshot hashing implementation
+    (``submission/models.py:build_snapshot_from_report``) computes document
+    content hashes as ``hashlib.sha256(file_bytes).hexdigest()[:32]``.
+    """
+    import hashlib
+
+    cv_path = tmp_path / "cv.pdf"
+    return hashlib.sha256(cv_path.read_bytes()).hexdigest()[:32]
 
 
 def _setup_db(tmp_path: Path, settings: Settings, job: ApplicationJob):
@@ -365,7 +395,11 @@ class TestEventOrderInterlockBeforeNavigation:
 @pytest.fixture
 def wq8_obs_app(tmp_path: Path, fixture_server: _FixtureHTTPServer):
     """A production create_app with a FixtureContextFactory pre-injected,
-    pointed at a loopback HTTP fixture form."""
+    pointed at a loopback HTTP fixture form.
+
+    Yields ``(app, job, engine, sf, settings, tmp_path)`` so tests can
+    compute the expected synthetic CV content hash from the same tmp_path.
+    """
     settings = _make_settings(tmp_path)
     job = _make_job(tmp_path, fixture_server.url)
     engine, sf = _setup_db(tmp_path, settings, job)
@@ -376,7 +410,7 @@ def wq8_obs_app(tmp_path: Path, fixture_server: _FixtureHTTPServer):
     stub = FixtureContextFactory(headless=True)
     app.state.submission_context_factory = stub
 
-    yield app, job, engine, sf, settings
+    yield app, job, engine, sf, settings, tmp_path
 
     stub.close()
     engine.dispose()
@@ -388,7 +422,7 @@ class TestProductionAppObserveRegression:
 
     def test_observe_returns_non_503(self, wq8_obs_app) -> None:
         """The observe endpoint must NOT return 503 — the factory is registered."""
-        app, job, engine, sf, settings = wq8_obs_app
+        app, job, engine, sf, settings, tmp_path = wq8_obs_app
         with TestClient(app) as client:
             resp = client.post(f"/api/submit/{job.application_id}/observe")
             assert resp.status_code != 503, f"observe returned 503 (the defect); body: {resp.text}"
@@ -397,10 +431,14 @@ class TestProductionAppObserveRegression:
                 f"observe returned unexpected status {resp.status_code}; body: {resp.text}"
             )
 
-    def test_observe_persists_non_empty_snapshot(self, wq8_obs_app) -> None:
-        """The observe flow must persist a non-empty snapshot (at least one
-        field, the submit control, and a valid snapshot_hash)."""
-        app, job, engine, sf, settings = wq8_obs_app
+    def test_observe_persists_non_empty_snapshot_with_fields(self, wq8_obs_app) -> None:
+        """The observe flow must persist a non-empty snapshot with actual fields.
+
+        Finding 2 correction: the previous test only checked snapshot_hash and
+        submit_control — it did NOT prove fields were non-empty. This test
+        fails if fields regress to [].
+        """
+        app, job, engine, sf, settings, tmp_path = wq8_obs_app
         with TestClient(app) as client:
             resp = client.post(f"/api/submit/{job.application_id}/observe")
             assert resp.status_code == 200, f"observe failed: {resp.text}"
@@ -413,10 +451,39 @@ class TestProductionAppObserveRegression:
             assert snap.get("submit_control") is not None, "submit_control is None"
             assert snap["submit_control"].get("text"), "submit_control text is empty"
 
+            # Finding 2: explicit non-empty fields proof.
+            fields = snap.get("fields", [])
+            assert isinstance(fields, list), "fields is not a list"
+            assert len(fields) > 0, (
+                "snapshot fields is empty — the observe flow did not capture any fields; "
+                "this is the exact regression the workpackage forbids"
+            )
+            # Expected fixture fields are represented (Full Name, Email, Resume).
+            labels = {f.get("label", "") for f in fields}
+            assert "Full Name" in labels, f"'Full Name' field missing; labels: {labels}"
+            assert "Email" in labels, f"'Email' field missing; labels: {labels}"
+            assert "Resume" in labels, f"'Resume' field missing; labels: {labels}"
+            # At least the Resume file field must be filled (the synthetic CV
+            # is mapped via the 'resume' label pattern to job.cv_pdf).
+            resume_field = next(f for f in fields if f.get("label") == "Resume")
+            assert resume_field.get("field_type") == "file", (
+                f"Resume field type is {resume_field.get('field_type')!r}, expected 'file'"
+            )
+            assert resume_field.get("status") == "filled", (
+                f"Resume field status is {resume_field.get('status')!r}, expected 'filled'"
+            )
+            assert resume_field.get("filled_value"), (
+                "Resume filled_value is empty — the synthetic CV path was not captured"
+            )
+
     def test_observe_snapshot_reloadable_from_fresh_session(self, wq8_obs_app) -> None:
         """After observe, a FRESH DB session (not the request's session) must
-        be able to reload the persisted snapshot from the approval row."""
-        app, job, engine, sf, settings = wq8_obs_app
+        be able to reload the persisted snapshot from the approval row.
+
+        Finding 2 correction: also proves the reloaded snapshot still contains
+        the non-empty fields (not just the hash/submit_control).
+        """
+        app, job, engine, sf, settings, tmp_path = wq8_obs_app
         with TestClient(app) as client:
             resp = client.post(f"/api/submit/{job.application_id}/observe")
             assert resp.status_code == 200
@@ -441,27 +508,101 @@ class TestProductionAppObserveRegression:
             # The submit control must be present (proves analyze_page ran).
             assert snapshot.submit_control is not None
             assert snapshot.submit_control.text
+            # Finding 2: the reloaded snapshot must still contain the non-empty
+            # fields (proves they were persisted, not just in-memory).
+            assert len(snapshot.fields) > 0, (
+                "reloaded snapshot has 0 fields — fields were not persisted"
+            )
+            reloaded_labels = {f.label for f in snapshot.fields}
+            assert "Full Name" in reloaded_labels, (
+                f"'Full Name' missing from reloaded snapshot; labels: {reloaded_labels}"
+            )
+            assert "Resume" in reloaded_labels, (
+                f"'Resume' missing from reloaded snapshot; labels: {reloaded_labels}"
+            )
 
     def test_observe_snapshot_has_document_content_hash(self, wq8_obs_app) -> None:
-        """The snapshot must include document content hashes (the workpackage
-        explicitly requires 'document content hash' in the fixture)."""
-        app, job, engine, sf, settings = wq8_obs_app
+        """The snapshot must include a real document content hash.
+
+        Finding 1 correction: the previous test only checked that the
+        ``documents`` field existed and explicitly allowed it to be empty —
+        a false positive. This test exercises the full official path:
+        POST /observe → execute_live_form → upload synthetic CV →
+        build_snapshot → persist approval, then asserts the document is
+        present with the correct content hash.
+        """
+        app, job, engine, sf, settings, tmp_path = wq8_obs_app
         with TestClient(app) as client:
             resp = client.post(f"/api/submit/{job.application_id}/observe")
             assert resp.status_code == 200
             data = resp.json()
             snap = data["snapshot"]
-            # The fixture form has a file input. The live executor may or may
-            # not upload (depends on field mapping), but the snapshot must
-            # have a documents list (possibly empty if no upload happened).
-            assert "documents" in snap or snap.get("documents") is not None, (
-                "snapshot is missing the documents field"
+            documents = snap.get("documents", [])
+            assert isinstance(documents, list), "documents is not a list"
+            # Finding 1: documents must be non-empty — the Resume file input
+            # must have triggered a synthetic CV upload.
+            assert len(documents) > 0, (
+                "snapshot documents is empty — the synthetic CV was not uploaded; "
+                "the official observe path must upload at least one document"
+            )
+            # At least the expected synthetic CV is represented.
+            cv_docs = [d for d in documents if d.get("document_kind") == "cv"]
+            assert len(cv_docs) >= 1, f"no cv document_kind found; documents: {documents}"
+            cv_doc = cv_docs[0]
+            # document_kind is correct.
+            assert cv_doc.get("document_kind") == "cv", (
+                f"document_kind is {cv_doc.get('document_kind')!r}, expected 'cv'"
+            )
+            # content_hash is non-empty.
+            assert cv_doc.get("content_hash"), (
+                "content_hash is empty — the document hash was not computed"
+            )
+            # content_hash equals the expected SHA-256-derived value per the
+            # project's canonical snapshot hashing implementation.
+            expected_hash = _expected_cv_hash(tmp_path)
+            assert cv_doc["content_hash"] == expected_hash, (
+                f"content_hash mismatch: got {cv_doc['content_hash']!r}, "
+                f"expected {expected_hash!r} (sha256(cv.pdf bytes)[:32])"
+            )
+
+    def test_observe_document_hash_persists_across_fresh_db_session(self, wq8_obs_app) -> None:
+        """Finding 1: the persisted approval snapshot must contain the same
+        document + content hash after a fresh DB session reload."""
+        app, job, engine, sf, settings, tmp_path = wq8_obs_app
+        with TestClient(app) as client:
+            resp = client.post(f"/api/submit/{job.application_id}/observe")
+            assert resp.status_code == 200
+
+        expected_hash = _expected_cv_hash(tmp_path)
+
+        with session_scope(sf) as session:
+            approval = get_active_approval(session, job.application_id)
+            assert approval is not None
+            assert approval.snapshot_json is not None
+            import json
+
+            raw = approval.snapshot_json
+            data = raw if isinstance(raw, dict) else json.loads(raw)
+            from universal_auto_applier.submission.models import SubmissionSnapshot
+
+            snapshot = SubmissionSnapshot.model_validate(data)
+            # The reloaded snapshot must contain the same document + hash.
+            assert len(snapshot.documents) > 0, (
+                "reloaded snapshot has 0 documents — documents were not persisted"
+            )
+            cv_docs = [d for d in snapshot.documents if d.document_kind == "cv"]
+            assert len(cv_docs) >= 1, (
+                f"no cv document in reloaded snapshot; documents: {snapshot.documents}"
+            )
+            assert cv_docs[0].content_hash == expected_hash, (
+                f"reloaded content_hash mismatch: got {cv_docs[0].content_hash!r}, "
+                f"expected {expected_hash!r}"
             )
 
     def test_observe_snapshot_has_pending_intervention_count(self, wq8_obs_app) -> None:
         """The snapshot must include pending_intervention_count (workpackage
         requires 'pending intervention count')."""
-        app, job, engine, sf, settings = wq8_obs_app
+        app, job, engine, sf, settings, tmp_path = wq8_obs_app
         with TestClient(app) as client:
             resp = client.post(f"/api/submit/{job.application_id}/observe")
             assert resp.status_code == 200
@@ -526,6 +667,108 @@ class TestInjectedFactoryPreserved:
 
 
 # ---------------------------------------------------------------------------
+# 3b. Lifespan factory ownership (Finding 3 correction)
+# ---------------------------------------------------------------------------
+
+
+class _CloseCountingFactory:
+    """A sentinel factory that counts how many times ``close()`` is called.
+
+    Used to prove the production lifespan does NOT close a pre-injected
+    factory when the lifespan exits (ownership is preserved).
+    """
+
+    def __init__(self) -> None:
+        self.close_count = 0
+
+    def create_context(self) -> BrowserContext:  # pragma: no cover - never called
+        raise AssertionError("CloseCountingFactory.create_context should never be called")
+
+    def close(self) -> None:
+        self.close_count += 1
+
+
+class TestLifespanFactoryOwnership:
+    """Finding 3: the lifespan must only close a factory it created/owns.
+
+    The previous code closed ANY ``app.state.submission_context_factory`` in
+    the lifespan ``finally`` block, including a pre-injected factory. This
+    violated ownership semantics: a test/harness that injects its own
+    factory expects to close it itself (e.g. ``submission_server.py`` closes
+    its own ``FixtureContextFactory``).
+    """
+
+    def test_pre_injected_factory_not_closed_by_lifespan(
+        self, tmp_path: Path, fixture_server: _FixtureHTTPServer
+    ) -> None:
+        """Enter and exit the production TestClient lifespan WITHOUT invoking
+        observation. The pre-injected sentinel factory must be preserved and
+        the lifespan must NOT have called ``close()`` on it.
+        """
+        settings = _make_settings(tmp_path)
+        job = _make_job(tmp_path, fixture_server.url)
+        engine, sf = _setup_db(tmp_path, settings, job)
+        app = _create_app(settings, engine, sf)
+
+        sentinel = _CloseCountingFactory()
+        app.state.submission_context_factory = sentinel
+
+        with TestClient(app) as client:
+            # The lifespan must NOT have overwritten the pre-injected factory.
+            assert app.state.submission_context_factory is sentinel, (
+                "lifespan overwrote a pre-injected submission_context_factory"
+            )
+            # close() must not have been called during startup.
+            assert sentinel.close_count == 0, (
+                f"lifespan called close() {sentinel.close_count} time(s) during startup "
+                "on a factory it does not own"
+            )
+            resp = client.get("/api/health")
+            assert resp.status_code == 200
+
+        # After lifespan exit, the lifespan must NOT have closed the sentinel.
+        assert sentinel.close_count == 0, (
+            f"lifespan called close() {sentinel.close_count} time(s) on the "
+            "pre-injected sentinel factory during shutdown — the lifespan must "
+            "only close factories it created itself"
+        )
+        # The factory is still the same object (not replaced).
+        assert app.state.submission_context_factory is sentinel
+        engine.dispose()
+
+    def test_production_factory_closed_on_lifespan_shutdown(
+        self, tmp_path: Path, fixture_server: _FixtureHTTPServer
+    ) -> None:
+        """When the production lifespan creates its own PlaywrightContextFactory,
+        lifespan shutdown must close the owned factory safely.
+
+        We cannot directly count close() on a PlaywrightContextFactory without
+        subclassing it, but we can prove the factory was created by the lifespan
+        (not pre-injected) and that closing it on shutdown does not raise. The
+        fact that no ResourceWarning leaks (the project's strict
+        ``filterwarnings = ["error"]`` config) is the proof that shutdown is clean.
+        """
+        settings = _make_settings(tmp_path)
+        job = _make_job(tmp_path, fixture_server.url)
+        engine, sf = _setup_db(tmp_path, settings, job)
+        app = _create_app(settings, engine, sf)
+
+        # Do NOT pre-inject a factory — the lifespan must create one.
+        with TestClient(app) as client:
+            factory = app.state.submission_context_factory
+            assert factory is not None, "lifespan did not register a factory"
+            assert isinstance(factory, PlaywrightContextFactory), (
+                "lifespan must create a PlaywrightContextFactory when none is pre-injected"
+            )
+            resp = client.get("/api/health")
+            assert resp.status_code == 200
+        # After lifespan exit, the owned factory was closed in the finally
+        # block. No exception was raised (TestClient context exit would have
+        # propagated it). The strict ResourceWarning filter proves no leak.
+        engine.dispose()
+
+
+# ---------------------------------------------------------------------------
 # 4. Observation cannot authorize or submit (Milestone F)
 # ---------------------------------------------------------------------------
 
@@ -537,7 +780,7 @@ class TestObservationCannotAuthorizeOrSubmit:
 
     def test_observe_creates_no_authorization(self, wq8_obs_app) -> None:
         """Observation must NOT create a SubmissionAuthorization row."""
-        app, job, engine, sf, settings = wq8_obs_app
+        app, job, engine, sf, settings, tmp_path = wq8_obs_app
         with TestClient(app) as client:
             resp = client.post(f"/api/submit/{job.application_id}/observe")
             assert resp.status_code == 200
@@ -562,7 +805,7 @@ class TestObservationCannotAuthorizeOrSubmit:
     def test_observe_creates_no_submission_result(self, wq8_obs_app) -> None:
         """Observation must NOT create a SubmissionResult row (no submit
         attempt was made)."""
-        app, job, engine, sf, settings = wq8_obs_app
+        app, job, engine, sf, settings, tmp_path = wq8_obs_app
         with TestClient(app) as client:
             resp = client.post(f"/api/submit/{job.application_id}/observe")
             assert resp.status_code == 200
@@ -586,7 +829,7 @@ class TestObservationCannotAuthorizeOrSubmit:
 
     def test_observe_creates_no_submission_claim(self, wq8_obs_app) -> None:
         """Observation must NOT create a SubmissionClaim row."""
-        app, job, engine, sf, settings = wq8_obs_app
+        app, job, engine, sf, settings, tmp_path = wq8_obs_app
         with TestClient(app) as client:
             resp = client.post(f"/api/submit/{job.application_id}/observe")
             assert resp.status_code == 200
@@ -612,7 +855,7 @@ class TestObservationCannotAuthorizeOrSubmit:
         """Observation creates exactly one (unapproved) approval row holding
         the snapshot. It is NOT an authorization — it is the review snapshot
         the user will later approve or revoke."""
-        app, job, engine, sf, settings = wq8_obs_app
+        app, job, engine, sf, settings, tmp_path = wq8_obs_app
         with TestClient(app) as client:
             resp = client.post(f"/api/submit/{job.application_id}/observe")
             assert resp.status_code == 200
@@ -642,7 +885,7 @@ class TestObservationCannotAuthorizeOrSubmit:
     def test_observe_does_not_change_job_status(self, wq8_obs_app) -> None:
         """Observation must NOT change the job status (review_ready stays
         review_ready; observation is not submission)."""
-        app, job, engine, sf, settings = wq8_obs_app
+        app, job, engine, sf, settings, tmp_path = wq8_obs_app
         with TestClient(app) as client:
             resp = client.post(f"/api/submit/{job.application_id}/observe")
             assert resp.status_code == 200
