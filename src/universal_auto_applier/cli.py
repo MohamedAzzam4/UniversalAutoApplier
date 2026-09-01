@@ -920,12 +920,26 @@ def _wq8_review_packet(settings: Settings, args: argparse.Namespace) -> int:
                     "observe endpoint)."
                 )
                 return 2
-            job_url = args.job_url or job.url
+            # WQ-8 ATS URL separation: the canonical review plan must bind
+            # the actual ATS application FORM URL from the persisted
+            # snapshot, NOT job.url (which may be a detail page). If
+            # --job-url is supplied and differs from snapshot.application_url,
+            # fail closed — the owner must not override the canonical frozen
+            # target via CLI.
+            canonical_form_url = snapshot.application_url or job.url
+            if args.job_url and args.job_url != canonical_form_url:
+                print(
+                    f"ERROR: --job-url {args.job_url!r} does not match the persisted "
+                    f"snapshot application_url {canonical_form_url!r}. The canonical "
+                    "review plan binds the actual ATS form URL; a CLI override cannot "
+                    "change the frozen target."
+                )
+                return 2
             plan = build_review_plan(
                 application_id=application_id,
                 company=job.company,
                 job_title=job.title,
-                application_url=job_url,
+                application_url=canonical_form_url,
                 fields=snapshot.fields,
                 documents=snapshot.documents,
                 submit_control_text=(
@@ -948,7 +962,8 @@ def _wq8_review_packet(settings: Settings, args: argparse.Namespace) -> int:
                 print(f"NOTICE: status is not review_ready (it is {job.status})")
             print(f"company:             {job.company}")
             print(f"job_title:           {job.title}")
-            print(f"application_url:     {job_url}")
+            print(f"job_url (source):    {job.url}")
+            print(f"application_url:     {canonical_form_url}")
             print(f"snapshot_hash:       {snapshot.snapshot_hash}")
             print(f"review_plan_hash:    {frozen_hash}")
             print(f"pending_interventions: {snapshot.pending_intervention_count}")
@@ -1033,12 +1048,23 @@ def _wq8_authorize(settings: Settings, args: argparse.Namespace) -> int:
                 )
                 return 2
 
-            job_url = args.job_url or job.url
+            # WQ-8 ATS URL separation: the authorization must bind the actual
+            # ATS application FORM URL from the persisted snapshot, NOT
+            # job.url (which may be a detail page). If --job-url is supplied
+            # and differs from snapshot.application_url, fail closed.
+            canonical_form_url = snapshot.application_url or job.url
+            if args.job_url and args.job_url != canonical_form_url:
+                print(
+                    f"ERROR: --job-url {args.job_url!r} does not match the persisted "
+                    f"snapshot application_url {canonical_form_url!r}. The authorization "
+                    "must bind the actual ATS form URL; a CLI override cannot change it."
+                )
+                return 2
             plan = build_review_plan(
                 application_id=application_id,
                 company=job.company,
                 job_title=job.title,
-                application_url=job_url,
+                application_url=canonical_form_url,
                 fields=snapshot.fields,
                 documents=snapshot.documents,
                 submit_control_text=(
@@ -1069,7 +1095,7 @@ def _wq8_authorize(settings: Settings, args: argparse.Namespace) -> int:
                 auth = create_authorization(
                     session,
                     application_id=application_id,
-                    application_url=job_url,
+                    application_url=canonical_form_url,
                     job_company=job.company,
                     job_title=job.title,
                     review_plan_hash=current_hash,

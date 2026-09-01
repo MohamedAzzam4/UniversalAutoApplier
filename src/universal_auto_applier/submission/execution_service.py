@@ -202,14 +202,23 @@ class SubmissionExecutionService:
         application_id: str,
         artifact_dir: Path | None = None,
     ) -> SubmissionSnapshot | None:
-        """Open browser, navigate, fill form, observe page, build and
-        persist the current snapshot.
+        """Open browser, navigate from ``job.url`` to the actual application
+        form, fill it, observe the submit control, build and persist the
+        current snapshot.
 
-        Returns the persisted snapshot, or None if the form could not be
-        reached (e.g., login required, page not found).
+        Returns the persisted snapshot, or None if the application form
+        could not be reached (e.g., login required, CAPTCHA, no safe apply
+        path, navigation loop, max steps exceeded, or the page remained a
+        non-form detail page).
 
         The snapshot is NOT approved — the user must explicitly approve
         it via :meth:`approve_snapshot`.
+
+        WQ-8 ATS target URL separation: ``job.url`` is the canonical
+        source/job identity URL (often a job DETAIL page). The snapshot's
+        ``application_url`` is the actual ATS application FORM URL reached
+        by following safe Apply/Continue actions. ``job.url`` is never
+        mutated; ``application_id`` is never mutated.
         """
         with session_scope(self._session_factory) as session:
             job = get_application_job(session, application_id)
@@ -242,12 +251,113 @@ class SubmissionExecutionService:
 
         try:
             page = context.pages[0] if context.pages else context.new_page()
+            # Initial navigation is to job.url (the canonical source/detail URL).
             page.goto(
                 job.url, wait_until="domcontentloaded", timeout=self._settings.browser_timeout_ms
             )
             page.wait_for_timeout(1_000)  # Let JS settle.
 
-            # Fill the form on this page.
+            # Navigate from the detail page to the actual application form
+            # using the EXISTING safe navigation semantics (analyze_page +
+            # choose_safe_action + click_action) — the same proven loop used
+            # by LiveBrowserRunner. Never click dangerous_submit during
+            # discovery. Fail closed on blockers, loops, and max-step.
+            from universal_auto_applier.navigator.apply_path_finder import (
+                analyze_page,
+                choose_safe_action,
+                click_action,
+            )
+
+            max_nav_steps = max(self._settings.browser_max_steps, 1)
+            seen_actions: set[tuple[str, str, str]] = set()
+            form_reached = False
+            for _step in range(max_nav_steps):
+                analysis = analyze_page(page)
+                logger.info(
+                    "[%s] observe nav url=%s form=%s blocker=%s controls=%d files=%d",
+                    application_id[:12],
+                    analysis.url,
+                    analysis.is_application_form,
+                    analysis.blocker,
+                    analysis.visible_control_count,
+                    analysis.file_input_count,
+                )
+
+                # Fail closed on blockers (CAPTCHA, login wall, external blocker).
+                if analysis.blocker:
+                    logger.warning(
+                        "[%s] observe navigation blocked: %s at %s",
+                        application_id[:12],
+                        analysis.blocker,
+                        analysis.url,
+                    )
+                    return None
+                if analysis.expired:
+                    logger.warning(
+                        "[%s] observe navigation: job expired at %s",
+                        application_id[:12],
+                        analysis.url,
+                    )
+                    return None
+                if analysis.submitted:
+                    logger.warning(
+                        "[%s] observe navigation: already submitted at %s",
+                        application_id[:12],
+                        analysis.url,
+                    )
+                    return None
+
+                if analysis.is_application_form:
+                    form_reached = True
+                    break
+
+                # Not yet an application form — follow only safe Apply/Continue.
+                action = choose_safe_action(analysis, allow_apply=True, allow_continue=True)
+                if action is None:
+                    logger.warning(
+                        "[%s] observe navigation: no safe apply path at %s",
+                        application_id[:12],
+                        analysis.url,
+                    )
+                    return None
+
+                fingerprint = (page.url, action.selector_hint, action.text)
+                if fingerprint in seen_actions:
+                    logger.warning(
+                        "[%s] observe navigation: loop detected at %s",
+                        application_id[:12],
+                        analysis.url,
+                    )
+                    return None
+                seen_actions.add(fingerprint)
+
+                logger.info(
+                    "[%s] observe nav click %s text=%r",
+                    application_id[:12],
+                    action.classification,
+                    action.text,
+                )
+                page = click_action(
+                    context,
+                    page,
+                    action,
+                    timeout_ms=self._settings.browser_timeout_ms,
+                )
+            else:
+                # Loop exhausted without break — max steps reached.
+                logger.warning(
+                    "[%s] observe navigation: max steps (%d) reached without finding a form",
+                    application_id[:12],
+                    max_nav_steps,
+                )
+                return None
+
+            if not form_reached:
+                logger.warning("[%s] observe: application form not reached", application_id[:12])
+                return None
+
+            # We are now on the actual application form. Fill it.
+            actual_form_url = page.url
             candidate = resolve_candidate_profile(job.metadata)
             execution = execute_live_form(page, candidate, job)
 
@@ -255,9 +365,7 @@ class SubmissionExecutionService:
             with session_scope(self._session_factory) as session:
                 pending_count = len(list_pending_interventions(session, application_id))
 
-            # Find the submit control.
-            from universal_auto_applier.navigator.apply_path_finder import analyze_page
-
+            # Find the submit control on the actual form page.
             analysis = analyze_page(page)
             submit_clickables = [
                 c for c in analysis.clickables if c.classification.value == "dangerous_submit"
@@ -268,9 +376,23 @@ class SubmissionExecutionService:
             )
             submit_frame_url = submit_clickables[0].frame_url if len(submit_clickables) == 1 else ""
 
+            # Fail closed: an observation that reached a "form" but has no
+            # fields and no submit control is not a valid review snapshot.
+            if not execution.fields and not submit_clickables:
+                logger.warning(
+                    "[%s] observe: form reached but has no fields and no submit control at %s",
+                    application_id[:12],
+                    actual_form_url,
+                )
+                return None
+
             snapshot = build_snapshot(
                 application_id=application_id,
-                application_url=job.url,
+                # WQ-8 ATS URL separation: snapshot.application_url is the
+                # actual ATS application FORM URL, NOT job.url (which may be
+                # a detail page). The owner reviews and authorizes this
+                # exact form URL.
+                application_url=actual_form_url,
                 fields=execution.fields,
                 uploads=execution.uploads,
                 pending_intervention_count=pending_count,
@@ -283,6 +405,13 @@ class SubmissionExecutionService:
             # by storing it on the approval row (unapproved).
             # The dashboard's approve action will read this and approve it.
             self._persist_live_snapshot(application_id, snapshot)
+            logger.info(
+                "[%s] observe: snapshot persisted form_url=%s job_url=%s (distinct=%s)",
+                application_id[:12],
+                actual_form_url,
+                job.url,
+                actual_form_url != job.url,
+            )
             return snapshot
         except Exception as exc:
             logger.exception("[%s] snapshot observation failed: %s", application_id[:12], exc)
@@ -509,12 +638,38 @@ class SubmissionExecutionService:
         # when an active single-use authorization exists for this application.
         # Without an authorization the controlled-submit path stays
         # byte-for-byte unchanged (no interlock install).
+        # WQ-8 ATS URL separation: when a WQ-8 authorization is active, Phase B
+        # must navigate to the APPROVED application form URL
+        # (snapshot.application_url), NOT job.url (which may be a detail page).
+        # The owner approved one exact form target; Phase B must not rediscover
+        # or guess another URL.
+        approved_form_url: str | None = None
         with session_scope(self._session_factory) as session:
             from universal_auto_applier.submission.authorization_store import (
                 get_active_authorization,
             )
 
-            wq8_active = get_active_authorization(session, application_id) is not None
+            wq8_auth_row = get_active_authorization(session, application_id)
+            wq8_active = wq8_auth_row is not None
+            if wq8_auth_row is not None:
+                # The authorization's application_url is the exact frozen form
+                # URL the owner approved. Load the persisted snapshot to cross-
+                # check; both must agree.
+                from universal_auto_applier.submission.store import get_active_approval
+
+                approval = get_active_approval(session, application_id)
+                if approval is not None and approval.snapshot_json:
+                    from universal_auto_applier.submission.models import SubmissionSnapshot
+
+                    try:
+                        snap = SubmissionSnapshot.model_validate(approval.snapshot_json)
+                        approved_form_url = snap.application_url
+                    except Exception:  # noqa: BLE001
+                        pass
+                # Fall back to the authorization's own URL if the snapshot
+                # could not be loaded.
+                if not approved_form_url and wq8_auth_row.application_url:
+                    approved_form_url = wq8_auth_row.application_url
         log_extra = ""
         if wq8_active:
             from universal_auto_applier.browser.submit_interlock import (
@@ -531,8 +686,22 @@ class SubmissionExecutionService:
 
         try:
             page = context.pages[0] if context.pages else context.new_page()
-            page.goto(
+            # WQ-8 ATS URL separation: when a WQ-8 authorization is active,
+            # navigate directly to the approved application form URL, NOT
+            # job.url. The owner approved one exact form target; Phase B must
+            # not return to the detail page or rediscover another form URL.
+            # Without an active WQ-8 authorization, preserve the existing
+            # behavior (navigate to job.url) for non-WQ-8 controlled submissions.
+            nav_url = approved_form_url if (wq8_active and approved_form_url) else job.url
+            logger.info(
+                "[%s] controlled submission navigate to %s (job.url=%s, wq8=%s)",
+                application_id[:12],
+                nav_url,
                 job.url,
+                wq8_active,
+            )
+            page.goto(
+                nav_url,
                 wait_until="domcontentloaded",
                 timeout=self._settings.browser_timeout_ms,
             )
@@ -556,9 +725,11 @@ class SubmissionExecutionService:
             )
             submit_frame_url = submit_clickables[0].frame_url if len(submit_clickables) == 1 else ""
 
+            # WQ-8 ATS URL separation: the current snapshot's application_url
+            # is the actual page.url the browser is on, NOT job.url.
             current_snapshot = build_snapshot(
                 application_id=application_id,
-                application_url=job.url,
+                application_url=page.url,
                 fields=execution.fields,
                 uploads=execution.uploads,
                 pending_intervention_count=pending_count,
@@ -566,6 +737,44 @@ class SubmissionExecutionService:
                 submit_control_selector=submit_selector,
                 submit_control_frame_url=submit_frame_url,
             )
+
+            # WQ-8 post-fill URL guard: when a WQ-8 authorization is active,
+            # the actual page URL after navigation+fill MUST equal the approved
+            # application form URL. If the ATS redirected to a different URL
+            # (e.g. the form moved, a session expired and redirected to login,
+            # or an intermediate page intervened), the approval is stale — fail
+            # closed with APPROVAL_STALE rather than submitting to the wrong
+            # form.
+            if wq8_active and approved_form_url and page.url != approved_form_url:
+                logger.warning(
+                    "[%s] WQ-8 post-fill URL mismatch: actual %s != approved %s",
+                    application_id[:12],
+                    page.url,
+                    approved_form_url,
+                )
+                result = SubmissionResult(
+                    application_id=application_id,
+                    approval_id=approval_id,
+                    snapshot_hash_at_submit=approved_snapshot_hash,
+                    state=SubmissionResultState.APPROVAL_STALE,
+                    clicked=False,
+                    error_message=(
+                        f"WQ-8 approved application URL changed: "
+                        f"actual {page.url!r} != approved {approved_form_url!r}"
+                    ),
+                )
+                with session_scope(self._session_factory) as session:
+                    from universal_auto_applier.submission.models import (
+                        SubmissionResultState as S,
+                    )
+                    from universal_auto_applier.submission.store import (
+                        consume_claim,
+                        record_result,
+                    )
+
+                    record_result(session, result)
+                    consume_claim(session, claim_id, state=S.APPROVAL_STALE)
+                return result
 
             result = self._coordinator.execute_submission_from_page(
                 page=page,

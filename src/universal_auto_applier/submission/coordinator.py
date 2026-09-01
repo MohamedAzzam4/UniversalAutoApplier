@@ -386,7 +386,11 @@ class SubmissionCoordinator:
                 application_id=current_snapshot.application_id,
                 company=job.company,
                 job_title=job.title,
-                application_url=job.url,
+                # WQ-8 ATS URL separation: the frozen plan binds the actual
+                # ATS application form URL (snapshot.application_url), NOT
+                # job.url (which may be a detail page). The owner authorized
+                # the exact form reviewed, not the source detail page.
+                application_url=current_snapshot.application_url,
                 fields=current_snapshot.fields,
                 documents=current_snapshot.documents,
                 submit_control_text=(
@@ -453,10 +457,22 @@ class SubmissionCoordinator:
                 reason="WQ-8 authorization belongs to a different application",
                 state=SubmissionResultState.APPROVAL_STALE,
             )
-        if job is not None and auth.application_url != job.url:
+        # WQ-8 ATS URL separation: the authorization binds the actual ATS
+        # application FORM URL (snapshot.application_url), NOT job.url (which
+        # may be a detail page). When a current snapshot is available, compare
+        # against its application_url. When no snapshot is available (e.g.
+        # early gate before browser execution), fall back to job.url as the
+        # best available URL signal — this preserves the pre-fix behavior for
+        # the no-snapshot path and does not weaken the snapshot-bound path.
+        expected_url = (
+            current_snapshot.application_url
+            if current_snapshot is not None
+            else (job.url if job is not None else None)
+        )
+        if expected_url is not None and auth.application_url != expected_url:
             return GateResult(
                 allowed=False,
-                reason="WQ-8 authorization URL does not match the current job URL",
+                reason="WQ-8 authorization URL does not match the current application form URL",
                 state=SubmissionResultState.APPROVAL_STALE,
             )
         if (

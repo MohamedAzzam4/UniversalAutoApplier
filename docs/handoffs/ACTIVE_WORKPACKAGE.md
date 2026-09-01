@@ -472,6 +472,60 @@ corrected in this follow-up commit:
   5, `test_wq8_phase_a_interlock.py` 5 individually. `git diff --check`
   clean.
 
+## ATS target URL separation (2026-08-31)
+
+The real Phase-A re-observation exposed a semantic defect: the canonical
+JobHunter/source job URL is a job DETAIL page, while the actual ATS
+application form exists at a DIFFERENT URL. The WQ-8 implementation
+incorrectly conflated these two concepts — it navigated directly to
+``job.url``, saw no application form, and created an empty snapshot.
+
+**Contract clarification:**
+- ``job.url`` = canonical source/job identity URL (may be a detail page)
+- ``snapshot.application_url`` = actual ATS application FORM URL
+- ``authorization.application_url`` = exact frozen owner-approved form URL
+- Application identity remains tied to the original ``application_id``/job.
+- Changing the actual form URL after freeze invalidates approval.
+
+**Implementation:**
+- ``submission/execution_service.py`` ``observe_and_persist_snapshot``:
+  Phase-A safe detail→form navigation. After the interlock is installed
+  and the initial ``page.goto(job.url)`` loads the detail page, the
+  observe path reuses the EXISTING safe navigation semantics
+  (``analyze_page`` + ``choose_safe_action`` + ``click_action`` — the
+  same proven loop used by ``LiveBrowserRunner``) to follow safe
+  Apply/Continue actions until an actual application form is reached.
+  ``dangerous_submit`` is never clicked during discovery. Fail-closed
+  on blockers (CAPTCHA, login wall, expired, submitted, no safe action,
+  navigation loop, max-step exhaustion). ``snapshot.application_url`` is
+  set to ``page.url`` (the actual form URL), NOT ``job.url``. An
+  observation that reaches no form returns ``None`` — no empty snapshot
+  is persisted.
+- ``submission/execution_service.py`` ``_execute_in_browser`` (Phase B):
+  when a WQ-8 authorization is active, navigates to the APPROVED
+  ``snapshot.application_url`` (not ``job.url``). Post-fill URL guard
+  fails closed with ``APPROVAL_STALE`` if the actual ``page.url`` differs
+  from the approved URL after navigation+fill.
+- ``submission/coordinator.py`` ``_validate_wq8_binding``: plan recompute
+  now uses ``current_snapshot.application_url`` (not ``job.url``).
+  ``_check_wq8_authorization_db``: URL comparison uses
+  ``current_snapshot.application_url`` when available, falls back to
+  ``job.url`` only when no snapshot exists.
+- ``cli.py`` ``wq8-review-packet`` and ``wq8-authorize``: canonical URL
+  comes from ``snapshot.application_url``. ``--job-url`` that differs
+  from ``snapshot.application_url`` is rejected (fail closed).
+
+**Hermetic tests** (``tests/integration/test_wq8_ats_url_separation.py``,
+20 tests): detail→form fixture (two different loopback URLs), failure
+fixture (no safe apply path), review-packet URL source, authorization
+URL source, coordinator binding (valid distinct URLs + stale on URL
+change), Phase-B browser target (approved URL navigation + guard).
+
+**Test counts:** `ruff check` 0 errors; `ruff format --check` 0 errors;
+`pyright` 0 errors; `pytest tests/unit tests/contract tests/integration
+-m "not playwright and not live"` → **1366 passed** (was 1346; +20 new);
+relevant Playwright unchanged. `git diff --check` clean.
+
 ## Changed files
 
 - `docs/handoffs/ACTIVE_WORKPACKAGE.md` — WQ-8 handoff (initial commit
