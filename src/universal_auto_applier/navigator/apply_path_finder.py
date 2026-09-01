@@ -363,7 +363,11 @@ def analyze_page(page: Page) -> LivePageAnalysis:
         for term in ("/apply", "/application", "/applications/")
     )
     is_form = (
-        file_inputs > 0
+        # A single file input on a selection/intro page (e.g. msg
+        # /intro with one "Lebenslauf hochladen" control) is not yet
+        # the full application form. Require at least two visible
+        # controls when classifying purely by file-input presence.
+        (file_inputs > 0 and visible_controls >= 2)
         or (visible_controls >= 2 and application_signals >= 1)
         or (
             visible_forms > 0

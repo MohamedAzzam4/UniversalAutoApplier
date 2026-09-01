@@ -40,6 +40,14 @@ _SAFE_APPLY_TERMS: frozenset[str] = frozenset(
         "bewerben",
         "jetzt bewerben",
         "initiate application",
+        # msg/ d.vinci intro selection page: the link to the actual
+        # application form is labelled "Bewerbungsformular ausfüllen"
+        # (German for "fill out application form"). This is a safe
+        # pre-form selection — never a final submit — and must be
+        # followed to reach the real form at /form.
+        "bewerbungsformular",
+        "bewerbungsformular ausfüllen",
+        "ausfüllen",
     }
 )
 
