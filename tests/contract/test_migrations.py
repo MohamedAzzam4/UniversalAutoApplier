@@ -23,7 +23,7 @@ from universal_auto_applier.persistence.migrations import (
 )
 
 # The current head revision. Update this when adding a new migration.
-CURRENT_HEAD = "0015_submission_authorization"
+CURRENT_HEAD = "0016_supervisor"
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 MIGRATION_0008_PATH = (

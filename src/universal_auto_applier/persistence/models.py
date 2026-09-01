@@ -486,6 +486,135 @@ class OrchestrationRunRow(Base):
     finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
 
+class SupervisorRunRow(Base):
+    """One bounded AI-supervisor run (agent-assisted operator mode V0).
+
+    A supervisor run imports/reads the application queue and drives
+    review-only preparation through the safe typed tool layer. The row is
+    the durable summary record; per-decision history lives in
+    ``supervisor_events``. A run NEVER submits: there is no submitted
+    transition anywhere in the supervisor state machine.
+    """
+
+    __tablename__ = "supervisor_runs"
+
+    run_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    # running | completed | failed
+    status: Mapped[str] = mapped_column(String(16), index=True)
+    queue_path: Mapped[str] = mapped_column(Text, default="")
+    # V0 is always review-only; the column exists so a future audit can
+    # prove no run ever had another mode.
+    review_only: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    summary_json: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
+    started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class SupervisorApplicationStateRow(Base):
+    """Latest supervisor state for one application.
+
+    One row per application (upserted). The full per-action history is in
+    ``supervisor_events``; this row answers "where is this application in
+    the supervisor pipeline right now?".
+    """
+
+    __tablename__ = "supervisor_application_states"
+
+    application_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    run_id: Mapped[str] = mapped_column(String(64), index=True)
+    # IMPORTED | PREPARING | RUNNING | WAITING_FOR_INTERVENTION |
+    # RETRY_PENDING | REVIEW_READY | NEEDS_HUMAN | REPAIR_NEEDED |
+    # BLOCKED | SKIPPED | FAILED — no SUBMITTED state exists in V0.
+    state: Mapped[str] = mapped_column(String(32), index=True)
+    reason_code: Mapped[str] = mapped_column(String(64), default="")
+    decision_source: Mapped[str] = mapped_column(String(32), default="")
+    retry_count: Mapped[int] = mapped_column(Integer, default=0)
+    detail_json: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
+
+
+class SupervisorEventRow(Base):
+    """One auditable supervisor action (the "why did the agent do this?" log).
+
+    Every supervisor mutation of an application is recorded here with the
+    previous/resulting state, the reason code, the decision source and the
+    tool result. Sensitive answer values are never stored — ``detail_json``
+    carries redacted metadata (e.g. ``value_redacted: true``) instead.
+    """
+
+    __tablename__ = "supervisor_events"
+
+    event_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    run_id: Mapped[str] = mapped_column(String(64), index=True)
+    application_id: Mapped[str] = mapped_column(String(64), index=True)
+    previous_state: Mapped[str] = mapped_column(String(32), default="")
+    action: Mapped[str] = mapped_column(String(48))
+    resulting_state: Mapped[str] = mapped_column(String(32), default="")
+    reason_code: Mapped[str] = mapped_column(String(64), default="")
+    decision_source: Mapped[str] = mapped_column(String(32), default="")
+    confidence: Mapped[float | None] = mapped_column(Float, nullable=True)
+    retry_count: Mapped[int] = mapped_column(Integer, default=0)
+    tool_result: Mapped[str] = mapped_column(Text, default="")
+    detail_json: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
+
+
+class HumanHandoffRow(Base):
+    """A structured task for the human owner created by the supervisor.
+
+    Created whenever the supervisor hits a condition only a human may
+    decide (CAPTCHA, 2FA, unknown salary, sensitive consent, ...). Sanitized
+    by design: no full candidate PII, no raw documents, no filled values.
+    """
+
+    __tablename__ = "human_handoffs"
+
+    handoff_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    run_id: Mapped[str] = mapped_column(String(64), index=True)
+    application_id: Mapped[str] = mapped_column(String(64), index=True)
+    company: Mapped[str] = mapped_column(String(256), default="")
+    role: Mapped[str] = mapped_column(String(256), default="")
+    reason_code: Mapped[str] = mapped_column(String(64), index=True)
+    question: Mapped[str] = mapped_column(Text, default="")
+    action_required: Mapped[str] = mapped_column(Text, default="")
+    detail_json: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    # open | resolved
+    status: Mapped[str] = mapped_column(String(16), index=True, default="open")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
+    resolved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class RepairTicketRow(Base):
+    """A sanitized implementation-defect report created by the supervisor.
+
+    The supervisor never modifies production code while an attempt is
+    running; suspected software defects (e.g. a mapper that cannot resolve a
+    field whose fact exists in the candidate profile) are reported here for
+    a later human/coding-agent review. Never contains candidate PII, raw CV
+    content, credentials, cookies, or session tokens.
+    """
+
+    __tablename__ = "repair_tickets"
+
+    ticket_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    run_id: Mapped[str] = mapped_column(String(64), index=True)
+    application_id: Mapped[str] = mapped_column(String(64), index=True)
+    ats_family: Mapped[str] = mapped_column(String(64), default="")
+    page_fingerprint: Mapped[str] = mapped_column(String(64), default="")
+    field_label: Mapped[str] = mapped_column(String(256), default="")
+    field_type: Mapped[str] = mapped_column(String(32), default="")
+    reason_code: Mapped[str] = mapped_column(String(64), index=True)
+    expected_source: Mapped[str] = mapped_column(Text, default="")
+    actual_failure: Mapped[str] = mapped_column(Text, default="")
+    selector_metadata_json: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    retry_history_json: Mapped[list[dict[str, Any]]] = mapped_column(JSON, default=list)
+    suggested_reproduction: Mapped[str] = mapped_column(Text, default="")
+    # open | resolved
+    status: Mapped[str] = mapped_column(String(16), index=True, default="open")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
+
+
 __all__ = [
     "Base",
     "ApplicationJobRow",
@@ -501,4 +630,9 @@ __all__ = [
     "QueueImportRunRow",
     "PipelineRunRow",
     "OrchestrationRunRow",
+    "SupervisorRunRow",
+    "SupervisorApplicationStateRow",
+    "SupervisorEventRow",
+    "HumanHandoffRow",
+    "RepairTicketRow",
 ]

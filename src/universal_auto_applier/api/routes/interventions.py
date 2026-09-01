@@ -134,24 +134,29 @@ def resolve_intervention_endpoint(
 ) -> dict[str, Any]:
     """Resolve an intervention with a user decision.
 
-    If ``save_to_memory`` is True and an answer is provided, stores the
-    answer in answer memory for future reuse AND updates the job's
-    ``form_answers`` metadata so the deterministic mapper can reuse the
-    answer on pipeline retry.
+    Semantics (decoupled per the supervisor V0 Phase-0 correction):
+
+    - Accepting resolutions (``approved``/``edited``/``resolved``) ALWAYS
+      persist the supplied answer to this job's
+      ``metadata.form_answers`` so the deterministic mapper can reuse it
+      on retry. This is job-specific persistence and does not depend on
+      ``save_to_memory``.
+    - ``save_to_memory=True`` ADDITIONALLY stores a REUSABLE scalar answer
+      in global AnswerMemory. File bundles are NEVER stored in AnswerMemory
+      (global memory does not yet support structured/scoped document
+      bundles — storing only the first path would be lossy).
+    - Rejecting resolutions (``skipped``/``blocked``) never persist
+      supplied data — neither to ``form_answers`` nor to AnswerMemory.
 
     The field identity is obtained from the intervention's structured
     ``llm_metadata`` (``field_label``). The ``question`` display text is
     never parsed for structured data.
     """
-    from universal_auto_applier.interventions.answer_memory import store_answer
-    from universal_auto_applier.interventions.store import (
-        get_intervention,
-        resolve_intervention,
+    from universal_auto_applier.interventions.resolve_service import (
+        parse_structured_bundle,
+        resolve_with_persistence,
     )
-    from universal_auto_applier.persistence.job_repository import (
-        get_application_job,
-        upsert_application_job,
-    )
+    from universal_auto_applier.interventions.store import get_intervention
 
     app = request.app
     session_factory = app.state.session_factory
@@ -166,75 +171,12 @@ def resolve_intervention_endpoint(
     # Determine if this is a structured file bundle (for FILE fields)
     # The bundle can arrive via `file_bundle` (preferred typed) or as a
     # structured `answer` (dict with files/paths, or list). Scalar text
-    # answers remain `answer: str`.
-    structured_bundle: list[dict[str, str]] | None = None
-    # Prefer explicit file_bundle field
-    if body.file_bundle is not None:
-        structured_bundle = [{"path": f.path, "kind": f.kind} for f in body.file_bundle]
-    elif isinstance(body.answer, dict) and body.answer:
-        # Structured dict in answer (e.g. {"files": [...]}) — file bundle
-        # We detect this by checking for files/paths/path keys and treat
-        # non-file dicts as not bundle (fallback to scalar handling).
-        if any(k in body.answer for k in ("files", "paths", "path")):
-            # Reuse the same parsing as field_mapper for consistency
-            from universal_auto_applier.core.models import DocumentBundleEntry
-
-            # Try to parse as bundle via helper
-            tmp_bundle = None
-            try:
-                # Use the same logic as field_mapper._parse_file_bundle
-                # Inline minimal parsing to avoid import cycle
-                if "path" in body.answer and isinstance(body.answer["path"], str):
-                    p = str(body.answer["path"]).strip()
-                    if p:
-                        k = str(body.answer.get("kind", "unknown")).strip() or "unknown"
-                        tmp_bundle = [DocumentBundleEntry(path=p, kind=k)]
-                elif "files" in body.answer and isinstance(body.answer["files"], list):
-                    tmp = []
-                    for item in body.answer["files"]:
-                        if isinstance(item, dict) and "path" in item:
-                            p = str(item["path"]).strip()
-                            if p:
-                                k = str(item.get("kind", "unknown")).strip() or "unknown"
-                                tmp.append(DocumentBundleEntry(path=p, kind=k))
-                        elif isinstance(item, str) and item.strip():
-                            tmp.append(DocumentBundleEntry(path=item.strip(), kind="unknown"))
-                    tmp_bundle = tmp if tmp else None
-            except Exception:
-                tmp_bundle = None
-            if tmp_bundle is not None:
-                structured_bundle = [{"path": e.path, "kind": e.kind} for e in tmp_bundle]
-    elif isinstance(body.answer, list) and body.answer:
-        # List in answer — treat as bundle if it looks like file bundle
-        # (list of dicts with path, or list of strings)
-        is_bundle_like = all(
-            isinstance(item, dict) and "path" in item or isinstance(item, str)
-            for item in body.answer
-        )
-        if is_bundle_like:
-            bundle_entries: list[dict[str, str]] = []
-            for item in body.answer:
-                if isinstance(item, dict) and "path" in item:
-                    p = str(item["path"]).strip()
-                    if p:
-                        k = str(item.get("kind", "unknown")).strip() or "unknown"
-                        bundle_entries.append({"path": p, "kind": k})
-                elif isinstance(item, str) and item.strip():
-                    bundle_entries.append({"path": item.strip(), "kind": "unknown"})
-            if bundle_entries:
-                structured_bundle = bundle_entries
-
-    # For resolve_intervention audit, we need a string answer; for bundles we
-    # store the first path as audit string (the structured bundle is persisted
-    # in form_answers, not in the intervention's suggested_answer).
-    audit_answer: str | None = None
-    if structured_bundle is not None:
-        # Store first path as audit, but the canonical persistence is form_answers
-        audit_answer = structured_bundle[0]["path"] if structured_bundle else None
-    elif isinstance(body.answer, str):
-        audit_answer = body.answer
-    elif body.answer is not None:
-        audit_answer = str(body.answer)
+    # answers remain `answer: str`. The parsing lives in the shared
+    # resolve service so the supervisor tool layer behaves identically.
+    structured_bundle: list[dict[str, str]] | None = parse_structured_bundle(
+        body.answer,
+        None if body.file_bundle is None else [f.model_dump() for f in body.file_bundle],
+    )
 
     with session_factory() as session:
         # Check the intervention exists.
@@ -242,69 +184,18 @@ def resolve_intervention_endpoint(
         if existing is None:
             raise HTTPException(status_code=404, detail="Intervention not found")
 
-        resolve_intervention(
+        # Single shared implementation of the persistence semantics
+        # (per-job form_answers always on accepting resolutions;
+        # save_to_memory only adds a reusable scalar AnswerMemory entry;
+        # skipped/blocked never persist supplied data).
+        resolve_with_persistence(
             session,
-            intervention_id,
+            intervention=existing,
             resolution=resolution,
-            answer=audit_answer,
+            answer=body.answer,
+            structured_bundle=structured_bundle,
+            save_to_memory=body.save_to_memory,
         )
-
-        # Save to answer memory and form_answers if requested.
-        # For file bundles, form_answers must retain the structured bundle
-        # (not a stringified list) so the mapper can consume it.
-        has_bundle = structured_bundle is not None
-        has_scalar = isinstance(body.answer, str) and body.answer.strip()
-        # Also handle legacy scalar file single path via answer string — but that
-        # is already covered by has_scalar.
-        if body.save_to_memory and (has_bundle or has_scalar or body.file_bundle is not None):
-            # Use the structured field_label from llm_metadata as the question
-            # identity. This ensures the stored answer can be matched back to
-            # the form field without parsing display text.
-            field_label = None
-            if existing.llm_metadata:
-                field_label = existing.llm_metadata.get("field_label")
-
-            question_for_memory = field_label or existing.question
-            # Answer memory is for any answer; for bundles we store the first
-            # path as memory (text retrieval), but the mapper uses form_answers.
-            memory_answer = None
-            if has_bundle:
-                memory_answer = structured_bundle[0]["path"]  # type: ignore[index]
-            else:
-                memory_answer = (
-                    body.answer
-                    if isinstance(body.answer, str)
-                    else str(body.answer)
-                    if body.answer
-                    else None
-                )
-            if memory_answer:
-                store_answer(
-                    session,
-                    question=question_for_memory,
-                    answer=memory_answer,
-                    source="user_confirmed",
-                )
-
-            # Also update job.metadata.form_answers so the deterministic
-            # mapper can reuse the answer on pipeline retry.
-            job = get_application_job(session, existing.application_id)
-            if job is not None:
-                form_answers = dict(job.metadata.get("form_answers", {}) or {})
-                # Key by field_label so the deterministic mapper can match
-                # via _try_explicit_job_answer (which normalises field labels).
-                # Use field_label if available, otherwise fall back to question.
-                key = field_label if field_label else existing.question
-                if has_bundle:
-                    # Preserve structured bundle: {"files": [{path, kind}, ...]}
-                    # This is the canonical typed representation — never a JSON
-                    # string, never a delimiter-joined string.
-                    form_answers[key] = {"files": structured_bundle}
-                else:
-                    # Scalar text/select/radio/file-single answer
-                    form_answers[key] = body.answer
-                job.metadata["form_answers"] = form_answers
-                upsert_application_job(session, job)
 
         session.commit()
 

@@ -39,6 +39,11 @@ CLI_COMMANDS: frozenset[str] = frozenset(
         "wq8-review-packet",
         "wq8-authorize",
         "wq8-status",
+        "supervisor-run",
+        "supervisor-status",
+        "supervisor-handoffs",
+        "supervisor-tickets",
+        "supervisor-review-ready",
     }
 )
 
@@ -270,6 +275,64 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Read-only diagnostic: show WQ-8 authorization state for one application.",
     )
     st.add_argument("--application-id", required=True)
+
+    # Supervisor V0 — agent-assisted operator mode (review-only)
+    sup_run = subparsers.add_parser(
+        "supervisor-run",
+        help=(
+            "Run the agent-assisted supervisor (V0, review-only, concurrency=1). "
+            "Imports the JobHunter queue and drives review-only preparation through safe "
+            "typed tools. Never submits. Use --queue <path> to import before the run. "
+            "Use --review-only (default true) to keep the run review-only. "
+            "Optional --owner-policy <path> loads reusable owner policies (JSON)."
+        ),
+    )
+    sup_run.add_argument("--queue", type=Path, help="Optional queue file to import before the run.")
+    sup_run.add_argument(
+        "--review-only",
+        action="store_true",
+        default=True,
+        help="Keep the run review-only (default true; V0 never submits).",
+    )
+    sup_run.add_argument(
+        "--no-review-only",
+        dest="review_only",
+        action="store_false",
+        help="Disable review-only (V0 will refuse — run remains review-only).",
+    )
+    sup_run.add_argument("--owner-policy", type=Path, help="Optional owner policy JSON file.")
+    sup_run.add_argument(
+        "--application-id",
+        dest="application_ids",
+        action="append",
+        help="Limit the run to one or more application IDs (repeatable).",
+    )
+
+    sup_status = subparsers.add_parser(
+        "supervisor-status",
+        help="Show supervisor run status and per-application states.",
+    )
+    sup_status.add_argument("--run-id", help="Specific run ID to inspect (default: latest).")
+
+    sup_handoffs = subparsers.add_parser(
+        "supervisor-handoffs",
+        help="List human handoffs created by the supervisor.",
+    )
+    sup_handoffs.add_argument("--run-id", help="Filter by run ID.")
+    sup_handoffs.add_argument("--status", default=None, help="Filter by status (open, resolved).")
+
+    sup_tickets = subparsers.add_parser(
+        "supervisor-tickets",
+        help="List repair tickets created by the supervisor.",
+    )
+    sup_tickets.add_argument("--run-id", help="Filter by run ID.")
+    sup_tickets.add_argument("--status", default=None, help="Filter by status (open, resolved).")
+
+    sup_review = subparsers.add_parser(
+        "supervisor-review-ready",
+        help="List review-ready applications from the latest or a specific supervisor run.",
+    )
+    sup_review.add_argument("--run-id", help="Specific run ID (default: latest).")
 
     return parser
 
@@ -1206,6 +1269,210 @@ def _wq8_status(settings: Settings, args: argparse.Namespace) -> int:
         engine.dispose()
 
 
+def _supervisor_run(settings: Settings, args: argparse.Namespace) -> int:
+    """Run the agent-assisted supervisor (V0, review-only, concurrency=1)."""
+    from pathlib import Path as _Path
+
+    from universal_auto_applier.supervisor import PolicyEngine, SupervisorService, SupervisorTools
+    from universal_auto_applier.supervisor.models import SupervisorLimits
+    from universal_auto_applier.supervisor.planner import DeterministicPlanner
+    from universal_auto_applier.supervisor.policy import load_owner_policies
+
+    if not getattr(args, "review_only", True):
+        print(
+            "error: V0 supervisor is always review-only — --no-review-only is refused.",
+            file=sys.stderr,
+        )
+        return 2
+
+    queue_path: str | None = str(args.queue) if getattr(args, "queue", None) else None
+    if queue_path and not _Path(queue_path).exists():
+        print(f"error: queue file not found: {queue_path}", file=sys.stderr)
+        return 2
+
+    owner_policy_path = getattr(args, "owner_policy", None)
+    owner_policies = None
+    if owner_policy_path:
+        try:
+            owner_policies = load_owner_policies(_Path(owner_policy_path))
+        except Exception as exc:  # noqa: BLE001
+            print(f"error: failed to load owner policy file: {exc}", file=sys.stderr)
+            return 2
+
+    application_ids: list[str] | None = getattr(args, "application_ids", None)
+
+    engine, session_factory = _open_store(settings)
+    try:
+        policy_engine = PolicyEngine(owner_policies=owner_policies)
+        planner = DeterministicPlanner(policy_engine)
+        tools = SupervisorTools(settings=settings, session_factory=session_factory)
+        service = SupervisorService(
+            tools=tools,
+            policy_engine=policy_engine,
+            planner=planner,
+            session_factory=session_factory,
+            limits=SupervisorLimits(),
+        )
+        summary = service.run(queue_path=queue_path, application_ids=application_ids)
+        import json as _json
+
+        print(_json.dumps(summary.model_dump(), indent=2))
+        print(f"\nsupervisor run {summary.run_id} completed")
+        print(f"  imported: {summary.imported}  skipped_siemens: {summary.skipped_siemens}")
+        print(
+            f"  review_ready: {len(summary.review_ready)}  needs_human: {len(summary.needs_human)}"
+        )
+        print(f"  repair_needed: {len(summary.repair_needed)}  failed: {len(summary.failed)}")
+        return 0
+    finally:
+        engine.dispose()
+
+
+def _supervisor_status(settings: Settings, args: argparse.Namespace) -> int:
+    import json as _json
+
+    from universal_auto_applier.supervisor.store import (
+        get_supervisor_run,
+        list_supervisor_application_states,
+        list_supervisor_events,
+        list_supervisor_runs,
+    )
+
+    engine, session_factory = _open_store(settings)
+    try:
+        with session_scope(session_factory) as session:
+            run_id = getattr(args, "run_id", None)
+            if run_id:
+                row = get_supervisor_run(session, run_id)
+                if row is None:
+                    print(f"error: no supervisor run {run_id!r}", file=sys.stderr)
+                    return 2
+                runs = [row]
+            else:
+                runs = list_supervisor_runs(session, limit=5)
+                if not runs:
+                    print("No supervisor runs found.")
+                    return 0
+                if len(runs) > 1:
+                    print("Latest supervisor runs (use --run-id to inspect one):")
+                    for r in runs:
+                        print(
+                            f"  {r.run_id}  {r.status}  {r.started_at.isoformat()}  queue={r.queue_path!r}"
+                        )
+                    print()
+                runs = [runs[0]]
+            run = runs[0]
+            print(f"run_id: {run.run_id}")
+            print(f"status: {run.status}")
+            print(f"queue_path: {run.queue_path}")
+            print(f"review_only: {run.review_only}")
+            print(f"started_at: {run.started_at.isoformat()}")
+            if run.finished_at:
+                print(f"finished_at: {run.finished_at.isoformat()}")
+            if run.error_message:
+                print(f"error: {run.error_message}")
+            print(f"summary: {_json.dumps(run.summary_json, indent=2)}")
+            states = list_supervisor_application_states(session, run_id=run.run_id)
+            if states:
+                print(f"\napplication states ({len(states)}):")
+                for s in states:
+                    print(
+                        f"  {s.application_id[:12]}  {s.state:22}  reason={s.reason_code}  retry={s.retry_count}"
+                    )
+            events = list_supervisor_events(session, run_id=run.run_id, limit=50)
+            if events:
+                print(f"\nrecent events ({len(events)}):")
+                for e in events[-10:]:
+                    print(
+                        f"  {e.created_at.isoformat()}  {e.application_id[:12]}  {e.action}->{e.resulting_state}  {e.reason_code}"
+                    )
+        return 0
+    finally:
+        engine.dispose()
+
+
+def _supervisor_handoffs(settings: Settings, args: argparse.Namespace) -> int:
+    from universal_auto_applier.supervisor.store import list_human_handoffs
+
+    engine, session_factory = _open_store(settings)
+    try:
+        with session_scope(session_factory) as session:
+            rows = list_human_handoffs(
+                session, run_id=getattr(args, "run_id", None), status=getattr(args, "status", None)
+            )
+            if not rows:
+                print("No human handoffs found.")
+                return 0
+            for r in rows:
+                print(
+                    f"handoff_id: {r.handoff_id}  app={r.application_id[:12]}  reason={r.reason_code}  status={r.status}"
+                )
+                print(f"  company: {r.company}  role: {r.role}")
+                print(f"  question: {r.question}")
+                print(f"  action: {r.action_required}")
+        return 0
+    finally:
+        engine.dispose()
+
+
+def _supervisor_tickets(settings: Settings, args: argparse.Namespace) -> int:
+    from universal_auto_applier.supervisor.store import list_repair_tickets
+
+    engine, session_factory = _open_store(settings)
+    try:
+        with session_scope(session_factory) as session:
+            rows = list_repair_tickets(
+                session, run_id=getattr(args, "run_id", None), status=getattr(args, "status", None)
+            )
+            if not rows:
+                print("No repair tickets found.")
+                return 0
+            for r in rows:
+                print(
+                    f"ticket_id: {r.ticket_id}  app={r.application_id[:12]}  reason={r.reason_code}  status={r.status}"
+                )
+                print(f"  field: {r.field_label!r}  type={r.field_type}  ats={r.ats_family}")
+                print(f"  failure: {r.actual_failure}")
+        return 0
+    finally:
+        engine.dispose()
+
+
+def _supervisor_review_ready(settings: Settings, args: argparse.Namespace) -> int:
+    from universal_auto_applier.supervisor.store import (
+        get_supervisor_run,
+        list_supervisor_application_states,
+        list_supervisor_runs,
+    )
+
+    engine, session_factory = _open_store(settings)
+    try:
+        with session_scope(session_factory) as session:
+            run_id = getattr(args, "run_id", None)
+            if run_id:
+                run = get_supervisor_run(session, run_id)
+                if run is None:
+                    print(f"error: no supervisor run {run_id!r}", file=sys.stderr)
+                    return 2
+            else:
+                runs = list_supervisor_runs(session, limit=1)
+                if not runs:
+                    print("No supervisor runs found.")
+                    return 0
+                run = runs[0]
+            states = list_supervisor_application_states(session, run_id=run.run_id)
+            ready = [s for s in states if s.state == "review_ready"]
+            if not ready:
+                print(f"No review-ready applications for run {run.run_id}.")
+                return 0
+            print(f"Review-ready applications for run {run.run_id} ({len(ready)}):")
+            for s in ready:
+                print(f"  {s.application_id}  reason={s.reason_code}")
+        return 0
+    finally:
+        engine.dispose()
+
+
 def run_command(argv: list[str], settings: Settings) -> int:
     """Run a non-server CLI command and return its process exit code."""
     parser = _build_parser()
@@ -1230,6 +1497,16 @@ def run_command(argv: list[str], settings: Settings) -> int:
         return _wq8_authorize(settings, args)
     if args.command == "wq8-status":
         return _wq8_status(settings, args)
+    if args.command == "supervisor-run":
+        return _supervisor_run(settings, args)
+    if args.command == "supervisor-status":
+        return _supervisor_status(settings, args)
+    if args.command == "supervisor-handoffs":
+        return _supervisor_handoffs(settings, args)
+    if args.command == "supervisor-tickets":
+        return _supervisor_tickets(settings, args)
+    if args.command == "supervisor-review-ready":
+        return _supervisor_review_ready(settings, args)
     parser.error(f"unknown command: {args.command}")
     return 2
 
