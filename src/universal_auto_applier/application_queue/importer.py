@@ -65,6 +65,7 @@ class ImportResult:
     imported: int = 0
     skipped: int = 0
     errors: list[ImportRowError] = field(default_factory=list[ImportRowError])
+    imported_application_ids: list[str] = field(default_factory=list[str])
 
     @property
     def has_errors(self) -> bool:
@@ -239,6 +240,7 @@ def import_queue_file(
         with session_scope(session_factory) as session:
             upsert_application_job(session, job)
         result.imported += 1
+        result.imported_application_ids.append(job.application_id)
         logger.info(
             "[line %d] imported application_id=%s company=%s",
             line_number,

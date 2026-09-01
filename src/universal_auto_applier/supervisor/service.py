@@ -121,12 +121,21 @@ class SupervisorService:
         application_ids: list[str] | None,
     ) -> SupervisorRunSummary:
         summary = SupervisorRunSummary(run_id=run_id)
+        imported_ids: list[str] | None = None
         if queue_path:
             outcome = self._tools.import_queue(Path(queue_path))
             summary.imported = outcome.imported
+            imported_ids = list(outcome.imported_application_ids)
 
         if application_ids is not None:
             jobs = [self._tools.get_job(a) for a in application_ids]
+            jobs = [j for j in jobs if j is not None]
+        elif imported_ids is not None:
+            # Run-scope isolation: when a queue was imported for this run,
+            # only the applications (re-)imported from that queue file belong
+            # to this run. This prevents unrelated pre-existing DB rows
+            # (e.g. old WQ-8 jobs) from being accidentally prepared.
+            jobs = [self._tools.get_job(a) for a in imported_ids]
             jobs = [j for j in jobs if j is not None]
         else:
             all_apps = {a["application_id"]: a for a in self._tools.list_applications()}

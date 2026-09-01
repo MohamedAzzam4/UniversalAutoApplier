@@ -1,4 +1,3 @@
-# pyright: reportUnknownMemberType=false, reportUnknownArgumentType=false, reportUnknownVariableType=false
 """Shared intervention-resolution service.
 
 Single home for the resolution persistence semantics (supervisor V0
@@ -21,7 +20,7 @@ Semantics (decoupled):
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, cast
 
 from universal_auto_applier.core.models import DocumentBundleEntry, Intervention
 from universal_auto_applier.core.statuses import InterventionStatus
@@ -50,36 +49,61 @@ def parse_structured_bundle(
         return [{"path": f["path"], "kind": f.get("kind", "unknown")} for f in file_bundle]
 
     if isinstance(answer, dict) and answer:
-        if not any(k in answer for k in ("files", "paths", "path")):
+        data = cast(dict[str, Any], answer)
+        if not any(k in data for k in ("files", "paths", "path")):
             return None
         entries: list[DocumentBundleEntry] = []
-        if isinstance(answer.get("path"), str) and answer["path"].strip():
-            p = str(answer["path"]).strip()
-            k = str(answer.get("kind", "unknown")).strip() or "unknown"
+        path_val = data.get("path")
+        if isinstance(path_val, str) and path_val.strip():
+            p = str(path_val).strip()
+            kind_raw = data.get("kind")
+            k = (
+                str(kind_raw).strip()
+                if isinstance(kind_raw, str) and str(kind_raw).strip()
+                else "unknown"
+            )
             entries.append(DocumentBundleEntry(path=p, kind=k))
-        elif isinstance(answer.get("files"), list):
-            for item in answer["files"]:
-                if isinstance(item, dict) and "path" in item:
-                    p = str(item["path"]).strip()
+        elif isinstance(data.get("files"), list):
+            files_val = cast(list[Any], data["files"])
+            for item in files_val:
+                if isinstance(item, dict) and "path" in cast(dict[str, Any], item):
+                    d = cast(dict[str, Any], item)
+                    p_raw = d["path"]
+                    p = str(p_raw).strip() if isinstance(p_raw, str) else ""
                     if p:
-                        k = str(item.get("kind", "unknown")).strip() or "unknown"
+                        k_raw = d.get("kind")
+                        k = (
+                            str(k_raw).strip()
+                            if isinstance(k_raw, str) and str(k_raw).strip()
+                            else "unknown"
+                        )
                         entries.append(DocumentBundleEntry(path=p, kind=k))
                 elif isinstance(item, str) and item.strip():
                     entries.append(DocumentBundleEntry(path=item.strip(), kind="unknown"))
         return [{"path": e.path, "kind": e.kind} for e in entries] if entries else None
 
     if isinstance(answer, list) and answer:
+        lst = cast(list[Any], answer)
         bundle_like = all(
-            (isinstance(item, dict) and "path" in item) or isinstance(item, str) for item in answer
+            (isinstance(item, dict) and "path" in cast(dict[str, Any], item))
+            or isinstance(item, str)
+            for item in lst
         )
         if not bundle_like:
             return None
         result: list[dict[str, str]] = []
-        for item in answer:
-            if isinstance(item, dict) and "path" in item:
-                p = str(item["path"]).strip()
+        for item in lst:
+            if isinstance(item, dict) and "path" in cast(dict[str, Any], item):
+                d = cast(dict[str, Any], item)
+                p_raw = d["path"]
+                p = str(p_raw).strip() if isinstance(p_raw, str) else ""
                 if p:
-                    k = str(item.get("kind", "unknown")).strip() or "unknown"
+                    k_raw = d.get("kind")
+                    k = (
+                        str(k_raw).strip()
+                        if isinstance(k_raw, str) and str(k_raw).strip()
+                        else "unknown"
+                    )
                     result.append({"path": p, "kind": k})
             elif isinstance(item, str) and item.strip():
                 result.append({"path": item.strip(), "kind": "unknown"})

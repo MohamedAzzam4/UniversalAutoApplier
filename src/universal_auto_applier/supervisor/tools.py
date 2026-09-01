@@ -66,6 +66,7 @@ class ImportOutcome:
     imported: int = 0
     skipped: int = 0
     errors: list[dict[str, Any]] = field(default_factory=list[dict[str, Any]])
+    imported_application_ids: list[str] = field(default_factory=list[str])
 
 
 class ApplicationNotFoundError(LookupError):
@@ -100,7 +101,8 @@ class SupervisorTools:
     def import_queue(self, path: Path) -> ImportOutcome:
         """Import a JobHunter application_queue.jsonl through the existing
         importer. Returns structured counts; raw lines are never surfaced
-        (they may carry candidate PII)."""
+        (they may carry candidate PII). Also returns the exact application_ids
+        that were (re-)imported in this call for run-scope isolation."""
         from universal_auto_applier.application_queue.importer import import_queue_file
 
         result = import_queue_file(path, self._session_factory)
@@ -109,6 +111,7 @@ class SupervisorTools:
             imported=result.imported,
             skipped=result.skipped,
             errors=[{"line_number": e.line_number, "error": e.error} for e in result.errors],
+            imported_application_ids=list(result.imported_application_ids),
         )
 
     # ------------------------------------------------------------------

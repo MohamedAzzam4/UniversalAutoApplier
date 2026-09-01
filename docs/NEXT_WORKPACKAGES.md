@@ -318,6 +318,26 @@ pagination on history, filter persistence, hiding submit controls for
 
 **Dependency.** All WQ-1..WQ-9; must not change safety behavior.
 
+## SUPERVISOR V0 — Real Review-Only Pilot (NEXT)
+
+**Branch:** `feature/agent-supervisor-mode-v0` (implemented, not yet merged; `docs/agent_supervisor/AGENT_SUPERVISOR_V0.md`).
+
+**Objective.** Run a small real review-only pilot using a dedicated pilot data directory (e.g. `UAA_DATA_DIR=/tmp/uaa_pilot_data` or `UAA_DATA_DIR=D:\uaa_pilot_uaa_data`) so the pilot never touches the WQ-8 DB (`.uaa_data`). Recommended invocation:
+
+```text
+UAA_DATA_DIR=/tmp/uaa_pilot_data python -m universal_auto_applier supervisor-run --queue <path> --review-only
+UAA_DATA_DIR=/tmp/uaa_pilot_data python -m universal_auto_applier supervisor-status
+UAA_DATA_DIR=/tmp/uaa_pilot_data python -m universal_auto_applier supervisor-handoffs
+UAA_DATA_DIR=/tmp/uaa_pilot_data python -m universal_auto_applier supervisor-review-ready
+```
+
+No real ATS traffic beyond the review-only prepare path; no submission, no authorization, no WQ-8 budget consumed. Concurrency remains 1.
+
+**After pilot:**
+- policy refinement from pilot findings (owner policy allowlist, high-risk keyword expansion);
+- optional repair-agent integration (consume `RepairTicket` rows);
+- controlled-submit integration only after separate explicit owner approval (not in this workpackage).
+
 ## How to start one
 
 1. Read `docs/handoffs/ACTIVE_WORKPACKAGE.md` and `docs/CURRENT_STATE.md`.

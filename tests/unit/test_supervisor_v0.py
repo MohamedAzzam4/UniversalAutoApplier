@@ -27,6 +27,7 @@ from universal_auto_applier.submission.models import (
 )
 from universal_auto_applier.supervisor import PolicyEngine, SupervisorLimits, SupervisorTools
 from universal_auto_applier.supervisor.models import (
+    AnswerSource,
     OwnerPolicy,
     ReasonCode,
     SupervisorAction,
@@ -945,3 +946,275 @@ def test_o_aggregated_handoff_run_summary(tmp_path: Path) -> None:
             assert runs[0].summary_json["review_ready"] == [job1.application_id]
     finally:
         engine.dispose()
+
+
+# ---------------------------------------------------------------------------
+# P. run scope isolation — OLD_EXISTING_APPLICATION never touched
+# ---------------------------------------------------------------------------
+
+
+def test_p_run_scope_isolation_old_app_not_processed(tmp_path: Path) -> None:
+    """HARD BLOCKER 1: supervisor-run --queue must isolate to imported batch.
+
+    Pre-populate OLD_EXISTING_APPLICATION, then import NEW A/B via queue.
+    Only A/B may be prepared; OLD must be untouched.
+    """
+    import json as _json
+
+    factory, engine = _session_factory(tmp_path)
+    try:
+        settings = _settings(tmp_path)
+        old_job = _make_job(external_job_id="old-existing", url="https://example.com/jobs/old")
+        _insert_job(factory, old_job)
+
+        # Record old state counts before run
+        with session_scope(factory) as s:
+            from universal_auto_applier.supervisor.store import list_supervisor_application_states
+
+            assert len(list_supervisor_application_states(s)) == 0
+
+        # Build queue file with NEW A and B
+        job_a = _make_job(external_job_id="new-a", url="https://example.com/jobs/a")
+        job_b = _make_job(external_job_id="new-b", url="https://example.com/jobs/b")
+        queue_path = tmp_path / "queue.jsonl"
+        with queue_path.open("w", encoding="utf-8") as fh:
+            for j in (job_a, job_b):
+                fh.write(_json.dumps(j.model_dump(mode="json")) + "\n")
+
+        # Track which application_ids are prepared
+        prepared: list[str] = []
+
+        def prepare(app_id: str) -> PrepareOutcome:
+            prepared.append(app_id)
+            snap = _snapshot(app_id, url=f"https://example.com/jobs/{app_id[:4]}")
+            # Need to persist snapshot for intervention sync, but isolation test
+            # uses review_ready path so snapshot is simple
+            _persist_snapshot(factory, snap)
+            return PrepareOutcome(application_id=app_id, snapshot=snap)
+
+        tools = SupervisorTools(settings=settings, session_factory=factory, prepare_fn=prepare)
+        pe = PolicyEngine()
+        service = SupervisorService(
+            tools=tools, policy_engine=pe, planner=DeterministicPlanner(pe), session_factory=factory
+        )
+        summary = service.run(queue_path=str(queue_path))
+
+        # Only A and B prepared, never OLD
+        assert old_job.application_id not in prepared
+        assert job_a.application_id in prepared
+        assert job_b.application_id in prepared
+        assert len(prepared) == 2
+        assert summary.imported == 2
+        assert job_a.application_id in summary.review_ready
+        assert job_b.application_id in summary.review_ready
+
+        # OLD application has no supervisor state / events
+        with session_scope(factory) as s:
+            from universal_auto_applier.supervisor.store import (
+                get_supervisor_application_state,
+                list_supervisor_events,
+            )
+
+            assert get_supervisor_application_state(s, old_job.application_id) is None
+            old_events = list_supervisor_events(s, application_id=old_job.application_id)
+            assert len(old_events) == 0
+            # Job status of OLD unchanged
+            from universal_auto_applier.persistence.job_repository import get_application_job
+
+            old_reloaded = get_application_job(s, old_job.application_id)
+            assert old_reloaded is not None
+            assert old_reloaded.status == old_job.status
+    finally:
+        engine.dispose()
+
+
+# ---------------------------------------------------------------------------
+# Q. Siemens mixed queue — truthful counts, prepare never called for Siemens
+# ---------------------------------------------------------------------------
+
+
+def test_q_siemens_mixed_queue_truthful_counts(tmp_path: Path) -> None:
+    import json as _json
+
+    factory, engine = _session_factory(tmp_path)
+    try:
+        settings = _settings(tmp_path)
+        job_a = _make_job(external_job_id="mix-a", url="https://example.com/jobs/mix-a")
+        job_b = _make_job(
+            external_job_id="mix-b",
+            url="https://jobs.siemens.com/careers/mix-b",
+            platform=Platform.SIEMENS,
+            company="Siemens",
+        )
+        job_c = _make_job(external_job_id="mix-c", url="https://example.com/jobs/mix-c")
+        queue_path = tmp_path / "queue_mix.jsonl"
+        with queue_path.open("w", encoding="utf-8") as fh:
+            for j in (job_a, job_b, job_c):
+                fh.write(_json.dumps(j.model_dump(mode="json")) + "\n")
+
+        prepared: list[str] = []
+
+        def prepare(app_id: str) -> PrepareOutcome:
+            prepared.append(app_id)
+            snap = _snapshot(app_id)
+            _persist_snapshot(factory, snap)
+            return PrepareOutcome(application_id=app_id, snapshot=snap)
+
+        tools = SupervisorTools(settings=settings, session_factory=factory, prepare_fn=prepare)
+        pe = PolicyEngine()
+        service = SupervisorService(
+            tools=tools, policy_engine=pe, planner=DeterministicPlanner(pe), session_factory=factory
+        )
+        summary = service.run(queue_path=str(queue_path))
+
+        # Siemens B never prepared
+        assert job_b.application_id not in prepared
+        assert job_a.application_id in prepared
+        assert job_c.application_id in prepared
+        assert len(prepared) == 2
+
+        # Truthful counts
+        assert summary.imported == 3
+        assert summary.skipped_siemens == 1
+        assert job_a.application_id in summary.review_ready
+        assert job_c.application_id in summary.review_ready
+        assert any(s["application_id"] == job_b.application_id for s in summary.skipped)
+
+        # No review_ready for Siemens, no intervention/state besides skipped
+        with session_scope(factory) as s:
+            from universal_auto_applier.supervisor.store import get_supervisor_application_state
+
+            st_b = get_supervisor_application_state(s, job_b.application_id)
+            assert st_b is not None
+            assert st_b.state == SupervisorState.SKIPPED
+            assert st_b.reason_code == ReasonCode.DEDICATED_SIEMENS_WORKFLOW
+    finally:
+        engine.dispose()
+
+
+# ---------------------------------------------------------------------------
+# R. policy audit — model cannot fabricate personal facts
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "label",
+    [
+        "Home address",
+        "Language level English",
+        "Salary expectation",
+        "Disability status",
+        "Legal declaration convicted",
+        "Work authorization visa sponsorship",
+        "Date of birth",
+        "Phone number",
+    ],
+)
+def test_r_model_cannot_fabricate_personal_facts(label: str) -> None:
+    from universal_auto_applier.supervisor.models import InterventionView
+
+    pe = PolicyEngine()
+    view = InterventionView(
+        intervention_id="x", kind="field_answer", question=label, field_label=label
+    )
+    cls = pe.classify_intervention(view)
+    # All these must be Class B (human required), never auto-resolvable
+    assert cls.decision_class == "B", f"{label!r} must be human-required, got {cls.decision_class}"
+    assert not cls.auto_resolvable
+
+    # Even if planner tries MODEL_INFERENCE, policy vetoes
+    decision = SupervisorDecision(
+        action=SupervisorAction.RESOLVE_INTERVENTION,
+        application_id="a" * 64,
+        intervention_id="x",
+        reason_code=ReasonCode.UNKNOWN_REQUIRED_FIELD,
+        answer="fabricated",
+        answer_source=AnswerSource.MODEL_INFERENCE,
+    )
+    assert not pe.validate_decision(decision, view)
+
+
+# ---------------------------------------------------------------------------
+# S. CLI review-only boundary — service never submits regardless of flag
+# ---------------------------------------------------------------------------
+
+
+def test_s_cli_review_only_enforced_no_submission_path(tmp_path: Path) -> None:
+    """Even if CLI --no-review-only were somehow passed, service never submits."""
+    factory, engine = _session_factory(tmp_path)
+    try:
+        settings = _settings(tmp_path)
+        job = _make_job(external_job_id="s-review")
+        _insert_job(factory, job)
+
+        def prepare(app_id: str) -> PrepareOutcome:
+            snap = _snapshot(app_id)
+            _persist_snapshot(factory, snap)
+            return PrepareOutcome(application_id=app_id, snapshot=snap)
+
+        tools = SupervisorTools(settings=settings, session_factory=factory, prepare_fn=prepare)
+        # Verify no submit tool exists
+        assert not hasattr(tools, "submit")
+        assert not hasattr(SupervisorTools, "submit_application")
+
+        pe = PolicyEngine()
+        service = SupervisorService(
+            tools=tools, policy_engine=pe, planner=DeterministicPlanner(pe), session_factory=factory
+        )
+        summary = service.run()
+        assert summary.submission_attempts == 0
+        assert job.application_id in summary.review_ready
+        # SupervisorState has no SUBMITTED
+        assert "submitted" not in [s.value for s in SupervisorState]
+        assert SupervisorAction.RESOLVE_INTERVENTION.value != "submit"
+    finally:
+        engine.dispose()
+
+
+# ---------------------------------------------------------------------------
+# T. fail-closed — no dynamic getattr dispatch from model output
+# ---------------------------------------------------------------------------
+
+
+def test_t_no_dynamic_dispatch_from_model_output() -> None:
+    import pathlib as _pl
+    import re
+
+    src_service = (
+        _pl.Path(__file__).parents[2]
+        / "src"
+        / "universal_auto_applier"
+        / "supervisor"
+        / "service.py"
+    ).read_text(encoding="utf-8")
+    # Must not contain dynamic getattr on tool registry with model-generated string
+    assert "getattr(self._tools" not in src_service
+    assert "getattr(tools" not in src_service
+    code_only = re.sub(r'""".*?"""', "", src_service, flags=re.DOTALL)
+    assert (
+        "getattr" not in code_only or "getattr(decision" in code_only
+    )  # only allowed for decision.policy_id
+
+    # Planner uses validated enum, not raw string dispatch
+    src_planner = (
+        _pl.Path(__file__).parents[2]
+        / "src"
+        / "universal_auto_applier"
+        / "supervisor"
+        / "planner.py"
+    ).read_text(encoding="utf-8")
+    assert "SupervisorAction" in src_planner
+    # Model output tool-like payloads fail closed
+    from universal_auto_applier.supervisor.planner import OpenAICompatiblePlanner
+
+    pe = PolicyEngine()
+    planner = OpenAICompatiblePlanner(pe)
+    for raw in [
+        '{"tool":"click","selector":"#submit"}',
+        '{"action":"click","selector":"#x"}',
+        '{"action":"unknown_action_xyz"}',
+        '{"action":"submit","reason_code":"review_ready"}',
+    ]:
+        d = planner.parse_decision(raw, "a" * 64)
+        assert d.action == SupervisorAction.REQUEST_HUMAN
+        assert d.reason_code == ReasonCode.UNKNOWN_FAILURE
