@@ -30,6 +30,7 @@ from typing import Any, cast
 from universal_auto_applier.core.models import (
     ApplicationJob,
     CandidateProfile,
+    DocumentBundleEntry,
     FieldMapping,
     FieldOption,
     FormField,
@@ -124,6 +125,80 @@ def _question_text(field: FormField) -> str:
     return " ".join(parts)
 
 
+def _parse_file_bundle(raw_answer: Any) -> list[DocumentBundleEntry] | None:
+    """Parse a structured file-bundle answer.
+
+    Accepted structured forms (all JSON-serializable, never a stringified
+    list):
+    - ``{"files": [{"path": "...", "kind": "cv"}, ...]}``
+    - ``{"paths": ["...", "..."]}`` (kinds default to unknown)
+    - ``[{"path": "...", "kind": "cv"}, ...]`` (list of dicts)
+    - ``["...", "..."]`` (list of path strings, kinds unknown)
+    - ``{"path": "...", "kind": "cv"}`` (single dict, treated as one-file bundle)
+
+    Returns a list of bundle entries or None if the value is not a
+    structured bundle (caller should treat it as scalar).
+    Scalar string answers are NOT parsed here — they remain single-file.
+    """
+    # Single path string is scalar, not bundle
+    if isinstance(raw_answer, str):
+        return None
+    # Dict forms
+    if isinstance(raw_answer, dict):
+        raw_dict = cast(dict[str, Any], raw_answer)
+        # Already a single file dict?
+        if "path" in raw_dict and isinstance(raw_dict["path"], str):
+            path = str(raw_dict["path"]).strip()
+            if not path:
+                return None
+            kind = str(raw_dict.get("kind", "unknown")).strip() or "unknown"
+            return [DocumentBundleEntry(path=path, kind=kind)]
+        # Bundle dict with files/paths key
+        files_raw: list[Any] | None = None
+        if "files" in raw_dict and isinstance(raw_dict["files"], list):
+            files_raw = cast(list[Any], raw_dict["files"])
+        elif "paths" in raw_dict and isinstance(raw_dict["paths"], list):
+            files_raw = cast(list[Any], raw_dict["paths"])
+        else:
+            return None
+        entries: list[DocumentBundleEntry] = []
+        for item in files_raw:
+            if isinstance(item, dict) and "path" in cast(dict[str, Any], item):
+                item_dict = cast(dict[str, Any], item)
+                p = str(item_dict["path"]).strip()
+                if not p:
+                    continue
+                k = str(item_dict.get("kind", "unknown")).strip() or "unknown"
+                entries.append(DocumentBundleEntry(path=p, kind=k))
+            elif isinstance(item, str):
+                p = item.strip()
+                if p:
+                    entries.append(DocumentBundleEntry(path=p, kind="unknown"))
+        return entries if entries else None
+    # List forms
+    if isinstance(raw_answer, list):
+        raw_list = cast(list[Any], raw_answer)
+        if not raw_list:
+            return None
+        entries = []
+        for item in raw_list:
+            if isinstance(item, dict) and "path" in cast(dict[str, Any], item):
+                item_dict = cast(dict[str, Any], item)
+                p = str(item_dict["path"]).strip()
+                if not p:
+                    continue
+                k = str(item_dict.get("kind", "unknown")).strip() or "unknown"
+                entries.append(DocumentBundleEntry(path=p, kind=k))
+            elif isinstance(item, str):
+                p = item.strip()
+                if p:
+                    entries.append(DocumentBundleEntry(path=p, kind="unknown"))
+            else:
+                return None  # malformed bundle element
+        return entries if entries else None
+    return None
+
+
 def _try_explicit_job_answer(field: FormField, job: ApplicationJob) -> FieldMapping | None:
     """Use explicit per-job answers transported in metadata.
 
@@ -166,6 +241,31 @@ def _try_explicit_job_answer(field: FormField, job: ApplicationJob) -> FieldMapp
                     continue
             elif not exact and not contained:
                 continue
+            # FILE fields: check for structured document bundle first
+            if field.type == "file":
+                bundle = _parse_file_bundle(raw_answer)
+                if bundle is not None:
+                    # Bundle: preserve ordered list, kinds intact, no stringification
+                    # ``value`` is first path for backwards compat; ``document_bundle`` holds full bundle
+                    first_path = bundle[0].path if bundle else ""
+                    return FieldMapping(
+                        field_selector=field.selector,
+                        value=first_path,
+                        source="application_job",
+                        confidence=0.99,
+                        requires_user_confirmation=False,
+                        explanation=f"Matched explicit file bundle from metadata.{metadata_key} ({len(bundle)} files)",
+                        document_bundle=bundle,
+                    )
+                # Non-file or file scalar: fall through to scalar handling
+                # For file scalar, raw_answer must be a string path; non-string bundles already handled
+                if not isinstance(raw_answer, str):
+                    # Structured non-bundle for non-file field is malformed — fail closed
+                    continue
+            else:
+                # Non-file fields must remain scalar strings — structured bundle is not allowed
+                if not isinstance(raw_answer, str):
+                    continue
             answer = str(raw_answer).strip()
             if not answer:
                 continue

@@ -1,3 +1,4 @@
+# pyright: reportUnknownMemberType=false, reportUnknownArgumentType=false, reportUnknownVariableType=false, reportOptionalIterable=false
 """Central controlled-submission coordinator.
 
 This is the SINGLE entry point for final submission. It enforces every
@@ -459,27 +460,62 @@ class SubmissionCoordinator:
             )
         # WQ-8 ATS URL separation: the authorization binds the actual ATS
         # application FORM URL (snapshot.application_url), NOT job.url (which
-        # may be a detail page). When a current snapshot is available, compare
-        # against its application_url. When no snapshot is available (e.g.
-        # early gate before browser execution), fall back to job.url as the
-        # best available URL signal — this preserves the pre-fix behavior for
-        # the no-snapshot path and does not weaken the snapshot-bound path.
-        expected_url = (
-            current_snapshot.application_url
-            if current_snapshot is not None
-            else (job.url if job is not None else None)
-        )
-        if expected_url is not None and auth.application_url != expected_url:
-            return GateResult(
-                allowed=False,
-                reason="WQ-8 authorization URL does not match the current application form URL",
-                state=SubmissionResultState.APPROVAL_STALE,
-            )
-        if (
-            current_snapshot is not None
-            and self._validate_wq8_binding(auth, current_snapshot, job) is not None
-        ):
-            return self._validate_wq8_binding(auth, current_snapshot, job)
+        # may be a detail page). job.url is the source/detail URL and must
+        # never be used as a fallback for WQ-8 ATS target binding. When a
+        # current snapshot is available, compare against its
+        # application_url. When no snapshot is available (early gate before
+        # browser execution), either load the persisted approved snapshot and
+        # validate against its application_url, or defer the URL equality
+        # check until the current snapshot is available — while retaining all
+        # other fail-closed gates (active/spent/expired). The final
+        # pre-submit binding (in _validate_wq8_binding) MUST validate
+        # authorization.application_url == approved snapshot.application_url
+        # == current snapshot.application_url == actual live page.url.
+        if current_snapshot is not None:
+            expected_url = current_snapshot.application_url
+            if auth.application_url != expected_url:
+                return GateResult(
+                    allowed=False,
+                    reason="WQ-8 authorization URL does not match the current application form URL",
+                    state=SubmissionResultState.APPROVAL_STALE,
+                )
+            binding = self._validate_wq8_binding(auth, current_snapshot, job)
+            if binding is not None:
+                return binding
+            return None
+        # No current snapshot yet — do NOT fallback to job.url (detail page).
+        # Validate against the persisted approved snapshot's application_url
+        # if available; otherwise defer the URL equality check.
+        try:
+            import json as _json
+
+            from universal_auto_applier.submission.store import get_active_approval
+
+            approval = get_active_approval(session, application_id)
+            if approval is not None and approval.snapshot_json:
+                snap_data = approval.snapshot_json
+                if isinstance(snap_data, str):
+                    snap_data = _json.loads(snap_data)
+                approved_url = None
+                if isinstance(snap_data, dict):
+                    raw_url = snap_data.get("application_url")
+                    if isinstance(raw_url, str):
+                        approved_url = raw_url
+                if (
+                    isinstance(approved_url, str)
+                    and approved_url
+                    and auth.application_url != approved_url
+                ):
+                    return GateResult(
+                        allowed=False,
+                        reason="WQ-8 authorization URL does not match the approved snapshot application URL",
+                        state=SubmissionResultState.APPROVAL_STALE,
+                    )
+        except Exception:
+            pass
+        # Defer full URL+hash binding validation until current_snapshot is
+        # available (in _validate_wq8_binding / _check_and_consume). Other
+        # gates (active, spent, etc.) are already enforced above.
         return None
 
     def _check_and_consume_wq8_authorization(

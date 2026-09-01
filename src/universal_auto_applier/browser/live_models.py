@@ -60,7 +60,7 @@ class LiveUploadRecord(BaseModel):
 
     page_url: str
     selector: str
-    document_kind: Literal["cv", "cover_letter", "attachment", "unknown"]
+    document_kind: Literal["cv", "cover_letter", "transcript", "attachment", "unknown"]
     path: str
     status: Literal["uploaded", "missing", "failed"]
     message: str = ""

@@ -543,6 +543,28 @@ class FormField(BaseModel):
         return v
 
 
+class DocumentBundleEntry(BaseModel):
+    """One file in an owner-selected document bundle for a FILE field.
+
+    Used for the generic application-document field (e.g.
+    ``Vollständige Bewerbungsunterlagen``) where the owner selects an
+    ordered bundle of documents (CV + transcript). Preserves the document
+    kind with each path so the final snapshot can distinguish ``cv`` from
+    ``transcript``/``unknown``.
+
+    The bundle is stored as a structured value in
+    ``ApplicationJob.metadata["form_answers"]`` and flows through
+    ``FieldMapping`` → ``FillResult`` → live executor → snapshot.
+    It is never stringified into a Python/JSON-looking string.
+    """
+
+    path: str = Field(..., description="Absolute path to the document file.")
+    kind: str = Field(
+        default="unknown",
+        description="Document kind: cv, transcript, cover_letter, attachment, unknown",
+    )
+
+
 class FieldMapping(BaseModel):
     """The result of mapping a form field to candidate/job data.
 
@@ -555,6 +577,12 @@ class FieldMapping(BaseModel):
     confidence: float = Field(default=0.0, ge=0.0, le=1.0)
     requires_user_confirmation: bool = False
     explanation: str = Field(default="")
+    # For FILE fields with an owner-selected document bundle (e.g. CV +
+    # transcript for Vollständige Bewerbungsunterlagen), the structured
+    # bundle is carried here. ``value`` remains the first path for
+    # backwards compatibility; ``document_bundle`` holds the complete
+    # ordered bundle. Text/select/radio fields never use this.
+    document_bundle: list[DocumentBundleEntry] | None = Field(default=None)
 
     @field_validator("source")
     @classmethod
@@ -608,6 +636,8 @@ class FillResult(BaseModel):
     explanation: str = Field(default="")
     confidence: float = Field(default=0.0, ge=0.0, le=1.0)
     label: str = Field(default="", description="The field label for intervention identification.")
+    # Structured document bundle for FILE fields (see FieldMapping).
+    document_bundle: list[DocumentBundleEntry] | None = Field(default=None)
 
 
 class FormFillSummary(BaseModel):
@@ -652,6 +682,7 @@ __all__ = [
     "FIELD_MAPPING_SOURCES",
     "FieldOption",
     "FormField",
+    "DocumentBundleEntry",
     "FieldMapping",
     "CandidateProfile",
     "FillResult",

@@ -1,13 +1,14 @@
-# WQ-8 Final Review Packet — msg Job 411 (Data & AI / Banking) — REAL ATS RE-OBSERVATION AFTER ATS-URL FIX
+# WQ-8 Final Review Packet — msg Job 411 (Data & AI / Banking) — REVIEWER CORRECTION: DOCUMENT BUNDLE + NAVIGATION SAFETY
 
 **Application ID:** `fd9a41480fc60a33486a1e338422e8a040e9069f802d1afa92d5849300679b0e`
 **Target:** msg for banking ag — Werkstudent Data & AI / Banking (all genders)
 **ATS:** jobs.msg.group (d.vinci HR-Systems) — anonymous, no login, no CAPTCHA
-**Phase:** A REAL RE-OBSERVATION — PASS (frozen review_plan ready for owner approval, NOT authorized, NOT submitted)
+**Phase:** A — REVIEWER-REJECTED / NON-AUTHORIZABLE (frozen review_plan ready but lacks required CV; NOT authorized, NOT submitted)
 **Branch:** `checkpoint/wq-8-controlled-real-submission`
 **Source HEAD used (2026-09-01):** `c97ad7fdc149a884b6ea2ae18d9d428e9aba070f`
   - ancestry includes `f7430fc59bc876a740cb3f4894077ccce7929da8` (ATS target/source URL separation) ✅
   - plus `c97ad7f` fix for msg intro selection page (`detail->intro->form`)
+**Current snapshot (2026-09-01 01:37Z):** `fea6a10e612ca88af0f63ce5bab11985` / `afec3f7225adb1b716ef832ef55c0bb5` — **REVIEWER-REJECTED: transcript-only, no CV** (see §1 new)
 **Previous verified HEAD:** `f7430fc59bc876a740cb3f4894077ccce7929da8`
 
 ```text
@@ -60,7 +61,7 @@ Started via repository-supported path `python -m universal_auto_applier` (create
 
 ---
 
-## 3. Official real observation (Step 4) — EXACTLY ONE
+## 3. Official real observation (Step 4) — TWO Phase-A observations, ZERO submissions
 
 Used official production path (no custom script bypassing service):
 
@@ -68,15 +69,17 @@ Used official production path (no custom script bypassing service):
 POST /api/submit/fd9a41480fc60a33486a1e338422e8a040e9069f802d1afa92d5849300679b0e/observe
 ```
 
+TWO Phase-A observation attempts, ZERO submission attempts. Both observations were non-submit and do NOT consume the one real-submission budget.
+
 Expected navigation (now proven):
 
 - `job.url` = detail page `https://jobs.msg.group/de/jobs/411/werkstudent-data-ai-banking-all-genders`
 - → safe **Apply** click `Jetzt bewerben!` (`/de/jobs/411/apply`)
 - → intermediate selection page `https://jobs.msg.group/de/jobs/411/intro` (not a form; contains `Bewerbungsformular ausfüllen` link)
-- → safe **Apply** click `Bewerbungsformular ausfüllen` (`/de/jobs/411/form`) — classifier now recognises `bewerbungsformular` as safe_apply; is_application_form now requires `visible_controls>=2` when `file_inputs>0` so intro not misclassified
+- → safe **Apply** click `Bewerbungsformular ausfüllen` (`/de/jobs/411/form`) — classifier now recognises exact `Bewerbungsformular ausfüllen` as safe_apply (bare `ausfüllen` removed); is_application_form now requires `visible_controls>=2` when `file_inputs>0` so intro not misclassified
 - → actual application **FORM** page `https://jobs.msg.group/de/jobs/411/form`
 
-Observer:
+Observer (both attempts):
 
 - installed interlock **BEFORE** initial `page.goto` ✅
 - never authorized the interlock
@@ -84,15 +87,18 @@ Observer:
 - stopped on CAPTCHA/login/security blockers (none present) and on no safe path (not triggered)
 - **did NOT manually navigate browser to /form** — production code discovered form safely
 
-Result: `HTTP 200` in 45.9s ✅
+Result: `HTTP 200` in 45.9s for the second (successful) observation ✅
 
-*Note:* First observation attempt at `01:32Z` landed on `/intro` due to the two site-specific defects above and produced an incomplete snapshot (`b3a7ee69…` fields=1 docs=0 submit=null) — correctly rejected per Step 5 gates. After the `c97ad7f` fix, the second observation at `01:37Z` reached the real form. The incomplete `b3a7ee69` snapshot is preserved as superseded history (see §7) and is VOID.
+*History:*
+- First observation at `01:32Z` landed on `/intro` due to the two site-specific defects above and produced an incomplete snapshot (`b3a7ee69…` fields=1 docs=0 submit=null) — correctly rejected per Step 5 gates.
+- Second observation at `01:37Z` (after `c97ad7f`) reached the real form (`fea6a10e…` fields=25 docs=1 submit=Absenden at `/form`) — populated but **REVIEWER-REJECTED** because it lacks the required CV (transcript-only). See §4 new.
+- Both observations were non-submit; budget remains unused.
 
 ---
 
-## 4. Real populated observation (Step 5) — ALL GATES GREEN
+## 4. Real populated observation (Step 5) — FORM REACHED BUT REVIEWER-REJECTED (missing CV)
 
-HTTP/API observation succeeded and **actual application form reached**.
+HTTP/API observation succeeded and **actual application form reached**, but the frozen application is **REVIEWER-REJECTED / NON-AUTHORIZABLE** because it lacks the required real CV.
 
 | Check | Result |
 |---|---|
@@ -101,13 +107,13 @@ HTTP/API observation succeeded and **actual application form reached**.
 | job.url remains unchanged | ✅ detail URL unchanged |
 | application_id remains unchanged | ✅ `fd9a41480fc6…` |
 | fields | ✅ **25** (>0, 14 application_job + 6 candidate_profile + 5 optional, is_complete=true) |
-| documents | ✅ **1** (>0, transcript; content_hash non-empty) |
-| expected approved document package represented | ✅ transcript present with SHA `5809eed9d31a525baa2793d107d47b53` (owner-approved Bachelor's transcript) — CV/cover-letter PDFs remain approved at JobHunter layer; the ATS form at observation time exposed 1 transcript upload field (file_inputs=2, but only transcript required for this posting) |
-| every persisted document has non-empty content_hash | ✅ `5809eed9d31a525baa2793d107d47b53` (full `5809eed9d31a525baa2793d107d47b533f99c16397ab985336fc498cf0bec405`) |
+| documents | ⚠️ **1** (transcript only; content_hash non-empty) — **FAILS WQ-8 authoritative gate: real CV REQUIRED before Phase A may stop** |
+| expected approved document package represented | ❌ **REVIEWER BLOCKER: CV NOT uploaded in this observation.** The msg form exposes `Vollständige Bewerbungsunterlagen` and identifies Lebenslauf/CV as part of that required field. Transcript-only is NOT acceptable. Owner-selected package for this WQ-8 target is CV REQUIRED + transcript INCLUDE (cover letter optional, not auto-added). This snapshot has transcript-only. |
+| every persisted document has non-empty content_hash | ✅ `5809eed9d31a525baa2793d107d47b53` (full `5809eed9d31a525baa2793d107d47b533f99c16397ab985336fc498cf0bec405`) for the transcript; CV missing |
 | submit_control PRESENT | ✅ `Absenden` (`dangerous_submit`, selector `clickable[9]`, frame_url `https://jobs.msg.group/de/jobs/411/form`) |
 | submit_control corresponds to real final submit control | ✅ `Absenden` is the ATS final submit CTA on the form |
 | pending_interventions | ✅ 0 |
-| snapshot_hash is new/non-empty | ✅ `fea6a10e612ca88af0f63ce5bab11985` (distinct from `72ed…` and `349b…`) |
+| snapshot_hash is new/non-empty | ✅ `fea6a10e612ca88af0f63ce5bab11985` (distinct from `72ed…` and `349b…`) — but **VOID for Phase B** |
 | submitted | ✅ `false` |
 | SubmissionAuthorization | ✅ 0 |
 | SubmissionResult | ✅ 0 |
@@ -116,9 +122,7 @@ HTTP/API observation succeeded and **actual application form reached**.
 | no final UAA submit click | ✅ |
 | no real application submitted | ✅ |
 
-If `fields==0`, `documents==0`, `submit_control absent`, or `snapshot.application_url == job.url` → **STOP**. None triggered. Snapshot is **REAL and populated**.
-
-Browser did not reach an unexpected domain or unexpected form target — destination is the msg d.vinci form for Job 411 ✅. Incomplete snapshot (`b3a7ee69` at `/intro`) was **not frozen** — rejected per gates.
+Snapshot reached the correct form via safe navigation and is **populated (25 fields, 1 doc, submit present)**, but it is **NOT authorizable** for Phase B. The correct form was reached — this is preserved as historical evidence that the navigation fix works — but a **NEW freeze is required after the correct document package (CV + transcript) is observed** via the official intervention/bundle path. The old claim that transcript-only represented the complete required application package is **corrected and withdrawn**.
 
 ---
 
@@ -225,7 +229,7 @@ New `review_plan_hash` `afec3f7225adb1b716ef832ef55c0bb5` is **returned to revie
 
 This file (`docs/evidence/wq-8/FINAL_REVIEW_PACKET.md`) is the **only** committed artifact from this re-observation. Preserved historical empty-snapshot incident (§10) per spec; new freeze is the canonical Phase-A re-freeze (§§1-8).
 
-### New canonical Phase-A freeze (2026-09-01 01:37Z)
+### New canonical Phase-A freeze (2026-09-01 01:37Z) — REVIEWER-REJECTED / NON-AUTHORIZABLE
 
 Include only sanitized information:
 
@@ -234,14 +238,15 @@ Include only sanitized information:
 | current source HEAD | `c97ad7fdc149a884b6ea2ae18d9d428e9aba070f` (f7430fc in ancestry) |
 | source job URL classification | detail page — `https://jobs.msg.group/de/jobs/411/werkstudent-data-ai-banking-all-genders` (canonical JobHunter source URL) |
 | application form URL classification | actual ATS form — `https://jobs.msg.group/de/jobs/411/form` (reached via safe Apply navigation detail→intro→form, not detail) |
-| snapshot_hash | `fea6a10e612ca88af0f63ce5bab11985` |
-| review_plan_hash | `afec3f7225adb1b716ef832ef55c0bb5` |
+| snapshot_hash | `fea6a10e612ca88af0f63ce5bab11985` — **REJECTED: transcript-only, no CV** |
+| review_plan_hash | `afec3f7225adb1b716ef832ef55c0bb5` — **VOID for Phase B** |
 | field count | 25 |
-| document kinds + SHA prefixes | `unknown` (Transcript) `5809eed9d31a` (full `5809eed9d31a525baa2793d107d47b533f99c16397ab985336fc498cf0bec405`) — CV/cover-letter remain JobHunter-approved; ATS form at observation exposed transcript upload |
+| document kinds + SHA prefixes | `unknown` (Transcript) `5809eed9d31a` (full `5809eed9d31a525baa2793d107d47b533f99c16397ab985336fc498cf0bec405`) — **CV REQUIRED but missing; transcript-only is NOT the complete required package (corrected)** |
 | submit-control classification | `dangerous_submit` `Absenden` |
 | pending | 0 |
 | submitted | `false` |
 | authorization | **NONE** (0 SubmissionAuthorization, 0 SubmissionResult, 0 SubmissionClaim) |
+| **Reviewer verdict** | **REJECTED / NON-AUTHORIZABLE — must NOT be used for Phase B. Preserved as historical evidence that the correct form was reached (navigation fix works). A NEW freeze is required after the correct document package (CV + transcript) is observed via the official intervention/bundle path.** |
 
 ### What was NOT committed (per spec)
 
@@ -322,36 +327,36 @@ Previously: `POST /observe` returned `503 no browser context factory` because pr
 
 ---
 
-## 11. Final report (machine-verified)
+## 11. Final report (machine-verified) — REVIEWER CORRECTION
 
-### WQ-8 FINAL PHASE-A REAL RE-FREEZE
+### WQ-8 REAL ATS RE-OBSERVATION — FORM REACHED, BUNDLE INCOMPLETE
 
 - **source HEAD used:** `c97ad7fdc149a884b6ea2ae18d9d428e9aba070f` (includes `f7430fc59bc876a740cb3f4894077ccce7929da8`; `git merge-base --is-ancestor f7430fc HEAD` → 0)
 - **pre-observation safety invariant result:** GREEN (see §1) — status review_ready, pending 0, authorizations/results/claims 0, budget unused, old empty snapshot `72ede0dc…` VOID
 - **canonical job/source URL classification:** detail page `https://jobs.msg.group/de/jobs/411/werkstudent-data-ai-banking-all-genders` (JobHunter source URL, unchanged)
-- **actual reached application-form URL:** `https://jobs.msg.group/de/jobs/411/form` (d.vinci Bewerbungsformular, controls 30, files 2, submit `Absenden`)
-- **observe endpoint result:** `POST /api/submit/fd9a…/observe` → `200` in 45.9s, interlock installed before navigation, detail→intro→form via two SAFE_APPLY clicks (`Jetzt bewerben!` → `Bewerbungsformular ausfüllen`), no dangerous_submit during discovery
+- **actual reached application-form URL:** `https://jobs.msg.group/de/jobs/411/form` (d.vinci Bewerbungsformular, controls 30, files 2, submit `Absenden`) — **navigation fix proven: detail→intro→form via two SAFE_APPLY clicks (`Jetzt bewerben!` → exact `Bewerbungsformular ausfüllen`), no dangerous_submit, no manual /form navigation**
 - **persisted field count:** 25
-- **persisted document count:** 1
-- **sanitized document hash prefixes:** `unknown=5809eed9d31a` (Transcript; full hash in DB, not committed)
+- **persisted document count:** 1 (transcript only)
+- **sanitized document hash prefixes:** `unknown=5809eed9d31a` (Transcript; full hash in DB, not committed) — **CV missing**
 - **submit-control result:** PRESENT — `Absenden` `dangerous_submit` `clickable[9]` `https://jobs.msg.group/de/jobs/411/form`
-- **new snapshot_hash:** `fea6a10e612ca88af0f63ce5bab11985`
-- **new review_plan_hash:** `afec3f7225adb1b716ef832ef55c0bb5` (canonical, frozen by `wq8-review-packet`)
+- **new snapshot_hash:** `fea6a10e612ca88af0f63ce5bab11985` — **REVIEWER-REJECTED: transcript-only, no CV** (see §4)
+- **new review_plan_hash:** `afec3f7225adb1b716ef832ef55c0bb5` — **VOID for Phase B** (see §4)
 - **pending interventions:** 0
 - **authorization/result/claim counts:** 0 / 0 / 0
 - **submitted state:** `false` (job status review_ready, no SubmissionResult, no click)
-- **confirmation old empty snapshot is superseded:** ✅ active snapshot is now `fea6a10e…` at `/form` (approval `c420c3c5…`); previous `72ede0dc…` at detail (0/0/null) and intermediate `349b820f…` at `/intro` (1/0/null) are superseded history, not active
-- **evidence commit SHA, if created:** (to be filled after `git push`; will be `HEAD` at push time)
-- **local == origin verification:** (to be filled after `git push`; required `git rev-parse HEAD == git rev-parse origin/checkpoint/wq-8-controlled-real-submission`)
+- **confirmation old empty snapshot is superseded:** ✅ active snapshot is now `fea6a10e…` at `/form` (approval `c420c3c5…`); previous `72ede0dc…` at detail (0/0/null) and intermediate `349b820f…` at `/intro` (1/0/null) are superseded history, not active — **but current `fea6a…` is itself superseded as non-authorizable and preserved as historical evidence that correct form was reached**
+- **TWO observations, ZERO submissions:** First at 01:32Z → `/intro` (1/0/null, rejected), second at 01:37Z → `/form` (25/1/Absenden, rejected for missing CV). Both non-submit, budget unused.
+- **evidence commit SHA, if created:** `26a4bf622f805da76838e07f047484fd9322bf85` (previous) → new evidence commit will be HEAD at push time after bundle fix
+- **local == origin verification:** `26a4bf6` at time of this correction; new push will be verified after bundle fix
 
 ```
 git diff --check  # clean (no whitespace errors)
 ```
 
-**No authorization, no submission, no live-submit was run.** The new `review_plan_hash` `afec3f7225adb1b716ef832ef55c0bb5` is returned for independent reviewer/owner approval before any Phase B step.
+**No authorization, no submission, no live-submit was run.** The previous `review_plan_hash` `afec3f7225adb1b716ef832ef55c0bb5` is **REVIEWER-REJECTED / NON-AUTHORIZABLE** and **must NOT be used for Phase B**. It is preserved as historical evidence that the navigation fix (f7430fc + c97ad7f) correctly reaches the real form. **A NEW freeze is required after the correct document package (CV + transcript) is observed** via the official intervention/bundle path (see §9 new). The old claim that transcript-only represented the complete required application package is **corrected and withdrawn**.
 
 ---
 
-**WQ-8 OWNER APPROVAL REQUIRED** — ONLY if the populated persisted snapshot and canonical packet match exactly (they do: §5 = §6 = 25/1/`Absenden`/`fea6a10e…`/`afec3f7…`/pending 0).
+**WQ-8 DOCUMENT BUNDLE + NAVIGATION SAFETY FIX READY FOR REAL RE-OBSERVATION** — the sandbox now has the narrow multi-file bundle support, exact CTA, form heuristic, and URL hardening required for the next real re-observation to produce a CV+transcript freeze. The current `fea6a…`/`afec3…` freeze remains **REJECTED**.
 
-*Otherwise:* `WQ-8 REAL RE-OBSERVATION NEEDS CHANGES`
+*Otherwise:* `WQ-8 DOCUMENT BUNDLE + NAVIGATION SAFETY FIX NEEDS CHANGES`

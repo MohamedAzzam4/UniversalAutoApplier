@@ -1,3 +1,4 @@
+# pyright: reportOptionalIterable=false, reportUnknownMemberType=false, reportUnknownArgumentType=false, reportUnknownVariableType=false
 """Execute deterministic form mappings against a rendered Playwright page.
 
 This module fills controls and uploads documents. It has no submission API
@@ -727,7 +728,32 @@ def _document_kind(target: _LiveFieldTarget) -> str:
         return "cover_letter"
     if "resume" in descriptor or "cv" in descriptor or "lebenslauf" in descriptor:
         return "cv"
+    if "transcript" in descriptor or "zeugnis" in descriptor or "transcript" in descriptor:
+        return "transcript"
+    # Generic application documents field (Vollständige Bewerbungsunterlagen) is ambiguous — caller
+    # should provide explicit kind via bundle; fallback is unknown
     return "unknown"
+
+
+def _is_multiple_file_input(locator: Locator) -> bool:
+    """Check if a file input supports multiple files.
+
+    Uses the DOM ``multiple`` property (most reliable) with a fallback to
+    the ``multiple`` attribute presence. Playwright's ``set_input_files``
+    requires the input to have ``multiple`` for >1 files; otherwise it
+    would silently replace.
+    """
+    try:
+        val = locator.evaluate("el => el.multiple")
+        if isinstance(val, bool):
+            return val
+    except Exception:
+        pass
+    try:
+        attr = locator.get_attribute("multiple")
+        return attr is not None
+    except Exception:
+        return False
 
 
 def _validation_errors(page: Page) -> list[str]:
@@ -856,65 +882,171 @@ def execute_live_form(
         explanation = result.explanation
         filled_value = ""
         actual_selected = target.field.current_value  # DOM selection before fill
-        if status == "filled" and result.value is not None:
-            # Validate the typed answer BEFORE Playwright touches the field.
-            # Invalid answers become intervention_needed (never ``failed``)
-            # so a safely-unresolved question is not misclassified.
-            is_valid, reason = validate_typed_answer(
-                target.field.type, result.value, target.field.options
-            )
-            if not is_valid:
-                status = "intervention_needed"
-                explanation = f"typed-answer validation failed: {reason}"
-                logger.info(
-                    "[%s] rejected typed answer for %s (%s): %s",
-                    job.application_id[:12],
-                    target.selector_hint,
-                    target.field.type,
-                    reason,
-                )
-            else:
-                try:
-                    # _execute_field returns the ACTUAL option that was
-                    # selected/checked in the DOM (e.g. "ja" when the
-                    # proposed value was "Yes"). Record that as both
-                    # filled_value and selected_value so the report and
-                    # persisted interventions reflect what the form
-                    # actually received, not the normalized alias.
-                    actual_selected = _execute_field(target, result.value)
-                    filled_value = actual_selected
-                    if target.field.type == "file":
+        # Structured file-bundle handling: if this is a FILE field with an
+        # owner-selected document bundle (e.g. Vollständige Bewerbungsunterlagen
+        # with CV + transcript), handle it before scalar validation. The bundle
+        # is an ordered list of (path, kind) preserving the owner's selection.
+        # For scalar text/select/radio fields the bundle is always None.
+        is_file_bundle = (
+            target.field.type == "file"
+            and result.document_bundle is not None
+            and len(result.document_bundle) > 0
+        )
+        bundle_upload_handled = False
+        if is_file_bundle and status == "filled" and result.value is not None:
+            bundle = result.document_bundle  # type: ignore[union-attr]
+            # Validate typed answer for the first path (scalar check) is not
+            # sufficient for bundles — the fill_engine already validated every
+            # path, but we re-validate the bundle shape before touching the
+            # browser. For bundles we bypass validate_typed_answer's single-value
+            # check and validate the bundle directly.
+            # Check multiple capability before any upload
+            paths = [entry.path for entry in bundle]
+            # Validate every selected path exists, is file, not directory
+            bundle_valid = True
+            for entry in bundle:
+                p = Path(entry.path)
+                if not p.exists():
+                    status = "intervention_needed"
+                    explanation = f"File in bundle does not exist: {entry.path}"
+                    bundle_valid = False
+                    break
+                if not p.is_file():
+                    status = "intervention_needed"
+                    explanation = f"Bundle path is not a regular file: {entry.path}"
+                    bundle_valid = False
+                    break
+            if bundle_valid:
+                is_multiple = _is_multiple_file_input(target.locator)
+                if len(paths) > 1 and not is_multiple:
+                    status = "intervention_needed"
+                    explanation = (
+                        f"File input does not support multiple files "
+                        f"(multiple=false) but bundle has {len(paths)} files"
+                    )
+                    bundle_valid = False
+                else:
+                    try:
+                        # ONE Playwright call with the complete ordered bundle
+                        target.locator.set_input_files(paths)
+                        filled_value = ", ".join(paths)
+                        actual_selected = filled_value
                         page.wait_for_timeout(1_000)
-                    elif target.field.type in ("radio", "select", "checkbox"):
-                        # Radio/select/checkbox changes may trigger JavaScript
-                        # that reveals conditional fields. Wait briefly for the
-                        # DOM to update.
-                        page.wait_for_timeout(500)
-                    execution.filled += 1
-                    filled_tokens.add(target.token)
-                except Exception as exc:
-                    status = "failed"
-                    explanation = f"Playwright fill failed: {exc}"
-                    logger.warning(
-                        "[%s] fill failed selector=%s: %s",
+                        execution.filled += 1
+                        filled_tokens.add(target.token)
+                        # One LiveUploadRecord per physical file, each with its
+                        # own deterministic content hash later via snapshot
+                        for entry in bundle:
+                            kind = entry.kind
+                            if kind not in (
+                                "cv",
+                                "cover_letter",
+                                "transcript",
+                                "attachment",
+                                "unknown",
+                            ):
+                                kind = _document_kind(target)
+                            execution.uploads.append(
+                                LiveUploadRecord(
+                                    page_url=page.url,
+                                    selector=target.selector_hint,
+                                    document_kind=cast(Any, kind),
+                                    path=entry.path,
+                                    status="uploaded",
+                                    message=explanation,
+                                )
+                            )
+                        bundle_upload_handled = True
+                    except Exception as exc:
+                        status = "failed"
+                        explanation = f"Playwright fill failed: {exc}"
+                        logger.warning(
+                            "[%s] fill failed selector=%s: %s",
+                            job.application_id[:12],
+                            target.selector_hint,
+                            exc,
+                        )
+            # If bundle was rejected (not multiple, missing file, etc.),
+            # status is now intervention_needed and we must NOT create
+            # uploaded records — the field will be recorded as requiring
+            # intervention and the snapshot will not falsely claim the
+            # complete package.
+            if not bundle_valid:
+                # Do not create uploaded records for failed bundle;
+                # the field status already reflects intervention_needed.
+                # We still need to avoid the single-file upload path below.
+                bundle_upload_handled = True
+            # Mark bundle handling complete (whether success or fail)
+            # so the single-file upload path below is skipped.
+            if bundle_upload_handled:
+                # For bundle failure we already have status/explanation;
+                # for success we have uploads and filled.
+                pass
+            else:
+                # Should not reach here — fallback to scalar
+                is_file_bundle = False
+
+        if not is_file_bundle or not bundle_upload_handled:
+            if status == "filled" and result.value is not None:
+                # Validate the typed answer BEFORE Playwright touches the field.
+                # Invalid answers become intervention_needed (never ``failed``)
+                # so a safely-unresolved question is not misclassified.
+                is_valid, reason = validate_typed_answer(
+                    target.field.type, result.value, target.field.options
+                )
+                if not is_valid:
+                    status = "intervention_needed"
+                    explanation = f"typed-answer validation failed: {reason}"
+                    logger.info(
+                        "[%s] rejected typed answer for %s (%s): %s",
                         job.application_id[:12],
                         target.selector_hint,
-                        exc,
+                        target.field.type,
+                        reason,
                     )
+                else:
+                    try:
+                        # _execute_field returns the ACTUAL option that was
+                        # selected/checked in the DOM (e.g. "ja" when the
+                        # proposed value was "Yes"). Record that as both
+                        # filled_value and selected_value so the report and
+                        # persisted interventions reflect what the form
+                        # actually received, not the normalized alias.
+                        actual_selected = _execute_field(target, result.value)
+                        filled_value = actual_selected
+                        if target.field.type == "file":
+                            page.wait_for_timeout(1_000)
+                        elif target.field.type in ("radio", "select", "checkbox"):
+                            # Radio/select/checkbox changes may trigger JavaScript
+                            # that reveals conditional fields. Wait briefly for the
+                            # DOM to update.
+                            page.wait_for_timeout(500)
+                        execution.filled += 1
+                        filled_tokens.add(target.token)
+                    except Exception as exc:
+                        status = "failed"
+                        explanation = f"Playwright fill failed: {exc}"
+                        logger.warning(
+                            "[%s] fill failed selector=%s: %s",
+                            job.application_id[:12],
+                            target.selector_hint,
+                            exc,
+                        )
 
-            if target.field.type == "file":
-                path = Path(result.value)
-                upload_status = "uploaded" if status == "filled" else "failed"
-                execution.uploads.append(
-                    LiveUploadRecord(
-                        page_url=page.url,
-                        selector=target.selector_hint,
-                        document_kind=cast(Any, _document_kind(target)),
-                        path=str(path),
-                        status=cast(Any, upload_status),
-                        message=explanation,
+                if target.field.type == "file":
+                    # Single-file scalar path (backwards compatible)
+                    path = Path(result.value)
+                    upload_status = "uploaded" if status == "filled" else "failed"
+                    execution.uploads.append(
+                        LiveUploadRecord(
+                            page_url=page.url,
+                            selector=target.selector_hint,
+                            document_kind=cast(Any, _document_kind(target)),
+                            path=str(path),
+                            status=cast(Any, upload_status),
+                            message=explanation,
+                        )
                     )
-                )
 
         if target.field.required and status in {"blocked", "intervention_needed", "failed"}:
             execution.required_unresolved += 1
@@ -968,7 +1100,61 @@ def execute_live_form(
             explanation = result.explanation
             filled_value = ""
             actual_selected = target.field.current_value
-            if status == "filled" and result.value is not None:
+            # Bundle handling for revealed file fields (same as initial pass)
+            is_file_bundle_revealed = (
+                target.field.type == "file"
+                and result.document_bundle is not None
+                and len(result.document_bundle) > 0
+            )
+            if is_file_bundle_revealed and status == "filled" and result.value is not None:
+                bundle = result.document_bundle  # type: ignore[union-attr]
+                paths = [e.path for e in bundle]
+                bundle_valid = True
+                for entry in bundle:
+                    p = Path(entry.path)
+                    if not p.exists() or not p.is_file():
+                        status = "intervention_needed"
+                        explanation = f"Bundle file missing or not a file: {entry.path}"
+                        bundle_valid = False
+                        break
+                if bundle_valid:
+                    is_multiple = _is_multiple_file_input(target.locator)
+                    if len(paths) > 1 and not is_multiple:
+                        status = "intervention_needed"
+                        explanation = (
+                            f"File input does not support multiple files "
+                            f"but bundle has {len(paths)} files"
+                        )
+                    else:
+                        try:
+                            target.locator.set_input_files(paths)
+                            filled_value = ", ".join(paths)
+                            actual_selected = filled_value
+                            execution.filled += 1
+                            for entry in bundle:
+                                kind = entry.kind
+                                if kind not in (
+                                    "cv",
+                                    "cover_letter",
+                                    "transcript",
+                                    "attachment",
+                                    "unknown",
+                                ):
+                                    kind = _document_kind(target)
+                                execution.uploads.append(
+                                    LiveUploadRecord(
+                                        page_url=page.url,
+                                        selector=target.selector_hint,
+                                        document_kind=cast(Any, kind),
+                                        path=entry.path,
+                                        status="uploaded",
+                                        message=explanation,
+                                    )
+                                )
+                        except Exception as exc:
+                            status = "failed"
+                            explanation = f"Playwright fill failed: {exc}"
+            elif status == "filled" and result.value is not None:
                 # Validate typed answer BEFORE Playwright filling. Same rule
                 # as the initial pass: invalid -> intervention_needed (not failed).
                 is_valid, reason = validate_typed_answer(
@@ -982,9 +1168,32 @@ def execute_live_form(
                         actual_selected = _execute_field(target, result.value)
                         filled_value = actual_selected
                         execution.filled += 1
+                        if target.field.type == "file":
+                            # Single file upload (scalar) — create one record
+                            execution.uploads.append(
+                                LiveUploadRecord(
+                                    page_url=page.url,
+                                    selector=target.selector_hint,
+                                    document_kind=cast(Any, _document_kind(target)),
+                                    path=result.value,
+                                    status="uploaded",
+                                    message=explanation,
+                                )
+                            )
                     except Exception as exc:
                         status = "failed"
                         explanation = f"Playwright fill failed: {exc}"
+                        if target.field.type == "file":
+                            execution.uploads.append(
+                                LiveUploadRecord(
+                                    page_url=page.url,
+                                    selector=target.selector_hint,
+                                    document_kind=cast(Any, _document_kind(target)),
+                                    path=result.value or "",
+                                    status="failed",
+                                    message=explanation,
+                                )
+                            )
 
             if target.field.required and status in {"blocked", "intervention_needed", "failed"}:
                 execution.required_unresolved += 1

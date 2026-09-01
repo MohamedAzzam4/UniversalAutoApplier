@@ -922,11 +922,21 @@ def _wq8_review_packet(settings: Settings, args: argparse.Namespace) -> int:
                 return 2
             # WQ-8 ATS URL separation: the canonical review plan must bind
             # the actual ATS application FORM URL from the persisted
-            # snapshot, NOT job.url (which may be a detail page). If
-            # --job-url is supplied and differs from snapshot.application_url,
+            # snapshot, NOT job.url (which may be a detail page). For WQ-8
+            # a populated snapshot MUST have a non-empty application_url;
+            # a missing URL is a fail-closed error — we do NOT silently
+            # fall back to job.url (detail page).
+            if not snapshot.application_url or not snapshot.application_url.strip():
+                print(
+                    "ERROR: persisted snapshot has no application_url "
+                    "(the WQ-8 review packet requires a real ATS form URL; "
+                    "re-observe the live form before freezing)."
+                )
+                return 2
+            canonical_form_url = snapshot.application_url
+            # If --job-url is supplied and differs from snapshot.application_url,
             # fail closed — the owner must not override the canonical frozen
             # target via CLI.
-            canonical_form_url = snapshot.application_url or job.url
             if args.job_url and args.job_url != canonical_form_url:
                 print(
                     f"ERROR: --job-url {args.job_url!r} does not match the persisted "
@@ -1050,9 +1060,19 @@ def _wq8_authorize(settings: Settings, args: argparse.Namespace) -> int:
 
             # WQ-8 ATS URL separation: the authorization must bind the actual
             # ATS application FORM URL from the persisted snapshot, NOT
-            # job.url (which may be a detail page). If --job-url is supplied
-            # and differs from snapshot.application_url, fail closed.
-            canonical_form_url = snapshot.application_url or job.url
+            # job.url (which may be a detail page). For WQ-8 a populated
+            # snapshot MUST have a non-empty application_url; missing is
+            # fail-closed — no fallback to job.url (detail page).
+            if not snapshot.application_url or not snapshot.application_url.strip():
+                print(
+                    "ERROR: persisted snapshot has no application_url "
+                    "(the WQ-8 authorization requires a real ATS form URL; "
+                    "re-observe the live form before authorizing)."
+                )
+                return 2
+            canonical_form_url = snapshot.application_url
+            # If --job-url is supplied and differs from snapshot.application_url,
+            # fail closed.
             if args.job_url and args.job_url != canonical_form_url:
                 print(
                     f"ERROR: --job-url {args.job_url!r} does not match the persisted "

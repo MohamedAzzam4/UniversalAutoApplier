@@ -40,14 +40,6 @@ _SAFE_APPLY_TERMS: frozenset[str] = frozenset(
         "bewerben",
         "jetzt bewerben",
         "initiate application",
-        # msg/ d.vinci intro selection page: the link to the actual
-        # application form is labelled "Bewerbungsformular ausfüllen"
-        # (German for "fill out application form"). This is a safe
-        # pre-form selection — never a final submit — and must be
-        # followed to reach the real form at /form.
-        "bewerbungsformular",
-        "bewerbungsformular ausfüllen",
-        "ausfüllen",
     }
 )
 
@@ -57,11 +49,20 @@ _SAFE_APPLY_TERMS: frozenset[str] = frozenset(
 # actions. SmartRecruiters renders its application CTA as exactly
 # "I'm interested" (straight apostrophe); the curly-apostrophe and
 # no-apostrophe equivalents are included because sites may embed either.
+# msg/d.vinci intro selection page: the link to the actual application
+# form is exactly "Bewerbungsformular ausfüllen" (German for "fill out
+# application form"). This is a safe pre-form selection — never a final
+# submit — and must be followed to reach the real form at /form. The bare
+# term "ausfüllen" is NOT safe on its own (would over-classify "Profil
+# ausfüllen", "Umfrage ausfüllen", etc.), so only the exact CTA is allow-
+# listed. Dangerous-submit classification (e.g. "Bewerbungsformular
+# absenden") retains higher priority and is checked first.
 _EXACT_SAFE_APPLY_TERMS: frozenset[str] = frozenset(
     {
         "i'm interested",
         "i\u2019m interested",
         "im interested",
+        "bewerbungsformular ausfüllen",
     }
 )
 

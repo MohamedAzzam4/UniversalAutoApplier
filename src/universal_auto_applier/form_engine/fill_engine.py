@@ -170,6 +170,7 @@ def _fill_single_field(
                 confidence=mapping.confidence,
                 explanation=f"Low confidence ({mapping.confidence}): {mapping.explanation}",
                 label=field.label,
+                document_bundle=mapping.document_bundle,
             )
         return FillResult(
             field_selector=field.selector,
@@ -180,10 +181,67 @@ def _fill_single_field(
             confidence=mapping.confidence,
             explanation=f"Low confidence optional field: {mapping.explanation}",
             label=field.label,
+            document_bundle=mapping.document_bundle,
         )
 
-    # For file fields, validate the path exists.
+    # For file fields, validate the path(s) exist.
     if field.type == "file":
+        # Structured bundle: validate every selected path
+        if mapping.document_bundle is not None:
+            bundle = mapping.document_bundle
+            if not bundle:
+                return FillResult(
+                    field_selector=field.selector,
+                    field_type=field.type,
+                    status="intervention_needed",
+                    value=mapping.value,
+                    source=mapping.source,
+                    confidence=mapping.confidence,
+                    explanation="File bundle is empty",
+                    label=field.label,
+                    document_bundle=bundle,
+                )
+            for entry in bundle:
+                p = Path(entry.path)
+                if not p.exists():
+                    return FillResult(
+                        field_selector=field.selector,
+                        field_type=field.type,
+                        status="intervention_needed",
+                        value=mapping.value,
+                        source=mapping.source,
+                        confidence=mapping.confidence,
+                        explanation=f"File in bundle does not exist: {entry.path}",
+                        label=field.label,
+                        document_bundle=bundle,
+                    )
+                if not p.is_file():
+                    return FillResult(
+                        field_selector=field.selector,
+                        field_type=field.type,
+                        status="intervention_needed",
+                        value=mapping.value,
+                        source=mapping.source,
+                        confidence=mapping.confidence,
+                        explanation=f"Bundle path is not a regular file: {entry.path}",
+                        label=field.label,
+                        document_bundle=bundle,
+                    )
+                # Also validate via original mapping.value for backwards compat is file
+                # (already covered by loop)
+            # Bundle valid — preserve it through FillResult
+            return FillResult(
+                field_selector=field.selector,
+                field_type=field.type,
+                status="filled",
+                value=mapping.value,
+                source=mapping.source,
+                confidence=mapping.confidence,
+                explanation=mapping.explanation,
+                label=field.label,
+                document_bundle=bundle,
+            )
+        # Single file (scalar) path
         if not Path(mapping.value).exists():
             return FillResult(
                 field_selector=field.selector,
@@ -193,6 +251,17 @@ def _fill_single_field(
                 source=mapping.source,
                 confidence=mapping.confidence,
                 explanation=f"File does not exist: {mapping.value}",
+                label=field.label,
+            )
+        if not Path(mapping.value).is_file():
+            return FillResult(
+                field_selector=field.selector,
+                field_type=field.type,
+                status="intervention_needed",
+                value=mapping.value,
+                source=mapping.source,
+                confidence=mapping.confidence,
+                explanation=f"Path is not a regular file: {mapping.value}",
                 label=field.label,
             )
 
