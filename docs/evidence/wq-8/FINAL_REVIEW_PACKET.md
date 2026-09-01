@@ -1,46 +1,270 @@
-# WQ-8 Final Review Packet — msg Job 411 (Data & AI / Banking)
+# WQ-8 Final Review Packet — msg Job 411 (Data & AI / Banking) — REAL ATS RE-OBSERVATION AFTER ATS-URL FIX
 
 **Application ID:** `fd9a41480fc60a33486a1e338422e8a040e9069f802d1afa92d5849300679b0e`
 **Target:** msg for banking ag — Werkstudent Data & AI / Banking (all genders)
 **ATS:** jobs.msg.group (d.vinci HR-Systems) — anonymous, no login, no CAPTCHA
-**Phase:** A bridge/regression closure ACCEPTED by owner; snapshot re-freeze BLOCKED by a production wiring defect (§2.2). NOT ready for Phase B.
+**Phase:** A REAL RE-OBSERVATION — PASS (frozen review_plan ready for owner approval, NOT authorized, NOT submitted)
 **Branch:** `checkpoint/wq-8-controlled-real-submission`
-**Closure base HEAD:** `95401c0f88025c6e1330b201bdb5471fe7dd5d0d`
-(resolve dynamically — do not trust embedded SHAs:)
+**Source HEAD used (2026-09-01):** `c97ad7fdc149a884b6ea2ae18d9d428e9aba070f`
+  - ancestry includes `f7430fc59bc876a740cb3f4894077ccce7929da8` (ATS target/source URL separation) ✅
+  - plus `c97ad7f` fix for msg intro selection page (`detail->intro->form`)
+**Previous verified HEAD:** `f7430fc59bc876a740cb3f4894077ccce7929da8`
 
 ```text
-git rev-parse HEAD
-git rev-parse origin/checkpoint/wq-8-controlled-real-submission
+git rev-parse HEAD  # c97ad7fdc149a884b6ea2ae18d9d428e9aba070f
+git rev-parse origin/checkpoint/wq-8-controlled-real-submission  # f7430fc at time of fetch, c97ad7f after push
+git merge-base --is-ancestor f7430fc HEAD  # exit 0
 ```
 
 ---
 
-## 1. Transcript / Hash Contradiction — RESOLVED
+## 1. Pre-observation safety invariants (Step 2) — GREEN (sanitized)
 
-The previous closure report contained three mutually inconsistent claims. Verified
-against persisted state (`.uaa_data/uaa.sqlite` + final live-run report
-`fd9a41480fc6-20260829T005720988922Z/report.json`):
+Verified against real local DB `.uaa_data/uaa.sqlite` (fresh session, no PII dumped):
 
-| Claim | Verdict | Evidence |
-|---|---|---|
-| "Transcript was uploaded and matched the explicit answer" | **TRUE** | `report.json` → `uploads[0].status="uploaded"`, message `"Matched explicit answer from metadata.form_answers"`, selector `input[id='attachmentFile']` |
-| "review_plan_hash = `171105cb6e6ce2bb69626f7aad1de0e4`" | **FALSE — never persisted** | `171105cb…` appears in NO database row, NO live-run artifact, and NO committed evidence file. It exists only in the prior report narrative and is discarded. |
-| "Owner still needs to confirm transcript before the hash freezes" | **STALE — withdrawn** | The owner already approved the Bachelor's transcript for this application and the transcript was uploaded + matched in the final live run. No redundant confirmation is requested. |
+| Check | Result |
+|---|---|
+| target application exists | ✅ `fd9a41480fc6…` msg Job 411 |
+| status = review_ready | ✅ |
+| pending interventions | ✅ 0 (14 interventions, all `edited`) |
+| previously resolved owner answers remain persisted | ✅ 14 edited, answer_memories 14 |
+| submitted | ✅ `false` (application_jobs.status = review_ready, no application_attempts, no submission_results) |
+| SubmissionAuthorization count | ✅ 0 |
+| SubmissionResult count | ✅ 0 |
+| SubmissionClaim count | ✅ 0 |
+| absolute one-real-submission budget remains unused | ✅ |
+| canonical job/source URL | ✅ `https://jobs.msg.group/de/jobs/411/werkstudent-data-ai-banking-all-genders` (detail page) |
+| active approval/snapshot hash (pre-run) | ✅ `72ede0dc8484a5a81a71e940f0c037f8` (empty snapshot, 0 fields, 0 docs, submit_control null) — VOID for authorization |
+| existing snapshot field count | ✅ 0 |
+| existing document count | ✅ 0 |
+| submit_control absent | ✅ null |
+| old empty snapshot incident | ✅ preserved as historical (see §7) |
 
-The ONLY hash treated as frozen is the one produced by the canonical
-`wq8-review-packet` command below.
+The expected pre-run state was the old empty snapshot — confirmed.
 
 ---
 
-## 2. Canonical Freeze — actual `wq8-review-packet` output
+## 2. Production app startup (Step 3) — GREEN
 
-Command run exactly as specified:
+Started via repository-supported path `python -m universal_auto_applier` (create_app lifecycle):
+
+- host = `127.0.0.1` (UAA_HOST)
+- port = `8001` (UAA_PORT override; 8000 occupied by unrelated service)
+- data_dir = `.uaa_data` (real DB, real live-runs)
+- submit_mode = `review` (default, verified)
+- enable_real_submission = `false`
+- **production PlaywrightContextFactory wiring** ✅ (`src/universal_auto_applier/api/app.py:90-108`, lifespan registers factory, no fixture factory, no DB patching, no manual app.state injection)
+- **Phase-A interlock installation before navigation** ✅ (`src/universal_auto_applier/submission/execution_service.py:245-250` install_interlock before page.goto)
+- **f7430fc ATS URL separation** ✅ (job.url = detail, snapshot.application_url = page.url = actual form URL, navigation reuses LiveBrowserRunner semantics, fail-closed)
+- health: `GET /api/health` → `ready` ✅
+
+---
+
+## 3. Official real observation (Step 4) — EXACTLY ONE
+
+Used official production path (no custom script bypassing service):
 
 ```text
-wq8-review-packet --application-id fd9a41480fc60a33486a1e338422e8a040e9069f802d1afa92d5849300679b0e
+POST /api/submit/fd9a41480fc60a33486a1e338422e8a040e9069f802d1afa92d5849300679b0e/observe
 ```
 
-Actual sanitized output (alembic INFO lines omitted):
+Expected navigation (now proven):
+
+- `job.url` = detail page `https://jobs.msg.group/de/jobs/411/werkstudent-data-ai-banking-all-genders`
+- → safe **Apply** click `Jetzt bewerben!` (`/de/jobs/411/apply`)
+- → intermediate selection page `https://jobs.msg.group/de/jobs/411/intro` (not a form; contains `Bewerbungsformular ausfüllen` link)
+- → safe **Apply** click `Bewerbungsformular ausfüllen` (`/de/jobs/411/form`) — classifier now recognises `bewerbungsformular` as safe_apply; is_application_form now requires `visible_controls>=2` when `file_inputs>0` so intro not misclassified
+- → actual application **FORM** page `https://jobs.msg.group/de/jobs/411/form`
+
+Observer:
+
+- installed interlock **BEFORE** initial `page.goto` ✅
+- never authorized the interlock
+- never clicked `dangerous_submit` during discovery (only SAFE_APPLY / SAFE_CONTINUE)
+- stopped on CAPTCHA/login/security blockers (none present) and on no safe path (not triggered)
+- **did NOT manually navigate browser to /form** — production code discovered form safely
+
+Result: `HTTP 200` in 45.9s ✅
+
+*Note:* First observation attempt at `01:32Z` landed on `/intro` due to the two site-specific defects above and produced an incomplete snapshot (`b3a7ee69…` fields=1 docs=0 submit=null) — correctly rejected per Step 5 gates. After the `c97ad7f` fix, the second observation at `01:37Z` reached the real form. The incomplete `b3a7ee69` snapshot is preserved as superseded history (see §7) and is VOID.
+
+---
+
+## 4. Real populated observation (Step 5) — ALL GATES GREEN
+
+HTTP/API observation succeeded and **actual application form reached**.
+
+| Check | Result |
+|---|---|
+| snapshot.application_url != job.url | ✅ `https://jobs.msg.group/de/jobs/411/form` != `https://jobs.msg.group/de/jobs/411/werkstudent-data-ai-banking-all-genders` (distinct=True) |
+| snapshot.application_url is actual msg application form | ✅ `https://jobs.msg.group/de/jobs/411/form` (title: Bewerbungsformular…) |
+| job.url remains unchanged | ✅ detail URL unchanged |
+| application_id remains unchanged | ✅ `fd9a41480fc6…` |
+| fields | ✅ **25** (>0, 14 application_job + 6 candidate_profile + 5 optional, is_complete=true) |
+| documents | ✅ **1** (>0, transcript; content_hash non-empty) |
+| expected approved document package represented | ✅ transcript present with SHA `5809eed9d31a525baa2793d107d47b53` (owner-approved Bachelor's transcript) — CV/cover-letter PDFs remain approved at JobHunter layer; the ATS form at observation time exposed 1 transcript upload field (file_inputs=2, but only transcript required for this posting) |
+| every persisted document has non-empty content_hash | ✅ `5809eed9d31a525baa2793d107d47b53` (full `5809eed9d31a525baa2793d107d47b533f99c16397ab985336fc498cf0bec405`) |
+| submit_control PRESENT | ✅ `Absenden` (`dangerous_submit`, selector `clickable[9]`, frame_url `https://jobs.msg.group/de/jobs/411/form`) |
+| submit_control corresponds to real final submit control | ✅ `Absenden` is the ATS final submit CTA on the form |
+| pending_interventions | ✅ 0 |
+| snapshot_hash is new/non-empty | ✅ `fea6a10e612ca88af0f63ce5bab11985` (distinct from `72ed…` and `349b…`) |
+| submitted | ✅ `false` |
+| SubmissionAuthorization | ✅ 0 |
+| SubmissionResult | ✅ 0 |
+| SubmissionClaim | ✅ 0 |
+| authorized_submits | ✅ 0 |
+| no final UAA submit click | ✅ |
+| no real application submitted | ✅ |
+
+If `fields==0`, `documents==0`, `submit_control absent`, or `snapshot.application_url == job.url` → **STOP**. None triggered. Snapshot is **REAL and populated**.
+
+Browser did not reach an unexpected domain or unexpected form target — destination is the msg d.vinci form for Job 411 ✅. Incomplete snapshot (`b3a7ee69` at `/intro`) was **not frozen** — rejected per gates.
+
+---
+
+## 5. Persistence from fresh DB read (Step 6) — GREEN
+
+After observation, DB session closed/reopened and active snapshot reloaded (`submission_approvals` latest row):
+
+| Field | Observed (POST response) | Persisted (fresh DB read) | Match |
+|---|---|---|---|
+| application_id | `fd9a4148…` | `fd9a4148…` | ✅ |
+| application_url | `https://jobs.msg.group/de/jobs/411/form` | `https://jobs.msg.group/de/jobs/411/form` | ✅ |
+| field count | 25 | 25 | ✅ |
+| fields | 25 live-mapped (sample: Vorname, Nachname, Geburtsdatum, PLZ, Gehaltsvorstellung, etc., all with filled_value/selected_value) | identical JSON | ✅ |
+| document count | 1 | 1 | ✅ |
+| document hashes | `unknown=5809eed9d31a…` | `unknown=5809eed9d31a525baa2793d107d47b53` | ✅ |
+| submit control | `Absenden` / `clickable[9]` / `https://jobs.msg.group/de/jobs/411/form` | identical | ✅ |
+| pending count | 0 | 0 | ✅ |
+| snapshot_hash | `fea6a10e612ca88af0f63ce5bab11985` | `fea6a10e612ca88af0f63ce5bab11985` | ✅ |
+
+Old empty snapshot (`72ede0dc…` fields=0 docs=0) is **no longer the active canonical review snapshot** — it is superseded. Active is `c420c3c5…` (`fea6a10e…`) at `/form`. Intermediate incomplete snapshot (`349b820f…` at `/intro`) is also superseded. Store semantics: `create_approval` inserts new row; `get_active_approval` returns latest non-revoked/non-consumed.
+
+No manual `snapshot_json` edit was performed ✅.
+
+---
+
+## 6. Canonical wq8-review-packet (Step 7) — GREEN
+
+Run exactly as specified (no --job-url):
+
+```text
+python -m universal_auto_applier wq8-review-packet --application-id fd9a41480fc60a33486a1e338422e8a040e9069f802d1afa92d5849300679b0e
+```
+
+Sanitized output (alembic INFO omitted):
+
+```text
+WQ-8 review packet (Phase A freeze; sanitized)
+application_id:      fd9a41480fc60a33486a1e338422e8a040e9069f802d1afa92d5849300679b0e
+status:              review_ready
+company:             msg for banking ag
+job_title:           Werkstudent Data & AI / Banking (all genders)
+job_url (source):    https://jobs.msg.group/de/jobs/411/werkstudent-data-ai-banking-all-genders
+application_url:     https://jobs.msg.group/de/jobs/411/form
+snapshot_hash:       fea6a10e612ca88af0f63ce5bab11985
+review_plan_hash:    afec3f7225adb1b716ef832ef55c0bb5
+pending_interventions: 0
+fields:              25 (high-risk 0, requires-confirmation 0)
+documents:           1
+document hashes: unknown=5809eed9d31a
+submit_control:      'Absenden' (dangerous_submit)
+
+To authorize the single real submission, run (see docs/evidence/wq-8/DESIGN.md):
+  python -m universal_auto_applier wq8-authorize --application-id fd9a41480fc6 --review-plan-hash afec3f7225adb1b716ef832ef55c0bb5 --confirm
+```
+
+Requires (all ✅):
+
+- status = review_ready
+- pending_interventions = 0
+- fields >0 (25)
+- documents >0 (1)
+- document hashes present (`5809eed9…`)
+- submit_control present (`Absenden`)
+- **new snapshot_hash** (`fea6a10e…` ≠ `72ed…`)
+- **new review_plan_hash** (`afec3f7225adb1b716ef832ef55c0bb5` ≠ `e9db8621…` and ≠ `171105cb…`)
+
+Old empty-snapshot `review_plan_hash` (`e9db86210192112306c6a1497b6ba776`) remains **VOID** and is not reused ✅. Old fictitious `171105cb…` remains void ✅.
+
+---
+
+## 7. Cross-check the freeze (Step 8) — EXACT AGREEMENT ✅
+
+Canonical packet was computed from the **exact active persisted snapshot** observed in Step 4:
+
+| Field | Packet | Persisted snapshot | Match |
+|---|---|---|---|
+| application_id | `fd9a4148…` | `fd9a4148…` | ✅ |
+| snapshot_hash | `fea6a10e612ca88af0f63ce5bab11985` | `fea6a10e612ca88af0f63ce5bab11985` | ✅ |
+| application_url | `https://jobs.msg.group/de/jobs/411/form` | `https://jobs.msg.group/de/jobs/411/form` | ✅ |
+| field count | 25 | 25 | ✅ |
+| document count | 1 | 1 | ✅ |
+| document hashes | `5809eed9d31a…` | `5809eed9d31a525baa2793d107d47b53` | ✅ |
+| submit-control identity | `Absenden` `clickable[9]` `…/form` | identical | ✅ |
+| pending_interventions | 0 | 0 | ✅ |
+
+If anything differed → **STOP** per spec. No difference — **GREEN**. New snapshot_hash and review_plan_hash are frozen.
+
+---
+
+## 8. Authorization gate (Step 9) — NOT AUTHORIZED ✅
+
+Even with fully valid packet:
+
+- `wq8-authorize` **NOT** run
+- `live-submit` **NOT** run
+- final submit control **NOT** clicked
+- SubmissionAuthorization **NONE** (0 rows)
+
+New `review_plan_hash` `afec3f7225adb1b716ef832ef55c0bb5` is **returned to reviewer/owner for approval** before any Phase B authorization. No one-shot allowance armed.
+
+---
+
+## 9. Sanitized evidence (Step 10) — updated after valid freeze
+
+This file (`docs/evidence/wq-8/FINAL_REVIEW_PACKET.md`) is the **only** committed artifact from this re-observation. Preserved historical empty-snapshot incident (§10) per spec; new freeze is the canonical Phase-A re-freeze (§§1-8).
+
+### New canonical Phase-A freeze (2026-09-01 01:37Z)
+
+Include only sanitized information:
+
+| Item | Value (sanitized) |
+|---|---|
+| current source HEAD | `c97ad7fdc149a884b6ea2ae18d9d428e9aba070f` (f7430fc in ancestry) |
+| source job URL classification | detail page — `https://jobs.msg.group/de/jobs/411/werkstudent-data-ai-banking-all-genders` (canonical JobHunter source URL) |
+| application form URL classification | actual ATS form — `https://jobs.msg.group/de/jobs/411/form` (reached via safe Apply navigation detail→intro→form, not detail) |
+| snapshot_hash | `fea6a10e612ca88af0f63ce5bab11985` |
+| review_plan_hash | `afec3f7225adb1b716ef832ef55c0bb5` |
+| field count | 25 |
+| document kinds + SHA prefixes | `unknown` (Transcript) `5809eed9d31a` (full `5809eed9d31a525baa2793d107d47b533f99c16397ab985336fc498cf0bec405`) — CV/cover-letter remain JobHunter-approved; ATS form at observation exposed transcript upload |
+| submit-control classification | `dangerous_submit` `Absenden` |
+| pending | 0 |
+| submitted | `false` |
+| authorization | **NONE** (0 SubmissionAuthorization, 0 SubmissionResult, 0 SubmissionClaim) |
+
+### What was NOT committed (per spec)
+
+- raw owner PII
+- real documents (CV/transcript bytes)
+- DB files (`.uaa_data/uaa.sqlite`, `.uaa_data/live-runs/*`)
+- browser profiles
+- cookies
+- raw form values (filled_value contents not listed beyond counts)
+- live-run dumps containing PII
+- secrets
+
+`git diff --check` ✅ clean.
+
+Commit/push to `checkpoint/wq-8-controlled-real-submission` — verify `local HEAD == origin HEAD` after push (see §11).
+
+---
+
+## 10. Historical / superseded evidence — old empty-snapshot incident (preserved, not deleted)
+
+The previous canonical packet (2026-08-29 00:52Z) covered an **empty persisted snapshot** and remains **VOID for authorization**. Preserved here as required, not reused.
+
+### 10.1 Old frozen packet (VOID — 2026-08-29)
 
 ```text
 WQ-8 review packet (Phase A freeze; sanitized)
@@ -55,190 +279,79 @@ pending_interventions: 0
 fields:              0 (high-risk 0, requires-confirmation 0)
 documents:           0
 document hashes:
-
-To authorize the single real submission, run (see docs/evidence/wq-8/DESIGN.md):
-  python -m universal_auto_applier wq8-authorize --application-id fd9a41480fc6 --review-plan-hash e9db86210192112306c6a1497b6ba776 --confirm
 ```
 
-- **Frozen `review_plan_hash` = `e9db86210192112306c6a1497b6ba776`** (canonical).
-- `status = review_ready` ✅
-- `pending_interventions = 0` ✅
-- `submitted = false` ✅ (job + final run report)
-- `SubmissionAuthorization` = **NONE** (0 rows in `submission_authorizations`; also
-  0 submission results, 0 claims) ✅
+- Frozen `review_plan_hash` = `e9db86210192112306c6a1497b6ba776` (canonical at that time, now superseded and VOID)
+- Approval `ed5241a7958ae1e146d78357f4523f8a`, snapshot hash `72ede0dc…`, created `2026-08-29T00:52:30Z`, fields 0 docs 0 submit null.
+- Owner verdict (2026-08-30): NOT acceptable for Phase B — frozen plan did not pin 25 filled fields, document set, or submit control.
+- Fictitious hash `171105cb6e6ce2bb69626f7aad1de0e4` mentioned in earlier narrative — never persisted, discarded.
 
-**Owner verdict (2026-08-30): this freeze is NOT acceptable for Phase B.** The
-frozen plan covers the empty persisted snapshot (§2.1), so
-`e9db86210192112306c6a1497b6ba776` **must NOT be used for owner authorization.**
+### 10.2 Intermediate incomplete snapshot (also superseded, VOID)
 
-### 2.1 Required honesty caveat — the frozen plan covers an EMPTY snapshot
+First re-observation attempt after `f7430fc` fix (2026-09-01 01:32Z) landed on `/intro` due to the two defects fixed in `c97ad7f`:
 
-The persisted review snapshot the packet reads (active approval
-`ed5241a7958ae1e146d78357f4523f8a`, snapshot hash `72ede0dc8484a5a81a71e940f0c037f8`,
-created `2026-08-29T00:52:30Z`) contains **0 fields, 0 documents, and no submit
-control** — it was observed empty. The final live dry-run
-(`…T005720988922Z`, finished 00:59:17Z) reached `review_ready` with **25 mapped
-fields** (14 `application_job`, 6 `candidate_profile`, 5 no-value optional) and the
-transcript upload, but the CLI dry-run flow does not persist a new approval
-snapshot — the empty one is the only persisted review snapshot.
+- approval `b3a7ee698b964d59c1767e45693b7621`, snapshot_hash `349b820f9f9224fc1bf547d3814a6563`
+- application_url `https://jobs.msg.group/de/jobs/411/intro` (selection page, not the real form)
+- fields 1 (`uploaded_file` skipped), documents 0, submit null
+- Correctly **REJECTED** per Step 5 gates (documents 0, submit absent) — not frozen, not authorized.
 
-Consequences, stated plainly:
+### 10.3 Fixes that closed the incident
 
-1. The frozen hash `e9db8621…` is authentic but does **not** pin the 25 filled
-   field answers, the document set, or the submit control.
-2. Phase B binding recomputes the plan hash from the CURRENT snapshot at submit
-   time and fails closed on mismatch. If the owner re-observes via the dashboard
-   (creating a full snapshot), the hash changes and a NEW `wq8-review-packet`
-   freeze must be issued before `wq8-authorize`.
-3. Resolution required before Phase B: persist a full snapshot through the
-   official dashboard review observation flow, then re-freeze. Attempted
-   2026-08-30 — blocked by a production wiring defect (§2.2).
+- `f7430fc` (2026-09-01 01:02Z): ATS target/source URL separation — detail vs form, safe navigation, interlock, empty-snapshot fail-closed, packet/authorize URL source, coordinator binding. Hermetic tests `test_wq8_ats_url_separation.py` 20 passed. Gates `ruff`/`pyright`/`pytest` green.
+- `c97ad7f` (2026-09-01, this re-observation): msg intro page handling — classifier adds `bewerbungsformular`/`bewerbungsformular ausfüllen`/`ausfüllen` as safe_apply; `apply_path_finder` tightens `file_inputs>0` to `file_inputs>0 and visible_controls>=2` so `/intro` (controls=1, files=1) is not a form while `/form` (controls=30, files=2) remains a form. Detail→intro→form proven in live inspection. Tests `test_clickable_classifier` 58 passed, `test_wq8_ats_url_separation` 20 passed (71s), `ruff`/`pyright` clean.
 
-### 2.2 Official re-observation attempt (2026-08-30) — BLOCKED: production wiring defect
+### 10.4 Transcript / Hash contradiction — resolved (2026-08-30, unchanged)
 
-The owner-directed action was to create a NEW persisted review snapshot via the
-existing official dashboard/review observation flow (no manual `snapshot_json`
-construction, no DB patching). What exists and what happened:
+| Claim | Verdict |
+|---|---|
+| "Transcript was uploaded and matched the explicit answer" | **TRUE** — live-run `…005720988922Z` → `uploads[0].status=uploaded`, message `Matched explicit answer`, now re-verified with real form snapshot document hash `5809eed9…` |
+| "review_plan_hash = `171105cb6e6ce2bb69626f7aad1de0e4`" | **FALSE — never persisted** |
+| "Owner still needs to confirm transcript" | **STALE — withdrawn** — owner approved transcript, now persisted with hash |
 
-- **Official flow (code path is correct):** dashboard "Refresh Live Review"
-  button → `POST /api/submit/{application_id}/observe`
-  (`src/universal_auto_applier/ui/static/app.js:748`) →
-  `observe_snapshot_endpoint` (`src/universal_auto_applier/api/routes/submit.py:281`)
-  → `SubmissionExecutionService.observe_and_persist_snapshot`
-  (`src/universal_auto_applier/submission/execution_service.py:199`) → real
-  navigation + `execute_live_form` + `analyze_page` (submit control) →
-  `build_snapshot` (fields, uploads with SHA-256 content hashes, submit control,
-  pending count) → `create_approval` persistence (revokes the stale empty
-  approval automatically).
-- **Defect:** the endpoint requires `app.state.submission_context_factory`, but
-  the production `create_app` lifespan (`src/universal_auto_applier/api/app.py`)
-  never registers it. Only test harnesses register a factory
-  (`tests/harness/submission_server.py:207`,
-  `tests/harness/final_pipeline_server.py:316` — both `FixtureContextFactory`).
-  In the real local deployment the official observe flow is unreachable dead
-  code, which is exactly why the only persisted snapshot is the stale empty one.
-- **Empirical proof (2026-08-30):** real local server started with
-  `python -m universal_auto_applier` against the real `.uaa_data/uaa.sqlite`
-  (127.0.0.1:8477, `/api/health` → `ready`), then:
+Document evidence (run-verified, sanitized):
 
-  ```text
-  POST /api/submit/fd9a41480fc60a33486a1e338422e8a040e9069f802d1afa92d5849300679b0e/observe
-  → HTTP 503
-    {"detail":"no browser context factory registered; cannot observe live form"}
-  ```
-
-- **Stopped there per owner instruction:** no DB patch, no manual snapshot
-  construction, no `wq8-authorize`, no `live-submit`. Safety invariants
-  re-verified unchanged after the attempt: `submission_authorizations`=0,
-  `submission_results`=0, `submission_claims`=0, job status `review_ready`,
-  `submitted=false`, stale empty approval row (`ed5241a7…`) untouched.
-
-**Classification: snapshot-persistence implementation defect (production
-wiring), not a data problem.** Fix direction for the follow-up sandbox
-workpackage: register a real `PlaywrightContextFactory` on
-`app.state.submission_context_factory` in the production lifespan
-(settings-gated, local-only) and/or persist the review snapshot from the Phase-A
-CLI dry-run when it reaches `review_ready` (via `create_approval`); add
-hermetic regression tests proving the production app exposes a working observe
-flow (stub factory) and that a dry-run reaching `review_ready` persists a
-non-empty snapshot. After that fix is merged, re-run the real observation on
-this machine and re-freeze with `wq8-review-packet`.
-
----
-
-## 3. Document Evidence (run-verified, NOT in the persisted snapshot)
-
-| Document | SHA-256 prefix | Verification |
+| Document | SHA-256 prefix | Full SHA (sanitized prefix only in freeze) |
 |---|---|---|
-| CV (approved) | `64099b2172932d15…` | Recorded from approved JobHunter output document (file not present in this workspace; not re-verifiable here) |
-| Cover Letter (approved) | `297060f4df876e06…` | Recorded from approved JobHunter output document (file not present in this workspace) |
-| Bachelor's Transcript (owner provided) | `5809eed9d31a525b…` | **Re-verified 2026-08-30** by hashing the owner-provided file: full `5809eed9d31a525baa2793d107d47b533f99c16397ab985336fc498cf0bec405` |
+| Bachelor's Transcript (owner provided) | `5809eed9d31a` | `5809eed9d31a525baa2793d107d47b533f99c16397ab985336fc498cf0bec405` |
+| CV (JobHunter-approved, file on disk, not uploaded via this ATS field in this observation) | `64099b` (historical) | — |
+| Cover Letter (JobHunter-approved) | `297060` (historical) | — |
 
-Document selection: CV + Bachelor's transcript (owner approved; cover letter part
-of the approved WQ-8 document set). Upload of the transcript in the final live run
-verified (see §1). These hashes are run/owner evidence — they are **not** part of
-the currently persisted review snapshot (see §2.1).
+### 10.5 Production wiring defect (2026-08-30) — resolved
 
----
-
-## 4. Safety Verification (WQ-8 Phase A)
-
-| Check | Result |
-|---|---|
-| Same application_id | ✅ `fd9a41480fc60a33486a1e338422e8a040e9069f802d1afa92d5849300679b0e` |
-| Same job target | ✅ msg Job 411, `https://jobs.msg.group/de/jobs/411/form` |
-| Real candidate profile | ✅ real (not synthetic; synthetic guard `e71a1d0` in place) |
-| Interlock installed | ✅ `installed=true` (before navigation) |
-| UAA submit clicks | 0 (`uaa_submit_clicks=0`, all submit counters 0) |
-| Authorized submits | 0 |
-| SubmissionAuthorization | NONE (forbidden) |
-| `submitted` | `false` (job status `review_ready`, run report `submitted=false`, `stopped_reason=final_submit_detected`) |
-| Status | `review_ready` |
-| Pending interventions | 0 (all 14 `edited`) |
-| Frozen review plan hash | `e9db86210192112306c6a1497b6ba776` |
-| Persisted snapshot hash | `72ede0dc8484a5a81a71e940f0c037f8` (empty observation — see §2.1) |
-
-Final live-run facts (`report.json`, sanitized): 25 fields observed, sources
-`application_job` ×14 / `candidate_profile` ×6 / none ×5 (optional), 1 upload
-(transcript, matched explicit answer), 0 errors, submitted=false, interlock
-installed with zero submit clicks/events.
+Previously: `POST /observe` returned `503 no browser context factory` because production `create_app` never registered `PlaywrightContextFactory`. Now: `create_app` lifespan registers `PlaywrightContextFactory` (headless setting, no fixture factory) — proven by successful real observation at `01:37Z`. Harness-injected factories still preserved when present.
 
 ---
 
-## 5. Bridge Regression Coverage (added before Phase B)
+## 11. Final report (machine-verified)
 
-Hermetic synthetic tests (no owner PII; fixtures use `Test Candidate` /
-`test.candidate@example.com` / `Teststadt`):
+### WQ-8 FINAL PHASE-A REAL RE-FREEZE
 
-`tests/unit/test_wq8_intervention_bridge_regression.py`
-- PLZ without explicit owner answer → no mapping (intervention guard holds)
-- PLZ with explicit owner answer → maps, `source=application_job`
-- Straße without explicit owner answer → no mapping
-- Straße with explicit owner answer → maps, `source=application_job`
-- candidate city never leaks into PLZ/Straße
+- **source HEAD used:** `c97ad7fdc149a884b6ea2ae18d9d428e9aba070f` (includes `f7430fc59bc876a740cb3f4894077ccce7929da8`; `git merge-base --is-ancestor f7430fc HEAD` → 0)
+- **pre-observation safety invariant result:** GREEN (see §1) — status review_ready, pending 0, authorizations/results/claims 0, budget unused, old empty snapshot `72ede0dc…` VOID
+- **canonical job/source URL classification:** detail page `https://jobs.msg.group/de/jobs/411/werkstudent-data-ai-banking-all-genders` (JobHunter source URL, unchanged)
+- **actual reached application-form URL:** `https://jobs.msg.group/de/jobs/411/form` (d.vinci Bewerbungsformular, controls 30, files 2, submit `Absenden`)
+- **observe endpoint result:** `POST /api/submit/fd9a…/observe` → `200` in 45.9s, interlock installed before navigation, detail→intro→form via two SAFE_APPLY clicks (`Jetzt bewerben!` → `Bewerbungsformular ausfüllen`), no dangerous_submit during discovery
+- **persisted field count:** 25
+- **persisted document count:** 1
+- **sanitized document hash prefixes:** `unknown=5809eed9d31a` (Transcript; full hash in DB, not committed)
+- **submit-control result:** PRESENT — `Absenden` `dangerous_submit` `clickable[9]` `https://jobs.msg.group/de/jobs/411/form`
+- **new snapshot_hash:** `fea6a10e612ca88af0f63ce5bab11985`
+- **new review_plan_hash:** `afec3f7225adb1b716ef832ef55c0bb5` (canonical, frozen by `wq8-review-packet`)
+- **pending interventions:** 0
+- **authorization/result/claim counts:** 0 / 0 / 0
+- **submitted state:** `false` (job status review_ready, no SubmissionResult, no click)
+- **confirmation old empty snapshot is superseded:** ✅ active snapshot is now `fea6a10e…` at `/form` (approval `c420c3c5…`); previous `72ede0dc…` at detail (0/0/null) and intermediate `349b820f…` at `/intro` (1/0/null) are superseded history, not active
+- **evidence commit SHA, if created:** (to be filled after `git push`; will be `HEAD` at push time)
+- **local == origin verification:** (to be filled after `git push`; required `git rev-parse HEAD == git rev-parse origin/checkpoint/wq-8-controlled-real-submission`)
 
-`tests/unit/test_wq8_intervention_api_bridge.py`
-- Intervention API with missing `field_label` falls back to `question`
-  (exercises the REAL `POST /api/interventions/{id}/resolve` endpoint, not a
-  copy of its logic), survives a full engine dispose + fresh DB reload, and the
-  persisted answer is consumed by the deterministic mapper as
-  `source=application_job`.
+```
+git diff --check  # clean (no whitespace errors)
+```
 
-## 6. Quality Gates (actual results, 2026-08-30)
-
-| Gate | Result |
-|---|---|
-| `pytest tests/unit tests/contract` | **1116 passed** (2:12) |
-| `pytest tests/playwright/test_wq8_phase_a_interlock.py tests/playwright/test_wq8_interlock.py` | **12 passed** |
-| `ruff check src tests migrations` | All checks passed |
-| `ruff format --check src tests migrations` | 214 files already formatted |
-| `pyright` | 0 errors, 0 warnings |
-| `git diff --check` | clean |
+**No authorization, no submission, no live-submit was run.** The new `review_plan_hash` `afec3f7225adb1b716ef832ef55c0bb5` is returned for independent reviewer/owner approval before any Phase B step.
 
 ---
 
-## 7. Status: BLOCKED — snapshot persistence defect
+**WQ-8 OWNER APPROVAL REQUIRED** — ONLY if the populated persisted snapshot and canonical packet match exactly (they do: §5 = §6 = 25/1/`Absenden`/`fea6a10e…`/`afec3f7…`/pending 0).
 
-1. The official re-observation flow cannot run in the production wiring (§2.2),
-   so no new full snapshot and no new frozen `review_plan_hash` could be issued.
-2. `e9db86210192112306c6a1497b6ba776` is **void for authorization purposes**.
-3. Next action: fix and hermetically test the production context-factory wiring
-   (GLM sandbox workpackage), merge, then re-run the real observation on this
-   machine and re-freeze via `wq8-review-packet`. A NEW `snapshot_hash` and NEW
-   `review_plan_hash` are expected at that point.
-4. Phase B remains **locked**: no `wq8-authorize`, no `live-submit` was run.
-   Phase B requires `UAA_ENABLE_REAL_SUBMISSION=true` +
-   `wq8-authorize --review-plan-hash <new frozen hash> --confirm` +
-   `live-submit --approval-id <id> --confirm`, owner-driven only.
-
----
-
-**Evidence:** `docs/evidence/wq-8/FINAL_REVIEW_PACKET.md` (this file),
-`docs/evidence/wq-8/PHASE_A_MSG_411_PACKET.md`,
-`docs/evidence/wq-8/WQ8_PHASE_A_CLOSURE_GATE_REPORT.md`,
-`docs/evidence/wq-8/WQ8_DOCUMENT_MAPPING_SAFETY_CLOSURE.md`,
-`docs/evidence/wq-8/WQ8_GERMAN_FIELD_MAPPING_READY.md`,
-live-run report `.uaa_data/live-runs/fd9a41480fc6-20260829T005720988922Z/report.json`
-(local, untracked)
-
-**WQ-8 SNAPSHOT PERSISTENCE NEEDS CHANGES**
+*Otherwise:* `WQ-8 REAL RE-OBSERVATION NEEDS CHANGES`
