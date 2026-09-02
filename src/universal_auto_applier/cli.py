@@ -307,6 +307,12 @@ def _build_parser() -> argparse.ArgumentParser:
         action="append",
         help="Limit the run to one or more application IDs (repeatable).",
     )
+    sup_run.add_argument(
+        "--planner",
+        choices=["deterministic", "model"],
+        default="deterministic",
+        help="Supervisor planner mode (default: deterministic).",
+    )
 
     sup_status = subparsers.add_parser(
         "supervisor-status",
@@ -1310,12 +1316,17 @@ def _supervisor_run(settings: Settings, args: argparse.Namespace) -> int:
     engine, session_factory = _open_store(settings)
     try:
         policy_engine = PolicyEngine(owner_policies=owner_policies)
-        # Choose planner: model-backed if env is configured, else deterministic.
-        # This allows the pilot to actually exercise the AI Supervisor.
+        # Choose planner: deterministic by default. Model-backed requires explicit opt-in.
+        # - No flag, no env vars        → DeterministicPlanner (default)
+        #   --planner deterministic     → DeterministicPlanner (explicit)
+        #   --planner model             → OpenAICompatiblePlanner (explicit opt-in)
+        # All UAA_SUPERVISOR_MODEL_* env vars populated without --planner model
+        #   → MUST STILL BE DeterministicPlanner
         _model_base = _os.environ.get("UAA_SUPERVISOR_MODEL_BASE_URL", "").strip()
         _model_name = _os.environ.get("UAA_SUPERVISOR_MODEL_NAME", "").strip()
         _model_key = _os.environ.get("UAA_SUPERVISOR_MODEL_API_KEY", "").strip()
-        if _model_base and _model_name and _model_key:
+        _planner_arg = getattr(args, "planner", "deterministic")
+        if _planner_arg == "model" and _model_base and _model_name and _model_key:
             planner: DeterministicPlanner | OpenAICompatiblePlanner = OpenAICompatiblePlanner(
                 policy_engine
             )
