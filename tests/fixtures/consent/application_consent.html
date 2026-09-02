@@ -1,0 +1,18 @@
+<!DOCTYPE html>
+<html lang="de">
+<head><meta charset="utf-8"><title>Application Consent Only</title></head>
+<body>
+<form id="application-form">
+  <h1>Bewerbungsformular</h1>
+  <input name="firstName" placeholder="Vorname:*">
+  <input name="lastName" placeholder="Nachname:*">
+  <input name="email" placeholder="E-Mail:*">
+  <label><input type="radio" name="consent_storage" value="ja"> Einwilligung in die Speicherung meiner Daten für die betreffende Stelle</label>
+  <label><input type="radio" name="consent_storage" value="nein"> Nein</label>
+  <label><input type="radio" name="consent_forward" value="ja"> Ich stimme der Datenschutzerklärung zu</label>
+  <label><input type="radio" name="consent_forward" value="nein"> Nein</label>
+  <input type="file" name="resume">
+  <button type="submit">Absenden</button>
+</form>
+</body>
+</html>

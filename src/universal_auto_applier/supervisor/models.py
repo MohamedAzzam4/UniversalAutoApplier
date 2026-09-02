@@ -94,6 +94,8 @@ class ReasonCode(StrEnum):
     RETRYABLE_EXECUTION_FAILURE = "retryable_execution_failure"
     UAA_MAPPING_DEFECT = "uaa_mapping_defect"
     UAA_EXECUTION_DEFECT = "uaa_execution_defect"
+    COOKIE_CONSENT_BLOCKED = "cookie_consent_blocked"
+    COOKIE_CONSENT_RESOLVED = "cookie_consent_resolved"
     REVIEW_READY = "review_ready"
     DEDICATED_SIEMENS_WORKFLOW = "dedicated_siemens_workflow"
     UNKNOWN_FAILURE = "unknown_failure"

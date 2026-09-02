@@ -193,6 +193,13 @@ class Settings(BaseModel):
     # does not make Phase A submit-capable.
     wq8_phase_a: bool = Field(default=False)
 
+    # Cookie/CMP preflight policy for blocking privacy banners.
+    # necessary_only (default): click "Nur technisch notwendige Cookies akzeptieren"
+    # or equivalent necessary-only button; never "Alle akzeptieren".
+    # accept_all: click "Alle akzeptieren" / "Accept all".
+    # human: never auto-click; requires human if CMP detected.
+    cookie_consent_policy: str = Field(default="necessary_only")
+
     model_config = {"frozen": True, "extra": "ignore"}
 
     @model_validator(mode="after")
@@ -226,6 +233,15 @@ class Settings(BaseModel):
         ``UAA_JOBHUNTER_QUEUE`` variable are interchangeable.
         """
         return self.queue_path
+
+    @field_validator("cookie_consent_policy")
+    @classmethod
+    def _validate_cookie_policy(cls, value: str) -> str:
+        if value not in {"necessary_only", "accept_all", "human"}:
+            raise ValueError(
+                "UAA_COOKIE_CONSENT_POLICY must be one of: necessary_only, accept_all, human"
+            )
+        return value
 
     @field_validator("host")
     @classmethod
@@ -371,4 +387,6 @@ def load_settings(env: dict[str, str] | None = None) -> Settings:
             "UAA_SYNTHETIC_MUTATION_MAX_MUTATIONS", 60, 1, 200
         ),
         wq8_phase_a=_parse_bool(source.get("UAA_WQ8_PHASE_A", "false").strip()),
+        cookie_consent_policy=source.get("UAA_COOKIE_CONSENT_POLICY", "necessary_only").strip()
+        or "necessary_only",
     )

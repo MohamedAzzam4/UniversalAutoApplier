@@ -1,0 +1,44 @@
+<!DOCTYPE html>
+<html lang="de">
+<head><meta charset="utf-8"><title>Usercentrics CMP</title></head>
+<body>
+<div id="usercentrics-root" style="position:fixed; inset:0; z-index:9999; background:white; display:block;">
+  <h1>Privatsphäre-Einstellungen</h1>
+  <p>Wir nutzen Cookies und ähnliche Technologien, um Inhalte zu personalisieren. Bitte wähle deine Cookie-Einstellungen.</p>
+  <button onclick="document.getElementById('usercentrics-root').style.display='none'">Nur technisch notwendige Cookies akzeptieren</button>
+  <button>Alle akzeptieren</button>
+  <button>Einstellungen verwalten</button>
+  <button>Einstellungen speichern</button>
+</div>
+<!-- Underlying application form with 25 controls (msg-like) -->
+<form id="application-form">
+  <input name="firstName" placeholder="Vorname:*" required>
+  <input name="lastName" placeholder="Nachname:*" required>
+  <input name="birthDate" placeholder="Geburtsdatum:*">
+  <input name="street" placeholder="Straße:*">
+  <input name="plz" placeholder="PLZ:*">
+  <input name="city" placeholder="Ort:*">
+  <input name="email" placeholder="E-Mail:*" type="email">
+  <input name="phone" placeholder="Telefon:*">
+  <select name="location"><option>Gewünschter Einsatzort*</option></select>
+  <input name="salary" placeholder="Gehaltsvorstellung:*">
+  <label><input type="radio" name="disability" value="ja"> Ja</label>
+  <label><input type="radio" name="disability" value="nein"> Nein</label>
+  <select name="german"><option>Deutschkenntnisse*</option></select>
+  <select name="travel"><option>Reisebereitschaft*</option></select>
+  <input name="notice" placeholder="Kündigungsfrist:*">
+  <input name="referrer" placeholder="Welcher msg Mitarbeitende">
+  <textarea name="comment" placeholder="Kommentar"></textarea>
+  <input type="file" name="cv" accept=".pdf">
+  <select name="channel"><option>Ich habe von dem Unternehmen durch den folgenden Kanal erfahren:*</option></select>
+  <label><input type="radio" name="consent1" value="ja"> Einwilligung in die Speicherung meiner Daten</label>
+  <label><input type="radio" name="consent2" value="ja"> Einwilligung zur internen Weiterleitung</label>
+  <input name="extra1" placeholder="Adresszusatz">
+  <input name="extra2" placeholder="Anrede">
+  <input name="extra3" placeholder="Land:*">
+  <input name="extra4" placeholder="Telefon2">
+  <input name="extra5" placeholder="Extra">
+  <button type="submit">Absenden</button>
+</form>
+</body>
+</html>

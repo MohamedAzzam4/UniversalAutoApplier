@@ -21,6 +21,7 @@ from playwright.sync_api import (
     sync_playwright,
 )
 
+from universal_auto_applier.browser.consent_banner import handle_consent_banner
 from universal_auto_applier.browser.live_models import (
     LiveClickRecord,
     LiveFormObservation,
@@ -76,6 +77,8 @@ class LiveBrowserConfig:
     # first application form it detects and records a structural observation
     # of that form. This is a stricter superset of the WQ-7A dry-run safety posture.
     recon_only: bool = False
+    # Cookie/CMP preflight policy: "necessary_only" (default), "accept_all", "human".
+    cookie_consent_policy: str = "necessary_only"
 
     def __post_init__(self) -> None:
         if self.timeout_ms < 1_000:
@@ -230,6 +233,12 @@ class LiveBrowserRunner:
             self._wait_for_stable_page(page)
 
             for step_number in range(1, self._config.max_steps + 1):
+                # Cookie/CMP preflight (A: after initial/detail nav, B: after form nav, C: before interaction)
+                cmp_blocker = self._handle_cmp_preflight(page, job.application_id)
+                if cmp_blocker:
+                    report.status = "needs_user_input"
+                    report.stopped_reason = cmp_blocker
+                    break
                 observation_shot = self._screenshot(
                     page,
                     run_dir,
@@ -465,6 +474,32 @@ class LiveBrowserRunner:
 
         return report
 
+    def _handle_cmp_preflight(self, page: Page, job_id: str) -> str | None:
+        """Run deterministic CMP preflight; return blocker reason or None."""
+        from typing import cast as _cast
+
+        from universal_auto_applier.browser.consent_banner import ConsentPolicy
+
+        result = handle_consent_banner(
+            page,
+            policy=_cast(ConsentPolicy, self._config.cookie_consent_policy),
+            timeout_ms=4000,
+        )
+        if result.result == "absent":
+            return None
+        logger.info(
+            "[%s] CMP preflight cmp=%s policy=%s action=%s result=%s clicked=%s",
+            job_id[:12],
+            result.cmp or "unknown",
+            result.policy,
+            result.action,
+            result.result,
+            result.clicked,
+        )
+        if result.result == "resolved":
+            return None
+        return "cookie_consent_blocked"
+
     def _wait_for_stable_page(self, page: Page) -> None:
         try:
             page.wait_for_load_state("networkidle", timeout=min(self._config.timeout_ms, 5_000))
@@ -690,6 +725,12 @@ class LiveBrowserRunner:
             self._wait_for_stable_page(page)
 
             for step_number in range(1, self._config.max_steps + 1):
+                # Cookie/CMP preflight (A: after initial/detail nav, B: after form nav, C: before interaction)
+                cmp_blocker = self._handle_cmp_preflight(page, job.application_id)
+                if cmp_blocker:
+                    report.status = "needs_user_input"
+                    report.stopped_reason = cmp_blocker
+                    break
                 self._screenshot(
                     page,
                     run_dir,

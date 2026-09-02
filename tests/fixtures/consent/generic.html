@@ -1,0 +1,20 @@
+<!DOCTYPE html>
+<html lang="en">
+<head><meta charset="utf-8"><title>Generic CMP</title></head>
+<body>
+<div id="onetrust-consent-sdk" style="position:fixed; bottom:0; left:0; right:0; z-index:9999; background:#fff; border-top:1px solid #ccc; padding:20px;">
+  <h2>Cookie Preferences</h2>
+  <p>We use cookies to improve your experience. Choose your cookie settings.</p>
+  <button onclick="document.getElementById('onetrust-consent-sdk').style.display='none'">Reject all</button>
+  <button>Accept all</button>
+  <button>Cookie Settings</button>
+</div>
+<form id="app-form">
+  <input name="firstName" placeholder="First Name*">
+  <input name="lastName" placeholder="Last Name*">
+  <input name="email" placeholder="Email*">
+  <input type="file" name="resume">
+  <button type="submit">Submit Application</button>
+</form>
+</body>
+</html>

@@ -257,6 +257,35 @@ class SubmissionExecutionService:
             )
             page.wait_for_timeout(1_000)  # Let JS settle.
 
+            # Cookie/CMP preflight after initial navigation (detail page).
+            # A blocking Usercentrics/Cookiebot overlay must be resolved
+            # before any form discovery. Unknown CMP fails closed.
+            try:
+                from universal_auto_applier.browser.consent_banner import handle_consent_banner
+
+                policy = getattr(self._settings, "cookie_consent_policy", "necessary_only")
+                _cmp_result = handle_consent_banner(page, policy=policy, timeout_ms=4000)  # type: ignore[arg-type]
+                if _cmp_result.result in ("blocked", "human_required"):
+                    logger.warning(
+                        "[%s] observe: cookie consent blocked (cmp=%s policy=%s result=%s)",
+                        application_id[:12],
+                        _cmp_result.cmp,
+                        _cmp_result.policy,
+                        _cmp_result.result,
+                    )
+                    raise RuntimeError("cookie_consent_blocked")
+                if _cmp_result.result == "resolved":
+                    logger.info(
+                        "[%s] observe: cookie consent resolved (cmp=%s policy=%s)",
+                        application_id[:12],
+                        _cmp_result.cmp,
+                        _cmp_result.policy,
+                    )
+            except RuntimeError:
+                raise
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("[%s] CMP preflight failed: %s", application_id[:12], exc)
+
             # Navigate from the detail page to the actual application form
             # using the EXISTING safe navigation semantics (analyze_page +
             # choose_safe_action + click_action) — the same proven loop used
@@ -355,6 +384,31 @@ class SubmissionExecutionService:
             if not form_reached:
                 logger.warning("[%s] observe: application form not reached", application_id[:12])
                 return None
+
+            # Cookie/CMP preflight on the actual form page (B/C).
+            try:
+                from universal_auto_applier.browser.consent_banner import handle_consent_banner
+
+                form_policy = getattr(self._settings, "cookie_consent_policy", "necessary_only")
+                _cmp_form = handle_consent_banner(page, policy=form_policy, timeout_ms=4000)  # type: ignore[arg-type]
+                if _cmp_form.result in ("blocked", "human_required"):
+                    logger.warning(
+                        "[%s] observe: cookie consent blocked on form (cmp=%s result=%s)",
+                        application_id[:12],
+                        _cmp_form.cmp,
+                        _cmp_form.result,
+                    )
+                    raise RuntimeError("cookie_consent_blocked")
+                if _cmp_form.result == "resolved":
+                    logger.info(
+                        "[%s] observe: cookie consent resolved on form (cmp=%s)",
+                        application_id[:12],
+                        _cmp_form.cmp,
+                    )
+            except RuntimeError:
+                raise
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("[%s] CMP preflight on form failed: %s", application_id[:12], exc)
 
             # We are now on the actual application form. Fill it.
             actual_form_url = page.url

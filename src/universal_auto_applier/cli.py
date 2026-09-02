@@ -421,6 +421,7 @@ def _live_dry_run(settings: Settings, args: argparse.Namespace) -> int:
         timeout_ms=args.timeout_ms or settings.browser_timeout_ms,
         max_steps=args.max_steps or settings.browser_max_steps,
         wq8_phase_a=wq8_phase_a,
+        cookie_consent_policy=settings.cookie_consent_policy,  # type: ignore[arg-type]
     )
     candidate = resolve_candidate_profile(job.metadata, settings.candidate_profile)
 
@@ -890,6 +891,7 @@ def _live_synthetic_mutation(settings: Settings, args: argparse.Namespace) -> in
         timeout_ms=args.timeout_ms or settings.browser_timeout_ms,
         max_steps=args.max_steps or settings.browser_max_steps,
         hard_submit_block=True,  # interlock armed before any mutation
+        cookie_consent_policy=settings.cookie_consent_policy,  # type: ignore[arg-type]
     )
     budget = args.max_mutations or settings.synthetic_mutation_max_mutations
     budget = max(1, min(budget, settings.synthetic_mutation_max_mutations))

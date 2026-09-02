@@ -1218,3 +1218,40 @@ def test_t_no_dynamic_dispatch_from_model_output() -> None:
         d = planner.parse_decision(raw, "a" * 64)
         assert d.action == SupervisorAction.REQUEST_HUMAN
         assert d.reason_code == ReasonCode.UNKNOWN_FAILURE
+
+
+# ---------------------------------------------------------------------------
+# U. cookie consent blocked — handoff with COOKIE_CONSENT_BLOCKED
+# ---------------------------------------------------------------------------
+
+
+def test_u_cookie_consent_blocked_handoff(tmp_path: Path) -> None:
+    factory, engine = _session_factory(tmp_path)
+    try:
+        settings = _settings(tmp_path)
+        job = _make_job(external_job_id="u-cookie", url="https://example.com/jobs/cookie")
+        _insert_job(factory, job)
+
+        def prepare(app_id: str) -> PrepareOutcome:
+            return PrepareOutcome(
+                application_id=app_id, snapshot=None, error="cookie_consent_blocked"
+            )
+
+        tools = SupervisorTools(settings=settings, session_factory=factory, prepare_fn=prepare)
+        pe = PolicyEngine()
+        service = SupervisorService(
+            tools=tools, policy_engine=pe, planner=DeterministicPlanner(pe), session_factory=factory
+        )
+        summary = service.run(application_ids=[job.application_id])
+        assert any(h["application_id"] == job.application_id for h in summary.needs_human)
+        assert any(
+            h["reason_code"] == ReasonCode.COOKIE_CONSENT_BLOCKED.value for h in summary.needs_human
+        )
+        with session_scope(factory) as s:
+            from universal_auto_applier.supervisor.store import get_supervisor_application_state
+
+            st = get_supervisor_application_state(s, job.application_id)
+            assert st is not None
+            assert st.reason_code == ReasonCode.COOKIE_CONSENT_BLOCKED.value
+    finally:
+        engine.dispose()

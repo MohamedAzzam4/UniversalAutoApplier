@@ -213,6 +213,18 @@ IDs are random hex; timestamps are UTC-aware; JSON fields carry redacted
 metadata only. Deterministic upgrade/downgrade, proper indexes, no PII-heavy
 columns. `tests/contract/test_migrations.py:CURRENT_HEAD = "0016_supervisor"`.
 
+## Cookie / CMP Handling (Pilot Defect Closure)
+
+Pilot `https://jobs.msg.group/de/jobs/411/form` with 25 underlying fields was **not interaction-ready**: full-page Usercentrics `Privatsphäre-Einstellungen` overlay (buttons `Nur technisch notwendige Cookies akzeptieren` / `Alle akzeptieren`) blocked the UI, but `analyze_page` still saw the form. New deterministic component `src/universal_auto_applier/browser/consent_banner.py` distinguishes `FORM_DISCOVERED` vs `FORM_INTERACTION_READY`.
+
+- **Component**: `ConsentBannerHandler` (`handle_consent_banner`) in deterministic browser layer, **not** an LLM tool. Flow: navigate → detect CMP → resolve per policy → verify dismissed → only then analyze/fill.
+- **Policy** `UAA_COOKIE_CONSENT_POLICY` (Settings) default `necessary_only` (other values `accept_all`, `human`). Under `necessary_only`, Usercentrics correctly clicks `Nur technisch notwendige Cookies akzeptieren`, never `Alle akzeptieren`.
+- **Application consent vs cookie consent**: Handler requires CMP context (known selectors `usercentrics`/`onetrust`/`cookiebot` or visible `role=dialog`/`overlay` containing cookie semantics `cookie`/`privatsphäre`/`privacy settings`). Form fields `Einwilligung in die Speicherung...` without CMP are never auto-clicked.
+- **Fail closed**: Unknown CMP with no suitable necessary_only button → `blocked`, no retry loop, `COOKIE_CONSENT_BLOCKED` handoff, no form filling.
+- **Reason codes** `COOKIE_CONSENT_BLOCKED` / `COOKIE_CONSENT_RESOLVED` (ReasonCode), audit `cmp=Usercentrics policy=necessary_only action=necessary_only result=resolved clicked=true` (sanitized, no cookie values).
+- **Integration**: `browser/live_runner.py` (both `run_in_context` and `run_in_context_synthetic`) preflights at top of each navigation step (A/B/C), `submission/execution_service.py` preflights after initial `page.goto` and after form navigation before `execute_live_form`. Already-cleared banners are idempotent (`absent`).
+- **Tests**: fixtures `tests/fixtures/consent/{usercentrics,generic,unknown_cmp,application_consent}.html`, `tests/playwright/test_consent_banner.py` 7 tests (Usercentrics, generic, unknown blocked, application consent not clicked, pilot regression, unresolved blocks, never clicks `dangerous_submit`), `test_u_cookie_consent_blocked_handoff` in supervisor, full non-live gate 1430 passed.
+
 ## Safety Audit
 
 - No raw browser escape hatch in `supervisor/` (proven in `test_n_*`).
@@ -220,6 +232,7 @@ columns. `tests/contract/test_migrations.py:CURRENT_HEAD = "0016_supervisor"`.
 - Existing submit interlock unchanged; WQ-8 one-real-submit budget untouched.
 - `application_id` semantics unchanged; `job.url` semantics unchanged.
 - Supervisor V0 persistence changes narrowly; no unrelated WQ-8 modifications.
+- CMP handler never clicks `dangerous_submit` or application `Einwilligung`; verified in `test_handler_never_clicks_dangerous_submit` and `test_application_consent_not_clicked`.
 
 ## Future Integration
 
@@ -233,7 +246,7 @@ columns. `tests/contract/test_migrations.py:CURRENT_HEAD = "0016_supervisor"`.
 
 ## Tests
 
-`tests/unit/test_supervisor_v0.py` (hermetic, synthetic, no ATS traffic):
+`tests/unit/test_supervisor_v0.py` (hermetic, synthetic, no ATS traffic, 28 tests):
 
 A. `prepare → review_ready` · B. known candidate fact `resolve → retry → review_ready`
 · C. owner policy trusted answer · D. unknown salary → `NEEDS_HUMAN` · E. CAPTCHA
@@ -244,7 +257,14 @@ Siemens → `SKIPPED` (preparation never starts) · J. CV + transcript bundle
 → per-job persists, global memory untouched · L. invalid planner/model output
 → fail closed, no mutation · M. attempted `SUBMIT` decision → rejected by
 schema/policy, no submission tool · N. raw browser click attempt → impossible
-through tool registry · O. aggregated handoff/run summary.
+through tool registry · O. aggregated handoff/run summary · P. run scope
+isolation · Q. Siemens mixed queue · R. policy audit 8 personal facts ·
+S. CLI review-only · T. no dynamic dispatch · U. cookie `COOKIE_CONSENT_BLOCKED` handoff.
+
+`tests/playwright/test_consent_banner.py` (7 tests, hermetic fixtures):
+Usercentrics `necessary_only`, generic OneTrust, unknown CMP blocked, application consent not clicked, pilot regression old vs new, unresolved blocks, never clicks `dangerous_submit`.
+
+Full non-live gate `pytest tests/unit tests/contract tests/integration -m "not playwright and not live"` → **1430 passed, 4 deselected**.
 
 ## Diagrams
 

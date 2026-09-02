@@ -262,14 +262,20 @@ class SupervisorService:
 
             if outcome.blocked:
                 # Conservative: an unreachable/blocked observation is a human
-                # matter (CAPTCHA, login wall, moved form, ...) — NEVER
+                # matter (CAPTCHA, login wall, moved form, cookie banner...) — NEVER
                 # auto-retried, so a blocker can never loop.
+                if outcome.error and "cookie_consent_blocked" in outcome.error.lower():
+                    cookie_reason = ReasonCode.COOKIE_CONSENT_BLOCKED
+                else:
+                    cookie_reason = (
+                        ReasonCode.NO_SAFE_NAVIGATION
+                        if outcome.error
+                        else ReasonCode.UNKNOWN_FAILURE
+                    )
                 self._handoff(
                     run_id,
                     job,
-                    reason_code=ReasonCode.NO_SAFE_NAVIGATION
-                    if outcome.error
-                    else ReasonCode.UNKNOWN_FAILURE,
+                    reason_code=cookie_reason,
                     question="",
                     action_required="Inspect the live application page and resume manually (observation was blocked).",
                     tool_result=outcome.error or "observation blocked",
@@ -279,7 +285,7 @@ class SupervisorService:
                     {
                         "application_id": app_id,
                         "company": job.company,
-                        "reason_code": ReasonCode.NO_SAFE_NAVIGATION.value,
+                        "reason_code": cookie_reason.value,
                     }
                 )
                 return
