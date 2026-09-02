@@ -1273,11 +1273,15 @@ def _wq8_status(settings: Settings, args: argparse.Namespace) -> int:
 
 def _supervisor_run(settings: Settings, args: argparse.Namespace) -> int:
     """Run the agent-assisted supervisor (V0, review-only, concurrency=1)."""
+    import os as _os
     from pathlib import Path as _Path
 
     from universal_auto_applier.supervisor import PolicyEngine, SupervisorService, SupervisorTools
     from universal_auto_applier.supervisor.models import SupervisorLimits
-    from universal_auto_applier.supervisor.planner import DeterministicPlanner
+    from universal_auto_applier.supervisor.planner import (
+        DeterministicPlanner,
+        OpenAICompatiblePlanner,
+    )
     from universal_auto_applier.supervisor.policy import load_owner_policies
 
     if not getattr(args, "review_only", True):
@@ -1306,7 +1310,20 @@ def _supervisor_run(settings: Settings, args: argparse.Namespace) -> int:
     engine, session_factory = _open_store(settings)
     try:
         policy_engine = PolicyEngine(owner_policies=owner_policies)
-        planner = DeterministicPlanner(policy_engine)
+        # Choose planner: model-backed if env is configured, else deterministic.
+        # This allows the pilot to actually exercise the AI Supervisor.
+        _model_base = _os.environ.get("UAA_SUPERVISOR_MODEL_BASE_URL", "").strip()
+        _model_name = _os.environ.get("UAA_SUPERVISOR_MODEL_NAME", "").strip()
+        _model_key = _os.environ.get("UAA_SUPERVISOR_MODEL_API_KEY", "").strip()
+        if _model_base and _model_name and _model_key:
+            planner: DeterministicPlanner | OpenAICompatiblePlanner = OpenAICompatiblePlanner(
+                policy_engine
+            )
+            planner_type = f"model-backed ({_model_name} via {_model_base.split('/')[2] if '/' in _model_base else _model_base})"
+        else:
+            planner = DeterministicPlanner(policy_engine)
+            planner_type = "deterministic"
+        print(f"supervisor planner: {planner_type}")
         tools = SupervisorTools(settings=settings, session_factory=session_factory)
         service = SupervisorService(
             tools=tools,
