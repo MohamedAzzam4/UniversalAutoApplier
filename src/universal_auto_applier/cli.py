@@ -44,6 +44,13 @@ CLI_COMMANDS: frozenset[str] = frozenset(
         "supervisor-handoffs",
         "supervisor-tickets",
         "supervisor-review-ready",
+        "supervisor-application",
+        "supervisor-interventions",
+        "supervisor-candidate-facts",
+        "supervisor-review-packet",
+        "supervisor-repair-context",
+        "supervisor-resolve-intervention",
+        "supervisor-retry",
     }
 )
 
@@ -339,6 +346,69 @@ def _build_parser() -> argparse.ArgumentParser:
         help="List review-ready applications from the latest or a specific supervisor run.",
     )
     sup_review.add_argument("--run-id", help="Specific run ID (default: latest).")
+
+    # --- Additional supervisor commands for external agent interface ---
+    sup_app = subparsers.add_parser(
+        "supervisor-application",
+        help="Get detailed status for a single application (JSON output).",
+    )
+    sup_app.add_argument("--application-id", required=True, help="Application ID.")
+    sup_app.add_argument("--json", action="store_true", help="Output as JSON.")
+
+    sup_int = subparsers.add_parser(
+        "supervisor-interventions",
+        help="Get pending interventions for an application (JSON output).",
+    )
+    sup_int.add_argument("--application-id", required=True, help="Application ID.")
+    sup_int.add_argument("--json", action="store_true", help="Output as JSON.")
+
+    sup_facts = subparsers.add_parser(
+        "supervisor-candidate-facts",
+        help="Get candidate fact keys for an application (JSON output, keys only — no values).",
+    )
+    sup_facts.add_argument("--application-id", required=True, help="Application ID.")
+    sup_facts.add_argument("--json", action="store_true", help="Output as JSON.")
+
+    sup_review_pkt = subparsers.add_parser(
+        "supervisor-review-packet",
+        help="Get the canonical review packet for an application (JSON output).",
+    )
+    sup_review_pkt.add_argument("--application-id", required=True, help="Application ID.")
+    sup_review_pkt.add_argument("--json", action="store_true", help="Output as JSON.")
+
+    sup_repair = subparsers.add_parser(
+        "supervisor-repair-context",
+        help="Get repair context for an application (JSON output — combines status, interventions, snapshot).",
+    )
+    sup_repair.add_argument("--application-id", required=True, help="Application ID.")
+    sup_repair.add_argument("--json", action="store_true", help="Output as JSON.")
+
+    sup_resolve = subparsers.add_parser(
+        "supervisor-resolve-intervention",
+        help="Resolve an intervention through the official resolve service (JSON output).",
+    )
+    sup_resolve.add_argument("--intervention-id", required=True, help="Intervention ID.")
+    sup_resolve.add_argument(
+        "--resolution",
+        required=True,
+        choices=["resolved", "dismissed", "escalated"],
+        help="Resolution status.",
+    )
+    sup_resolve.add_argument("--answer", help="Answer text for FIELD_ANSWER interventions.")
+    sup_resolve.add_argument(
+        "--file-bundle", action="append", help="File bundle as 'kind:path' pairs (repeatable)."
+    )
+    sup_resolve.add_argument(
+        "--save-to-memory", action="store_true", help="Save answer to reusable memory."
+    )
+    sup_resolve.add_argument("--json", action="store_true", help="Output as JSON.")
+
+    sup_retry = subparsers.add_parser(
+        "supervisor-retry",
+        help="Retry the review-only preparation for an application (JSON output).",
+    )
+    sup_retry.add_argument("--application-id", required=True, help="Application ID.")
+    sup_retry.add_argument("--json", action="store_true", help="Output as JSON.")
 
     return parser
 
@@ -1503,6 +1573,208 @@ def _supervisor_review_ready(settings: Settings, args: argparse.Namespace) -> in
         engine.dispose()
 
 
+def _supervisor_application(settings: Settings, args: argparse.Namespace) -> int:
+    import json as _json
+
+    from universal_auto_applier.supervisor.tools import SupervisorTools
+
+    engine, session_factory = _open_store(settings)
+    try:
+        tools = SupervisorTools(settings=settings, session_factory=session_factory)
+        status = tools.get_application_status(args.application_id)
+        if getattr(args, "json", False):
+            print(_json.dumps(status, indent=2))
+        else:
+            for k, v in status.items():
+                print(f"{k}: {v}")
+        return 0
+    except Exception as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 2
+    finally:
+        engine.dispose()
+
+
+def _supervisor_interventions(settings: Settings, args: argparse.Namespace) -> int:
+    import json as _json
+
+    from universal_auto_applier.supervisor.tools import SupervisorTools
+
+    engine, session_factory = _open_store(settings)
+    try:
+        tools = SupervisorTools(settings=settings, session_factory=session_factory)
+        interventions = tools.get_interventions(args.application_id)
+        if getattr(args, "json", False):
+            print(_json.dumps([vars(i) for i in interventions], indent=2))
+        else:
+            for i in interventions:
+                print(f"intervention_id: {i.intervention_id}")
+                print(f"  kind: {i.kind}")
+                print(f"  question: {i.question}")
+                print(f"  field_label: {i.field_label}")
+                print(f"  field_type: {i.field_type}")
+                print(f"  options: {i.options}")
+                print(f"  reason: {i.reason}")
+                print(f"  required: {i.required}")
+                print(f"  suggested_answer: {i.suggested_answer}")
+                print(f"  confidence: {i.confidence}")
+                print(f"  risk_level: {i.risk_level}")
+                print(f"  category: {i.category}")
+                print()
+        return 0
+    except Exception as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 2
+    finally:
+        engine.dispose()
+
+
+def _supervisor_candidate_facts(settings: Settings, args: argparse.Namespace) -> int:
+    import json as _json
+
+    from universal_auto_applier.supervisor.tools import SupervisorTools
+
+    engine, session_factory = _open_store(settings)
+    try:
+        tools = SupervisorTools(settings=settings, session_factory=session_factory)
+        job = tools.get_job(args.application_id)
+        if job is None:
+            print(f"error: application not found: {args.application_id}", file=sys.stderr)
+            return 2
+        keys = tools.candidate_fact_keys(job)
+        result = {"application_id": args.application_id, "candidate_fact_keys": keys}
+        if getattr(args, "json", False):
+            print(_json.dumps(result, indent=2))
+        else:
+            for k in keys:
+                print(k)
+        return 0
+    except Exception as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 2
+    finally:
+        engine.dispose()
+
+
+def _supervisor_review_packet(settings: Settings, args: argparse.Namespace) -> int:
+    import json as _json
+
+    from universal_auto_applier.supervisor.tools import SupervisorTools
+
+    engine, session_factory = _open_store(settings)
+    try:
+        tools = SupervisorTools(settings=settings, session_factory=session_factory)
+        packet = tools.get_review_packet(args.application_id)
+        if packet is None:
+            print(f"error: no review packet available for {args.application_id}", file=sys.stderr)
+            return 2
+        if getattr(args, "json", False):
+            print(_json.dumps(packet, indent=2))
+        else:
+            for k, v in packet.items():
+                print(f"{k}: {v}")
+        return 0
+    except Exception as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 2
+    finally:
+        engine.dispose()
+
+
+def _supervisor_repair_context(settings: Settings, args: argparse.Namespace) -> int:
+    import json as _json
+
+    from universal_auto_applier.supervisor.tools import SupervisorTools
+
+    engine, session_factory = _open_store(settings)
+    try:
+        tools = SupervisorTools(settings=settings, session_factory=session_factory)
+        status = tools.get_application_status(args.application_id)
+        interventions = tools.get_interventions(args.application_id)
+        snapshot = tools.load_review_snapshot(args.application_id)
+        result = {
+            "application_id": args.application_id,
+            "status": status,
+            "interventions": [vars(i) for i in interventions],
+            "snapshot": snapshot.model_dump() if snapshot is not None else None,
+        }
+        if getattr(args, "json", False):
+            print(_json.dumps(result, indent=2))
+        else:
+            print(_json.dumps(result, indent=2))
+        return 0
+    except Exception as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 2
+    finally:
+        engine.dispose()
+
+
+def _supervisor_resolve_intervention(settings: Settings, args: argparse.Namespace) -> int:
+    import json as _json
+
+    from universal_auto_applier.supervisor.tools import SupervisorTools
+
+    engine, session_factory = _open_store(settings)
+    try:
+        tools = SupervisorTools(settings=settings, session_factory=session_factory)
+        file_bundle: list[dict[str, str]] | None = None
+        if getattr(args, "file_bundle", None):
+            file_bundle = []
+            for fb in args.file_bundle:
+                if ":" in fb:
+                    kind, path = fb.split(":", 1)
+                    file_bundle.append({"document_kind": kind, "content_hash": path})
+                else:
+                    file_bundle.append({"document_kind": "unknown", "content_hash": fb})
+        result = tools.resolve_intervention(
+            intervention_id=args.intervention_id,
+            resolution=args.resolution,
+            answer=args.answer,
+            file_bundle=file_bundle,
+            save_to_memory=getattr(args, "save_to_memory", False),
+        )
+        if getattr(args, "json", False):
+            print(_json.dumps(result, indent=2))
+        else:
+            for k, v in result.items():
+                print(f"{k}: {v}")
+        return 0
+    except Exception as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 2
+    finally:
+        engine.dispose()
+
+
+def _supervisor_retry(settings: Settings, args: argparse.Namespace) -> int:
+    import json as _json
+
+    from universal_auto_applier.supervisor.tools import SupervisorTools
+
+    engine, session_factory = _open_store(settings)
+    try:
+        tools = SupervisorTools(settings=settings, session_factory=session_factory)
+        outcome = tools.retry_application(args.application_id)
+        result = {
+            "application_id": outcome.application_id,
+            "blocked": outcome.blocked,
+            "error": outcome.error,
+            "snapshot": outcome.snapshot.model_dump() if outcome.snapshot is not None else None,
+        }
+        if getattr(args, "json", False):
+            print(_json.dumps(result, indent=2))
+        else:
+            for k, v in result.items():
+                print(f"{k}: {v}")
+        return 0
+    except Exception as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 2
+    finally:
+        engine.dispose()
+
+
 def run_command(argv: list[str], settings: Settings) -> int:
     """Run a non-server CLI command and return its process exit code."""
     parser = _build_parser()
@@ -1537,6 +1809,20 @@ def run_command(argv: list[str], settings: Settings) -> int:
         return _supervisor_tickets(settings, args)
     if args.command == "supervisor-review-ready":
         return _supervisor_review_ready(settings, args)
+    if args.command == "supervisor-application":
+        return _supervisor_application(settings, args)
+    if args.command == "supervisor-interventions":
+        return _supervisor_interventions(settings, args)
+    if args.command == "supervisor-candidate-facts":
+        return _supervisor_candidate_facts(settings, args)
+    if args.command == "supervisor-review-packet":
+        return _supervisor_review_packet(settings, args)
+    if args.command == "supervisor-repair-context":
+        return _supervisor_repair_context(settings, args)
+    if args.command == "supervisor-resolve-intervention":
+        return _supervisor_resolve_intervention(settings, args)
+    if args.command == "supervisor-retry":
+        return _supervisor_retry(settings, args)
     parser.error(f"unknown command: {args.command}")
     return 2
 

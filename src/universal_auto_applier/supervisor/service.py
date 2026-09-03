@@ -30,6 +30,7 @@ from sqlalchemy.orm import Session, sessionmaker
 from universal_auto_applier.core.models import ApplicationJob
 from universal_auto_applier.core.statuses import ApplicationStatus
 from universal_auto_applier.persistence.db import session_scope
+from universal_auto_applier.submission.authorization import _file_content_hash
 from universal_auto_applier.supervisor.models import (
     AnswerSource,
     PlannerContext,
@@ -173,6 +174,47 @@ class SupervisorService:
                 )
         return summary
 
+    def _check_document_lineage(self, app_id: str) -> tuple[bool, str | None]:
+        """Pre-preparation lineage gate: verify on-disk documents match stored hashes.
+
+        Returns (allowed, reason). If allowed is False, preparation is blocked.
+        """
+        job = self._tools.get_job(app_id)
+        if job is None:
+            return False, f"application not found: {app_id}"
+
+        stored_hashes = job.metadata.get("document_hashes") if job.metadata else None
+        if not stored_hashes:
+            # No stored hashes — nothing to verify (legacy job or no documents)
+            return True, None
+
+        # Compute current hashes for the same document fields.
+        current_hashes = {}
+        for field_name in ("cv_pdf", "cover_letter_pdf"):
+            path = getattr(job, field_name, None)
+            if path:
+                current_hashes[field_name] = _file_content_hash(path)
+
+        if job.documents:
+            for field_name in ("cv_md", "cover_letter_md"):
+                path = getattr(job.documents, field_name, None)
+                if path:
+                    current_hashes[field_name] = _file_content_hash(path)
+
+        # Compare stored vs current for fields that have stored hashes.
+        for field_name, stored_hash in stored_hashes.items():
+            if field_name not in current_hashes:
+                # Document was removed — lineage broken
+                return False, f"document {field_name} missing (stored hash: {stored_hash[:8]}...)"
+            if stored_hash != current_hashes[field_name]:
+                # Document content changed — lineage broken
+                return (
+                    False,
+                    f"document {field_name} hash mismatch (stored: {stored_hash[:8]}..., current: {current_hashes[field_name][:8]}...)",
+                )
+
+        return True, None
+
     # ------------------------------------------------------------------
     # Per-application state machine
     # ------------------------------------------------------------------
@@ -245,6 +287,45 @@ class SupervisorService:
             self._set_state(run_id, app_id, state, reason_code=ReasonCode.UNKNOWN_FAILURE)
             summary.skipped.append(
                 {"application_id": app_id, "company": job.company, "reason_code": job_status.value}
+            )
+            return
+
+        # Pre-preparation lineage gate: verify document package belongs to this application.
+        lineage_ok, lineage_reason = self._check_document_lineage(app_id)
+        if not lineage_ok:
+            logger.warning("[%s] document lineage check failed: %s", app_id[:12], lineage_reason)
+            self._handoff(
+                run_id,
+                job,
+                reason_code=ReasonCode.DOCUMENT_LINEAGE_MISMATCH,
+                question="Document package does not match the application — hashes do not match stored values.",
+                action_required="Verify the correct documents (CV, cover letter) are linked to this application.",
+                tool_result=lineage_reason or "document lineage check failed",
+                resulting_state=SupervisorState.NEEDS_HUMAN,
+            )
+            self._record(
+                run_id,
+                app_id,
+                action="lineage_check_failed",
+                previous_state=SupervisorState.IMPORTED,
+                resulting_state=SupervisorState.NEEDS_HUMAN,
+                reason_code=ReasonCode.DOCUMENT_LINEAGE_MISMATCH,
+                decision_source="policy",
+                tool_result=lineage_reason or "document lineage check failed",
+                retry_count=0,
+            )
+            self._set_state(
+                run_id,
+                app_id,
+                SupervisorState.NEEDS_HUMAN,
+                reason_code=ReasonCode.DOCUMENT_LINEAGE_MISMATCH,
+            )
+            summary.needs_human.append(
+                {
+                    "application_id": app_id,
+                    "company": job.company,
+                    "reason_code": ReasonCode.DOCUMENT_LINEAGE_MISMATCH.value,
+                }
             )
             return
 

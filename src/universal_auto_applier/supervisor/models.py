@@ -97,6 +97,7 @@ class ReasonCode(StrEnum):
     COOKIE_CONSENT_BLOCKED = "cookie_consent_blocked"
     COOKIE_CONSENT_RESOLVED = "cookie_consent_resolved"
     REVIEW_READY = "review_ready"
+    DOCUMENT_LINEAGE_MISMATCH = "document_lineage_mismatch"
     DEDICATED_SIEMENS_WORKFLOW = "dedicated_siemens_workflow"
     UNKNOWN_FAILURE = "unknown_failure"
 
