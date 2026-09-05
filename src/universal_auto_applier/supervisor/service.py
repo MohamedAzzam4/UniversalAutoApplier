@@ -52,6 +52,10 @@ from universal_auto_applier.supervisor.store import (
     record_supervisor_event,
     set_supervisor_application_state,
 )
+from universal_auto_applier.supervisor.target_preflight import (
+    EXPIRED as _TARGET_EXPIRED,
+    check_target_freshness as _check_target_freshness_fn,
+)
 from universal_auto_applier.supervisor.tools import (
     SupervisorTools,
 )
@@ -81,12 +85,16 @@ class SupervisorService:
         *,
         session_factory: sessionmaker[Session],
         limits: SupervisorLimits | None = None,
+        freshness_fn: Any | None = None,
     ) -> None:
         self._tools = tools
         self._policy = policy_engine
         self._planner = planner
         self._session_factory = session_factory
         self._limits = limits or SupervisorLimits()
+        # Injectable target-freshness check (status, detail). Defaults to
+        # the live deterministic preflight; tests inject canned outcomes.
+        self._freshness_fn = freshness_fn or _check_target_freshness_fn
 
     # ------------------------------------------------------------------
     # Run entry point
@@ -215,6 +223,22 @@ class SupervisorService:
 
         return True, None
 
+    def _check_target_freshness(self, job: ApplicationJob) -> tuple[str, str]:
+        """Pre-preparation target freshness preflight.
+
+        Returns (status, detail) where status is LIVE, EXPIRED, or UNKNOWN.
+        UNKNOWN (unsupported host, transient failure) never blocks.
+        """
+        try:
+            return self._freshness_fn(job.url, str(job.platform))
+        except Exception as exc:  # noqa: BLE001 — preflight must never kill the run
+            logger.warning(
+                "[%s] target freshness preflight failed open: %s",
+                job.application_id[:12],
+                type(exc).__name__,
+            )
+            return "UNKNOWN", f"preflight error: {type(exc).__name__}"
+
     # ------------------------------------------------------------------
     # Per-application state machine
     # ------------------------------------------------------------------
@@ -325,6 +349,43 @@ class SupervisorService:
                     "application_id": app_id,
                     "company": job.company,
                     "reason_code": ReasonCode.DOCUMENT_LINEAGE_MISMATCH.value,
+                }
+            )
+            return
+
+        # Pre-preparation target freshness preflight: a positively expired
+        # posting is skipped terminally (no handoff — there is no user
+        # answer for a removed job). UNKNOWN (unsupported host, transient
+        # failure) continues to preparation.
+        fresh_status, fresh_detail = self._check_target_freshness(job)
+        if fresh_status == _TARGET_EXPIRED:
+            logger.warning(
+                "[%s] application target expired, skipping: %s",
+                app_id[:12],
+                fresh_detail,
+            )
+            self._record(
+                run_id,
+                app_id,
+                action="skip_expired_target",
+                previous_state=SupervisorState.IMPORTED,
+                resulting_state=SupervisorState.SKIPPED,
+                reason_code=ReasonCode.APPLICATION_EXPIRED,
+                decision_source="policy",
+                tool_result=fresh_detail,
+                retry_count=0,
+            )
+            self._set_state(
+                run_id,
+                app_id,
+                SupervisorState.SKIPPED,
+                reason_code=ReasonCode.APPLICATION_EXPIRED,
+            )
+            summary.skipped.append(
+                {
+                    "application_id": app_id,
+                    "company": job.company,
+                    "reason_code": ReasonCode.APPLICATION_EXPIRED.value,
                 }
             )
             return

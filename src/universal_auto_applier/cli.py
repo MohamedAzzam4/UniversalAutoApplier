@@ -9,11 +9,13 @@ from typing import Any
 from urllib.parse import urlsplit
 
 from playwright.sync_api import sync_playwright
+from sqlalchemy.orm import Session
 
 from universal_auto_applier.browser.live_models import LiveRunReport
 from universal_auto_applier.browser.live_runner import LiveBrowserConfig, LiveBrowserRunner
 from universal_auto_applier.candidate_profile_loader import resolve_candidate_profile
 from universal_auto_applier.config import Settings
+from universal_auto_applier.core.models import ApplicationJob
 from universal_auto_applier.persistence.db import (
     build_engine_url,
     make_engine,
@@ -1573,6 +1575,90 @@ def _supervisor_review_ready(settings: Settings, args: argparse.Namespace) -> in
         engine.dispose()
 
 
+def _sanitize_failure_text(text: str, limit: int = 300) -> str:
+    """Redact paths/secrets from failure text for agent-facing output."""
+    import os as _os
+
+    cleaned = str(text or "").replace(_os.path.expanduser("~"), "~")
+    for token in ("sk-or-", "AIza", "xoxb-", "ghp_"):
+        idx = cleaned.find(token)
+        while idx != -1:
+            end = idx
+            while end < len(cleaned) and cleaned[end] not in (" ", '"', "'", "\n"):
+                end += 1
+            cleaned = cleaned[:idx] + token + "***" + cleaned[end:]
+            idx = cleaned.find(token)
+    return cleaned[:limit]
+
+
+def _failure_evidence(
+    session: Session, job: ApplicationJob, status: dict[str, Any]
+) -> dict[str, Any]:
+    """Build the sanitized failure-evidence block for one application.
+
+    Sources: latest supervisor event + latest application state row for
+    the app (both sanitized). Exposes no PII, cookies, tokens, HTML, or
+    credentials — only reason codes, stage classification, host, and a
+    redacted one-line error summary.
+    """
+    from urllib.parse import urlsplit
+
+    from universal_auto_applier.supervisor.store import (
+        list_supervisor_application_states,
+        list_supervisor_events,
+    )
+
+    app_id = job.application_id
+    try:
+        target_host = (urlsplit(job.url).hostname or "").lower()
+    except ValueError:
+        target_host = ""
+
+    events = list_supervisor_events(session, application_id=app_id, limit=200)
+    last_event = events[-1] if events else None
+    states = [s for s in list_supervisor_application_states(session) if s.application_id == app_id]
+    last_state = states[-1] if states else None
+
+    reason_code = None
+    if last_event is not None and last_event.reason_code:
+        reason_code = last_event.reason_code
+    elif last_state is not None and last_state.reason_code:
+        reason_code = last_state.reason_code
+
+    snapshot_present = bool(status.get("snapshot_present"))
+    pending = int(status.get("pending_intervention_count") or 0)
+    unresolved = status.get("unresolved_required_field_count")
+    failed = bool(reason_code) and (last_state is None or last_state.state != "review_ready")
+
+    if reason_code == "application_expired":
+        failure_stage: str | None = "target-preflight"
+        target_status: str | None = "expired"
+    elif snapshot_present or pending > 0:
+        failure_stage = "preparation"
+        target_status = "live"
+    elif failed:
+        failure_stage = "navigation"
+        target_status = "unknown"
+    else:
+        failure_stage = None
+        target_status = "live" if snapshot_present else "unknown"
+
+    tool_result = ""
+    if last_event is not None and last_event.tool_result:
+        tool_result = _sanitize_failure_text(last_event.tool_result)
+
+    return {
+        "reason_code": reason_code,
+        "failure_stage": failure_stage,
+        "target_status": target_status,
+        "ats": str(job.platform),
+        "target_host": target_host,
+        "error_category": reason_code if failed else None,
+        "sanitized_error_summary": tool_result,
+        "interaction_ready": bool(snapshot_present and (unresolved or 0) == 0 and pending == 0),
+    }
+
+
 def _supervisor_application(settings: Settings, args: argparse.Namespace) -> int:
     import json as _json
 
@@ -1582,6 +1668,11 @@ def _supervisor_application(settings: Settings, args: argparse.Namespace) -> int
     try:
         tools = SupervisorTools(settings=settings, session_factory=session_factory)
         status = tools.get_application_status(args.application_id)
+        with session_scope(session_factory) as session:
+            job = tools.get_job(args.application_id)
+            status["failure_evidence"] = (
+                _failure_evidence(session, job, status) if job is not None else None
+            )
         if getattr(args, "json", False):
             print(_json.dumps(status, indent=2))
         else:
@@ -1692,11 +1783,15 @@ def _supervisor_repair_context(settings: Settings, args: argparse.Namespace) -> 
         status = tools.get_application_status(args.application_id)
         interventions = tools.get_interventions(args.application_id)
         snapshot = tools.load_review_snapshot(args.application_id)
+        with session_scope(session_factory) as session:
+            job = tools.get_job(args.application_id)
+            evidence = _failure_evidence(session, job, status) if job is not None else None
         result = {
             "application_id": args.application_id,
             "status": status,
             "interventions": [vars(i) for i in interventions],
             "snapshot": snapshot.model_dump() if snapshot is not None else None,
+            "failure_evidence": evidence,
         }
         if getattr(args, "json", False):
             print(_json.dumps(result, indent=2))
