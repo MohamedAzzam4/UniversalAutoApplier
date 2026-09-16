@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import sys
+from datetime import UTC
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit
@@ -93,6 +94,21 @@ def _build_parser() -> argparse.ArgumentParser:
     session.add_argument("--url", default="https://www.linkedin.com/login")
     session.add_argument("--profile-dir", type=Path)
     session.add_argument("--channel", help="Playwright browser channel, e.g. chrome or msedge.")
+    session.add_argument(
+        "--attachable",
+        action="store_true",
+        help="Keep browser alive for attachable handoff (CDP loopback, writes browser-session.json).",
+    )
+    session.add_argument(
+        "--attachable-port",
+        type=int,
+        help="Fixed local port for CDP endpoint (default: auto-allocate free port on 127.0.0.1).",
+    )
+    session.add_argument(
+        "--session-file",
+        type=Path,
+        help="Path for attachable session metadata JSON (default: <data_dir>/browser-session.json).",
+    )
 
     live = subparsers.add_parser(
         "live-dry-run",
@@ -116,6 +132,15 @@ def _build_parser() -> argparse.ArgumentParser:
         "--ephemeral-profile",
         action="store_true",
         help="Do not reuse saved browser cookies/login state.",
+    )
+    live.add_argument(
+        "--browser-session-file",
+        type=Path,
+        help="Attach to a running attachable browser-session via its metadata JSON (CDP loopback).",
+    )
+    live.add_argument(
+        "--cdp-endpoint",
+        help="Direct CDP endpoint http://127.0.0.1:port for attach (loopback only).",
     )
     display = live.add_mutually_exclusive_group()
     display.add_argument("--headless", action="store_true", default=None)
@@ -455,6 +480,52 @@ def _find_job(settings: Settings, application_id: str):
         engine.dispose()
 
 
+def _resolve_cdp_endpoint(args: argparse.Namespace, settings: Settings) -> str | None:
+    """Resolve CDP endpoint from --browser-session-file or --cdp-endpoint."""
+    import json
+
+    endpoint = getattr(args, "cdp_endpoint", None)
+    session_file = getattr(args, "browser_session_file", None)
+    if session_file is not None:
+        session_file = Path(session_file)
+        if not session_file.exists():
+            print(f"error: browser-session-file not found: {session_file}", file=sys.stderr)
+            return None
+        try:
+            data = json.loads(session_file.read_text(encoding="utf-8"))
+        except Exception as exc:
+            print(f"error: invalid browser-session-file JSON: {exc}", file=sys.stderr)
+            return None
+        # Validate loopback only.
+        host = str(data.get("host", ""))
+        port = data.get("port")
+        cdp = str(data.get("cdp_endpoint", ""))
+        if cdp:
+            endpoint = cdp
+        elif host and port:
+            endpoint = f"http://{host}:{port}"
+        else:
+            print("error: browser-session-file missing host/port/cdp_endpoint", file=sys.stderr)
+            return None
+    if endpoint is None:
+        return None
+    # Enforce loopback only.
+    from urllib.parse import urlsplit as _urlsplit
+
+    try:
+        parts = _urlsplit(str(endpoint))
+    except ValueError:
+        print(f"error: invalid cdp endpoint: {endpoint}", file=sys.stderr)
+        return None
+    if parts.hostname not in ("127.0.0.1", "localhost"):
+        print(
+            f"error: cdp endpoint must be loopback 127.0.0.1, got {parts.hostname!r}",
+            file=sys.stderr,
+        )
+        return None
+    return str(endpoint)
+
+
 def _live_dry_run(settings: Settings, args: argparse.Namespace) -> int:
     try:
         job = _find_job(settings, str(args.application_id))
@@ -469,9 +540,22 @@ def _live_dry_run(settings: Settings, args: argparse.Namespace) -> int:
             return 2
         job = job.model_copy(update={"url": str(args.start_url)})
 
+    # Attachable session takes precedence over profile launch.
+    cdp_endpoint = _resolve_cdp_endpoint(args, settings)
+    if cdp_endpoint is not None and getattr(args, "ephemeral_profile", False):
+        print(
+            "error: --ephemeral-profile cannot be used with --browser-session-file/--cdp-endpoint",
+            file=sys.stderr,
+        )
+        return 2
+
     headless = settings.browser_headless if args.headless is None else bool(args.headless)
     profile_dir: Path | None
-    if args.ephemeral_profile:
+    if cdp_endpoint is not None:
+        # Attached mode reuses host browser; profile_dir is not launched anew.
+        profile_dir = None
+        headless = False
+    elif args.ephemeral_profile:
         profile_dir = None
     else:
         profile_dir = (
@@ -515,7 +599,62 @@ def _live_dry_run(settings: Settings, args: argparse.Namespace) -> int:
         print("llm_mode: deterministic_only")
         qa_service = None  # Don't pass an unconfigured service.
 
-    report = LiveBrowserRunner(config).run(job, candidate, qa_service=qa_service)
+    # Attached execution via CDP.
+    if cdp_endpoint is not None:
+        from playwright.sync_api import sync_playwright
+
+        print(f"Attaching to live browser session at {cdp_endpoint} (loopback)")
+        try:
+            with sync_playwright() as playwright:
+                browser = playwright.chromium.connect_over_cdp(cdp_endpoint)
+                try:
+                    contexts = browser.contexts
+                    if not contexts:
+                        print(
+                            "error: no browser contexts found on attached browser", file=sys.stderr
+                        )
+                        return 2
+                    context = contexts[0]
+                    # Use existing page if present, else new.
+                    page = context.pages[0] if context.pages else context.new_page()
+                    # Session validity check: must be DATEV Workday and not still on Konto erstellen if we expect authenticated.
+                    try:
+                        url_lower = (page.url or "").lower()
+                        if "datev.wd3.myworkdayjobs.com" not in url_lower:
+                            print(
+                                f"warning: attached page host is not DATEV Workday: {page.url!r}",
+                                file=sys.stderr,
+                            )
+                    except Exception:
+                        pass
+                    # Run in existing context without closing host.
+                    runner = LiveBrowserRunner(config)
+                    # For attached, we run in_context directly so host stays alive.
+                    # We reuse the existing page's URL as start point if job.url differs from current authenticated page.
+                    # If attached page is already on an authenticated step (My Information), use it.
+                    report = runner.run_in_context(
+                        context,
+                        job,
+                        candidate=candidate,
+                        artifact_dir=None,
+                        qa_service=qa_service,
+                    )
+                finally:
+                    # Attached: disconnect but DO NOT close host browser/context.
+                    try:
+                        browser.close()
+                    except Exception:
+                        pass
+                # Owns_browser=False: host remains alive.
+                print("Attached execution detached; host browser remains running.")
+        except Exception as exc:
+            print(
+                f"error: failed to attach to browser session: {type(exc).__name__}: {exc}",
+                file=sys.stderr,
+            )
+            return 2
+    else:
+        report = LiveBrowserRunner(config).run(job, candidate, qa_service=qa_service)
 
     # Persist interventions for unresolved/confirmation-required fields.
     _persist_interventions(settings, job.application_id, report)
@@ -653,30 +792,134 @@ def _persist_interventions(settings: Settings, application_id: str, report: Live
 
 
 def _browser_session(settings: Settings, args: argparse.Namespace) -> int:
+    import json
+    import os
+    import socket
+    import time
+    from datetime import datetime
+
     profile_dir = (
         args.profile_dir or settings.browser_profile_dir or settings.data_dir / "browser-profile"
     )
     profile_dir.mkdir(parents=True, exist_ok=True)
-    print(f"Opening UAA browser profile: {profile_dir.resolve()}")
-    print("Complete login/setup in the browser, then return here and press Enter.")
+
+    attachable = bool(getattr(args, "attachable", False))
+    if not attachable:
+        print(f"Opening UAA browser profile: {profile_dir.resolve()}")
+        print("Complete login/setup in the browser, then return here and press Enter.")
+        with sync_playwright() as playwright:
+            context = playwright.chromium.launch_persistent_context(
+                user_data_dir=str(profile_dir),
+                headless=False,
+                channel=args.channel or settings.browser_channel,
+            )
+            try:
+                page = context.pages[0] if context.pages else context.new_page()
+                page.goto(
+                    str(args.url),
+                    wait_until="domcontentloaded",
+                    timeout=settings.browser_timeout_ms,
+                )
+                try:
+                    input("Press Enter after the browser session is ready... ")
+                except EOFError:
+                    print("No interactive terminal input was available; closing the browser.")
+            finally:
+                context.close()
+        print("Browser session saved.")
+        return 0
+
+    # Attachable host mode: keep browser alive, expose loopback CDP, write metadata.
+    session_file = getattr(args, "session_file", None) or (
+        settings.data_dir / "browser-session.json"
+    )
+    session_file = Path(session_file)
+    # Allocate loopback port.
+    requested_port = getattr(args, "attachable_port", None)
+    if requested_port is not None:
+        port = int(requested_port)
+        if port < 1 or port > 65535:
+            print(f"error: --attachable-port must be 1-65535, got {port}", file=sys.stderr)
+            return 2
+    else:
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+            s.bind(("127.0.0.1", 0))
+            port = s.getsockname()[1]
+    # Validate loopback only.
+    host = "127.0.0.1"
+    print(f"Opening attachable UAA browser profile: {profile_dir.resolve()}")
+    print(f"CDP loopback endpoint will be http://{host}:{port}")
+    print(f"Session metadata will be written to {session_file.resolve()}")
+    print("Human must authenticate directly in the Workday webpage (no password via terminal).")
     with sync_playwright() as playwright:
         context = playwright.chromium.launch_persistent_context(
             user_data_dir=str(profile_dir),
             headless=False,
             channel=args.channel or settings.browser_channel,
+            args=[
+                f"--remote-debugging-port={port}",
+                "--remote-debugging-address=127.0.0.1",
+            ],
         )
         try:
             page = context.pages[0] if context.pages else context.new_page()
             page.goto(
                 str(args.url), wait_until="domcontentloaded", timeout=settings.browser_timeout_ms
             )
+            # Write ready metadata — no credentials/cookies/tokens.
+            metadata = {
+                "version": 1,
+                "status": "ready",
+                "host": host,
+                "port": port,
+                "cdp_endpoint": f"http://{host}:{port}",
+                "profile_dir": str(profile_dir.resolve()),
+                "pid": os.getpid(),
+                "created_at": datetime.now(UTC).isoformat(),
+                "url": str(args.url),
+            }
+            session_file.parent.mkdir(parents=True, exist_ok=True)
+            tmp = session_file.with_suffix(session_file.suffix + ".tmp")
+            tmp.write_text(json.dumps(metadata, indent=2), encoding="utf-8")
+            tmp.replace(session_file)
+            print(f"Attachable browser ready. Metadata: {session_file.resolve()}")
+            print(
+                "Complete login in the headed browser. The browser will remain open for attached execution."
+            )
+            print("Press Enter to keep browser alive for attach (or Ctrl+C to close when done).")
             try:
-                input("Press Enter after the browser session is ready... ")
+                input("Press Enter after login is complete (browser will stay open)... ")
             except EOFError:
-                print("No interactive terminal input was available; closing the browser.")
+                print("No interactive input; browser will remain open until process exit.")
+                # Keep alive until Ctrl+C in non-interactive case — block.
+                try:
+                    while True:
+                        time.sleep(1)
+                except KeyboardInterrupt:
+                    print("\nClosing attachable browser...")
+            # After first Enter, keep browser alive until second signal.
+            print("Browser remains open for attached UAA execution.")
+            print(
+                f"Run attached: python -m universal_auto_applier live-dry-run --application-id <id> --browser-session-file {session_file.resolve()}"
+            )
+            print("Press Ctrl+C to close the host browser when the pilot is complete.")
+            try:
+                while True:
+                    time.sleep(1)
+            except KeyboardInterrupt:
+                print("\nClosing attachable browser host...")
         finally:
-            context.close()
-    print("Browser session saved.")
+            # Cleanup metadata on host close.
+            try:
+                if session_file.exists():
+                    session_file.unlink()
+            except OSError:
+                pass
+            try:
+                context.close()
+            except Exception:
+                pass
+    print("Attachable browser host closed. Metadata removed.")
     return 0
 
 

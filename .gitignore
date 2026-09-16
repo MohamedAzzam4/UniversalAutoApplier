@@ -91,6 +91,8 @@ playwright/.cache/
 .playwright-mcp/
 browser_state.json
 auth_state.json
+browser-session.json
+browser-session*.json
 
 # ---------------------------------------------------------------------------
 # IDE / editor
