@@ -851,21 +851,79 @@ def _browser_session(settings: Settings, args: argparse.Namespace) -> int:
     print(f"CDP loopback endpoint will be http://{host}:{port}")
     print(f"Session metadata will be written to {session_file.resolve()}")
     print("Human must authenticate directly in the Workday webpage (no password via terminal).")
+    import subprocess
+
+    # Launch Chromium directly to avoid Playwright pipe/port conflict.
+    # launch_persistent_context always adds --remote-debugging-pipe which
+    # collides with --remote-debugging-port. Using subprocess with
+    # --user-data-dir + --remote-debugging-port is the supported attachable pattern.
     with sync_playwright() as playwright:
-        context = playwright.chromium.launch_persistent_context(
-            user_data_dir=str(profile_dir),
-            headless=False,
-            channel=args.channel or settings.browser_channel,
-            args=[
-                f"--remote-debugging-port={port}",
-                "--remote-debugging-address=127.0.0.1",
-            ],
-        )
+        chrome_path = playwright.chromium.executable_path
+        # Build args for subprocess launch.
+        chrome_args = [
+            chrome_path,
+            f"--user-data-dir={profile_dir.resolve()}",
+            f"--remote-debugging-port={port}",
+            "--remote-debugging-address=127.0.0.1",
+            "--no-first-run",
+            "--no-default-browser-check",
+            "--disable-infobars",
+            "--disable-features=Translate",
+            str(args.url),
+        ]
+        if args.channel:
+            # Channel is ignored for subprocess launch; log it.
+            print(f"Note: --channel {args.channel} ignored for attachable host (uses bundled Chromium).")
+        proc = subprocess.Popen(chrome_args, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        # Wait for CDP endpoint to become reachable.
+        import httpx
+
+        cdp_ready = False
+        for _ in range(30):
+            time.sleep(0.5)
+            try:
+                with httpx.Client(timeout=2) as client:
+                    r = client.get(f"http://{host}:{port}/json/version", timeout=2)
+                    if r.status_code == 200:
+                        cdp_ready = True
+                        break
+            except Exception:
+                pass
+            if proc.poll() is not None:
+                print(f"error: Chromium host exited early with code {proc.poll()}", file=sys.stderr)
+                return 2
+        if not cdp_ready:
+            print("error: CDP endpoint did not become ready", file=sys.stderr)
+            try:
+                proc.terminate()
+            except Exception:
+                pass
+            return 2
+        # Connect Playwright to the running host for initial navigation (optional).
+        # The host browser already navigated via chrome_args URL, but we also ensure page.
+        browser = None
+        context = None
         try:
-            page = context.pages[0] if context.pages else context.new_page()
-            page.goto(
-                str(args.url), wait_until="domcontentloaded", timeout=settings.browser_timeout_ms
-            )
+            browser = playwright.chromium.connect_over_cdp(f"http://{host}:{port}")
+            contexts = browser.contexts
+            if contexts:
+                context = contexts[0]
+                pages = context.pages
+                page = pages[0] if pages else context.new_page()
+                # Ensure requested URL is loaded if host didn't navigate.
+                try:
+                    if str(args.url) not in (page.url or ""):
+                        page.goto(
+                            str(args.url), wait_until="domcontentloaded", timeout=settings.browser_timeout_ms
+                        )
+                except Exception:
+                    pass
+            else:
+                context = browser.new_context(accept_downloads=False)
+                page = context.new_page()
+                page.goto(
+                    str(args.url), wait_until="domcontentloaded", timeout=settings.browser_timeout_ms
+                )
             # Write ready metadata — no credentials/cookies/tokens.
             metadata = {
                 "version": 1,
@@ -916,9 +974,23 @@ def _browser_session(settings: Settings, args: argparse.Namespace) -> int:
             except OSError:
                 pass
             try:
-                context.close()
+                if context is not None:
+                    context.close()
             except Exception:
                 pass
+            try:
+                if browser is not None:
+                    browser.close()
+            except Exception:
+                pass
+            try:
+                proc.terminate()
+                proc.wait(timeout=5)
+            except Exception:
+                try:
+                    proc.kill()
+                except Exception:
+                    pass
     print("Attachable browser host closed. Metadata removed.")
     return 0
 
