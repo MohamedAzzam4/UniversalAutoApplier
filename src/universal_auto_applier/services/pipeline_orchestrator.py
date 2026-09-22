@@ -205,6 +205,8 @@ class PipelineOrchestrator:
             # retryable state (failed, blocked, needs_review). Freshly
             # imported jobs from JobHunter's exporter have status
             # ready_to_apply; we process them directly.
+            from universal_auto_applier.persistence.job_repository import is_manual_submitted
+
             queued_jobs = [
                 j
                 for j in jobs
@@ -216,6 +218,7 @@ class PipelineOrchestrator:
                     ApplicationStatus.BLOCKED,
                     ApplicationStatus.NEEDS_REVIEW,
                 )
+                and not is_manual_submitted(j)
             ]
 
             jobs_to_process = queued_jobs[:max_jobs]

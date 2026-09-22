@@ -309,6 +309,14 @@ code {
 .uaa-table tr:hover td {
   background: rgba(255, 255, 255, 0.02);
 }
+.uaa-job-link { color: var(--uaa-text); font-weight: 650; }
+.uaa-job-meta { display: block; margin-top: 4px; color: var(--uaa-text-muted); font-size: .76rem; }
+.uaa-document-actions { display: flex; flex-wrap: wrap; gap: 6px; }
+.uaa-document-link, .uaa-document-missing { display: inline-flex; padding: 4px 8px; border: 1px solid var(--uab-border); border-radius: 6px; font-size: .78rem; }
+.uaa-document-missing { color: var(--uaa-text-muted); }
+.uaa-submitted-control { display: inline-flex; align-items: center; gap: 7px; color: var(--uaa-text-muted); cursor: pointer; }
+.uaa-submitted-control input { width: 18px; height: 18px; accent-color: var(--uaa-success); }
+.uaa-submitted-control:has(input:disabled) { opacity: .7; cursor: not-allowed; }
 
 /* ---- Phase 6: Filter bar ---- */
 .uaa-filter-bar {

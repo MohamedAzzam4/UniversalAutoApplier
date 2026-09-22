@@ -224,10 +224,48 @@ def update_application_status(
     return row
 
 
+def set_manual_submitted(
+    session: Session,
+    application_id: str,
+    submitted: bool,
+) -> ApplicationJobRow | None:
+    """Persist an operator-maintained submitted marker in job metadata.
+
+    This deliberately does not forge the canonical ``submitted``/``applied``
+    lifecycle states, which require controlled ATS evidence.  Canonically
+    submitted jobs are locked; dashboard-owned markers can be toggled.
+    """
+    row = session.get(ApplicationJobRow, application_id)
+    if row is None:
+        return None
+
+    canonical_status = ApplicationStatus(str(row.status))
+    if not submitted and canonical_status in {
+        ApplicationStatus.SUBMITTED,
+        ApplicationStatus.APPLIED,
+    }:
+        raise ValueError("A workflow-confirmed submission cannot be cleared")
+
+    metadata = dict(row.metadata_json or {})
+    metadata["dashboard_submitted"] = submitted
+    metadata["dashboard_submitted_at"] = _utcnow().isoformat()
+    row.metadata_json = metadata
+    row.last_updated_at = _utcnow()
+    session.flush()
+    return row
+
+
+def is_manual_submitted(job: ApplicationJob) -> bool:
+    """Return whether an operator marked this job submitted in the dashboard."""
+    return bool(job.metadata.get("dashboard_submitted"))
+
+
 __all__ = [
     "upsert_application_job",
     "get_application_job",
     "list_application_jobs",
     "count_application_jobs",
     "update_application_status",
+    "set_manual_submitted",
+    "is_manual_submitted",
 ]

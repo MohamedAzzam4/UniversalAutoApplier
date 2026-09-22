@@ -120,6 +120,14 @@ python -m universal_auto_applier
 
 The dashboard URL is printed on startup. Default: `http://127.0.0.1:8000/`.
 
+On Windows, double-click **Universal AutoApplier Dashboard.exe** in the
+repository root. It starts the local server silently on the uncommon,
+project-specific port `18742`, waits until the API is ready, and opens
+`http://127.0.0.1:18742/` in the default browser. The Results & history view
+loads the existing SQLite history and keeps the destination, generated CV,
+cover letter, progress, errors, and operator-maintained Submitted checkbox
+together. Workflow-confirmed submissions are locked to prevent duplicates.
+
 ### Live browser dry-run
 
 After importing JobHunter's queue, list the available jobs and run exactly

@@ -178,6 +178,8 @@ class PipelineWorkerRunner:
 
         with session_scope(self.session_factory) as session:
             jobs = list_application_jobs(session)
+        from universal_auto_applier.persistence.job_repository import is_manual_submitted
+
         eligible = [
             job
             for job in jobs
@@ -186,6 +188,7 @@ class PipelineWorkerRunner:
                 ApplicationStatus.READY_TO_APPLY.value,
                 ApplicationStatus.QUEUED.value,
             )
+            and not is_manual_submitted(job)
         ]
         # If target_application_ids is set (non-empty), restrict to only those IDs.
         if self.target_application_ids:

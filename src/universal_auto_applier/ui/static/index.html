@@ -17,7 +17,7 @@
       </div>
       <nav class="uaa-nav" aria-label="Primary">
         <a href="#" data-view="dashboard" aria-current="page">Dashboard</a>
-        <a href="#" data-view="queue">Queue</a>
+        <a href="#" data-view="queue">Results &amp; history</a>
         <a href="#" data-view="interventions">Interventions</a>
         <a href="#" data-view="review">Review</a>
         <a href="#" data-view="submit">Submit</a>
@@ -141,7 +141,8 @@
       <!-- Queue View -->
       <section id="view-queue" class="uaa-view">
         <div class="uaa-card">
-          <h2>Job Queue &amp; History</h2>
+          <h2>Jobs, documents &amp; history</h2>
+          <p class="uaa-subtitle">Open the destination, CV, or cover letter from one row. Submitted marks are saved locally.</p>
           <div class="uaa-filter-bar">
             <select id="queue-status-filter">
               <option value="">All statuses</option>
@@ -152,17 +153,17 @@
               <option value="failed">Failed</option>
               <option value="skipped">Skipped</option>
             </select>
-            <button id="queue-refresh" class="uaa-btn">Refresh</button>
+            <button id="queue-refresh" class="uaa-btn">Load existing history</button>
           </div>
           <div class="uaa-table-wrap">
             <table id="queue-table" class="uaa-table">
               <thead>
                 <tr>
-                  <th>Company</th>
-                  <th>Title</th>
-                  <th>Platform</th>
-                  <th>Status</th>
+                  <th>Job</th>
+                  <th>Progress</th>
                   <th>Score</th>
+                  <th>Documents</th>
+                  <th>Submitted</th>
                   <th>Last Updated</th>
                 </tr>
               </thead>

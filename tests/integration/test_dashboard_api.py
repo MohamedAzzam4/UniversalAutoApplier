@@ -102,6 +102,10 @@ class TestQueueEndpoint:
         body = response.json()
         assert body["total"] == 1
         assert body["jobs"][0]["company"] == "Test Corp"
+        assert body["jobs"][0]["url"] == "https://example.com/jobs/1"
+        assert body["jobs"][0]["cv_url"].endswith("/artifact/cv")
+        assert body["jobs"][0]["cover_letter_url"].endswith("/artifact/cover")
+        assert body["jobs"][0]["submitted"] is False
 
     def test_queue_filter_by_status(self, client_with_data: TestClient) -> None:
         response = client_with_data.get("/api/queue?status=queued")
@@ -127,6 +131,21 @@ class TestQueueEndpoint:
     def test_job_detail_404(self, client: TestClient) -> None:
         response = client.get("/api/queue/nonexistent")
         assert response.status_code == 404
+
+    def test_manual_submitted_round_trip(self, client_with_data: TestClient) -> None:
+        application_id = client_with_data.get("/api/queue").json()["jobs"][0]["application_id"]
+
+        response = client_with_data.patch(
+            f"/api/queue/{application_id}/submitted", json={"submitted": True}
+        )
+        assert response.status_code == 200
+        assert client_with_data.get("/api/queue").json()["jobs"][0]["submitted"] is True
+
+        response = client_with_data.patch(
+            f"/api/queue/{application_id}/submitted", json={"submitted": False}
+        )
+        assert response.status_code == 200
+        assert client_with_data.get("/api/queue").json()["jobs"][0]["submitted"] is False
 
 
 class TestInterventionsEndpoint:

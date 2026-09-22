@@ -33,6 +33,10 @@ def test_queue_view_renders(page, server_url: str) -> None:
     page.wait_for_selector("#queue-table", timeout=5_000)
     # Table should exist (may be empty).
     assert page.locator("#queue-tbody").is_visible()
+    assert page.locator("#queue-refresh").inner_text() == "Load existing history"
+    headers = page.locator("#queue-table th").all_inner_texts()
+    assert "Documents" in headers
+    assert "Submitted" in headers
 
 
 def test_interventions_view_renders(page, server_url: str) -> None:

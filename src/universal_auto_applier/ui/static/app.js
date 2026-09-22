@@ -53,6 +53,28 @@
     return resp.json();
   }
 
+  async function patchJSON(url, body) {
+    const resp = await fetch(url, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json", Accept: "application/json" },
+      body: JSON.stringify(body),
+    });
+    if (!resp.ok) {
+      const err = await resp.json().catch(() => ({ detail: resp.statusText }));
+      throw new Error(err.detail || `HTTP ${resp.status}`);
+    }
+    return resp.json();
+  }
+
+  function safeExternalUrl(value) {
+    try {
+      const parsed = new URL(value);
+      return parsed.protocol === "http:" || parsed.protocol === "https:" ? parsed.href : "";
+    } catch {
+      return "";
+    }
+  }
+
   function fmtDate(iso) {
     if (!iso) return "—";
     try {
@@ -420,12 +442,23 @@
       }
       for (const job of data.jobs) {
         const tr = document.createElement("tr");
+        const destination = safeExternalUrl(job.url);
+        const title = destination
+          ? `<a class="uaa-job-link" href="${esc(destination)}" target="_blank" rel="noopener">${esc(job.title)}</a>`
+          : esc(job.title);
+        const documents = [
+          job.cv_url ? `<a class="uaa-document-link" href="${esc(job.cv_url)}" target="_blank" rel="noopener">CV</a>` : '<span class="uaa-document-missing">CV —</span>',
+          job.cover_letter_url ? `<a class="uaa-document-link" href="${esc(job.cover_letter_url)}" target="_blank" rel="noopener">Cover letter</a>` : '<span class="uaa-document-missing">Cover —</span>',
+        ].join("");
+        const lockTitle = job.submitted_editable
+          ? "Mark this job as submitted or not submitted"
+          : "Workflow-confirmed submission; locked to prevent duplicates";
         tr.innerHTML = `
-          <td>${esc(job.company)}</td>
-          <td>${esc(job.title)}</td>
-          <td>${esc(job.platform)}</td>
-          <td><span class="${pillClassFor(job.status)}">${esc(job.status)}</span></td>
+          <td>${title}<small class="uaa-job-meta">${esc(job.company)} · ${esc(job.location || job.platform)}</small></td>
+          <td><span class="${pillClassFor(job.status)}">${esc(job.status)}</span><small class="uaa-job-meta">Step ${job.step} of 4</small></td>
           <td>${job.score != null ? job.score.toFixed(1) : "—"}</td>
+          <td><div class="uaa-document-actions">${documents}</div></td>
+          <td><label class="uaa-submitted-control" title="${esc(lockTitle)}"><input class="uaa-submitted-toggle" type="checkbox" data-application-id="${esc(job.application_id)}" ${job.submitted ? "checked" : ""} ${job.submitted_editable ? "" : "disabled"}><span>${job.submitted ? "Yes" : "No"}</span></label></td>
           <td>${fmtDate(job.last_updated_at)}</td>`;
         tbody.appendChild(tr);
       }
@@ -436,6 +469,20 @@
 
   document.getElementById("queue-refresh")?.addEventListener("click", loadQueue);
   document.getElementById("queue-status-filter")?.addEventListener("change", loadQueue);
+  document.getElementById("queue-tbody")?.addEventListener("change", async (event) => {
+    const toggle = event.target.closest(".uaa-submitted-toggle");
+    if (!toggle) return;
+    const requested = toggle.checked;
+    toggle.disabled = true;
+    try {
+      await patchJSON(`/api/queue/${encodeURIComponent(toggle.dataset.applicationId)}/submitted`, { submitted: requested });
+      await loadQueue();
+    } catch (err) {
+      toggle.checked = !requested;
+      toggle.disabled = false;
+      alert("Could not update submitted status: " + err.message);
+    }
+  });
 
   // ---- Interventions ----
   async function loadInterventions() {
