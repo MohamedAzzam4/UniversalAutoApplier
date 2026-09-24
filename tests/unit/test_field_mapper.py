@@ -7,10 +7,14 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
 from universal_auto_applier.core.identity import compute_application_id
 from universal_auto_applier.core.models import (
     ApplicationJob,
+    ApplicationJobDocuments,
     CandidateProfile,
+    FieldOption,
     FormField,
 )
 from universal_auto_applier.core.statuses import ApplicationStatus, Platform
@@ -172,6 +176,91 @@ class TestSponsorshipField:
         assert mapping is not None
         assert mapping.value == "No"
         assert mapping.source == "candidate_profile"
+
+    def test_visa_possession_is_not_sponsorship(self, tmp_path: Path) -> None:
+        candidate = _make_candidate()
+        job = _make_job(tmp_path)
+        field = FormField(
+            selector="#visa",
+            name="visa",
+            label="Do you currently hold a valid visa?",
+            type="radio",
+            options=[FieldOption(value="yes"), FieldOption(value="no")],
+        )
+
+        assert map_field(field, candidate, job) is None
+
+
+class TestSkillEvidence:
+    @pytest.mark.parametrize(
+        ("evidence", "source", "question", "expected_value"),
+        [
+            (
+                "Worked with Kubernetes in production.",
+                "profile",
+                "Do you have experience with Kubernetes?",
+                "Yes",
+            ),
+            (
+                "No experience with Kubernetes.",
+                "profile",
+                "Do you have experience with Kubernetes?",
+                None,
+            ),
+            ("Keine Erfahrung mit Kubernetes.", "cv", "Hast du Erfahrung mit Kubernetes?", None),
+            (
+                "Ich bin nicht mit Kubernetes vertraut.",
+                "cv",
+                "Hast du Erfahrung mit Kubernetes?",
+                None,
+            ),
+            (
+                ["Experience with Kubernetes.", "No experience with Kubernetes."],
+                "profile",
+                "Do you have experience with Kubernetes?",
+                None,
+            ),
+            (
+                "Worked with Python in production.",
+                "profile",
+                "Do you have experience with Kubernetes?",
+                None,
+            ),
+        ],
+    )
+    def test_negated_skill_evidence_never_maps_yes(
+        self,
+        tmp_path: Path,
+        evidence: str | list[str],
+        source: str,
+        question: str,
+        expected_value: str | None,
+    ) -> None:
+        candidate = _make_candidate()
+        job = _make_job(tmp_path)
+        if source == "profile":
+            job.metadata["candidate_profile"] = {"skills": evidence}
+        else:
+            cv_md = tmp_path / "cv.md"
+            assert isinstance(evidence, str)
+            cv_md.write_text(evidence, encoding="utf-8")
+            job.documents = ApplicationJobDocuments(cv_md=str(cv_md))
+        field = FormField(
+            selector="#kubernetes",
+            name="kubernetes_experience",
+            label=question,
+            type="radio",
+            options=[FieldOption(value="yes"), FieldOption(value="no")],
+        )
+
+        mapping = map_field(field, candidate, job)
+
+        if expected_value is None:
+            assert mapping is None
+        else:
+            assert mapping is not None
+            assert mapping.value == expected_value
+            assert mapping.source == "candidate_profile"
 
 
 class TestFileFields:

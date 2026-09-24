@@ -81,7 +81,6 @@ _LABEL_PATTERNS: list[tuple[str, str, str]] = [
     (r"current.*role", "current_position", "Label matched 'current role'"),
     # Sponsorship / work authorization
     (r"sponsorship", "requires_sponsorship", "Label matched 'sponsorship'"),
-    (r"visa", "requires_sponsorship", "Label matched 'visa'"),
     (r"work.*authorization", "work_authorization", "Label matched 'work authorization'"),
     (r"authorized.*work", "work_authorization", "Label matched 'authorized to work'"),
 ]
@@ -343,6 +342,41 @@ def _extract_skill_subject(question: str) -> str | None:
     return None
 
 
+def _has_negated_skill_claim(evidence_parts: list[str], subject: str) -> bool:
+    """Return true when evidence negates or contradicts the skill subject.
+
+    This is a conservative guard for the legacy keyword-based skill matcher.
+    Any explicit negative statement about the subject suppresses an automatic
+    affirmative mapping, including when another evidence fragment is positive.
+    """
+    normalized_subject = _normalize_question(subject)
+    if not normalized_subject:
+        return False
+
+    subject_pattern = rf"\b{re.escape(normalized_subject)}\b"
+    negation_before_subject = re.compile(
+        rf"\b(?:no|not|never|without|lack(?:s|ed|ing)?|cannot|can t|do not|does not|did not|don t|doesn t|didn t|nicht|kein(?:e|en|er|em|es)?)\b"
+        rf"(?:\s+\w+){{0,5}}\s+{subject_pattern}"
+    )
+    negation_after_subject = re.compile(
+        rf"{subject_pattern}(?:\s+\w+){{0,4}}\s+\b(?:not|never|without|no|none|nicht|kein(?:e|en|er|em|es)?)\b"
+    )
+
+    for evidence in evidence_parts:
+        # Keep sentence-level scope so a negation about another skill nearby
+        # does not automatically suppress this subject. If a clause contains
+        # both a positive and negative claim about the same skill, abstain.
+        for clause in re.split(r"[.!?;\n]+", evidence):
+            normalized_clause = _normalize_question(clause)
+            if not re.search(subject_pattern, normalized_clause):
+                continue
+            if negation_before_subject.search(normalized_clause) or negation_after_subject.search(
+                normalized_clause
+            ):
+                return True
+    return False
+
+
 def _try_positive_candidate_evidence(
     field: FormField,
     job: ApplicationJob,
@@ -361,8 +395,13 @@ def _try_positive_candidate_evidence(
     evidence_parts = _flatten_evidence(job.metadata.get("candidate_profile", {}))
     if job.documents and job.documents.cv_md:
         evidence_parts.append(_read_candidate_document(job.documents.cv_md))
-    evidence = _normalize_question(" ".join(evidence_parts))
-    if subject not in evidence:
+    normalized_subject = _normalize_question(subject)
+    subject_pattern = rf"\b{re.escape(normalized_subject)}\b"
+    if not normalized_subject or not any(
+        re.search(subject_pattern, _normalize_question(part)) for part in evidence_parts
+    ):
+        return None
+    if _has_negated_skill_claim(evidence_parts, normalized_subject):
         return None
     return FieldMapping(
         field_selector=field.selector,
@@ -517,6 +556,15 @@ def map_field(
     positive_evidence = _try_positive_candidate_evidence(field, job)
     if positive_evidence is not None:
         return positive_evidence
+
+    # Do not let broad labels such as "experience" map a skill question to
+    # years_of_experience when skill evidence is absent, negated, or mixed.
+    if (
+        field.type in {"radio", "select"}
+        and _has_yes_no_options(field)
+        and _extract_skill_subject(_question_text(field)) is not None
+    ):
+        return None
 
     # Try deterministic label matching.
     match = _try_match_label(field)

@@ -14,7 +14,7 @@ authorization context; they do not override the V2 ordering. The archived
 WQ-8 handoff remains authoritative for its exact owner-approved submission
 gate.
 
-### V2-00 — Baseline and execution contracts (current; supervisor checkpoint review pending)
+### V2-00 — Baseline and execution contracts (checkpointed; full Playwright gate unverified)
 
 **Objective.** Preserve the chosen dashboard-history + supervisor baseline,
 record the migration head and full non-live gate state, repair formatting and
@@ -30,14 +30,19 @@ at that starting point is `0016_supervisor`. This is one selected line of
 history; the mixed documentation and quality-baseline package does not rewrite,
 merge or delete the existing dashboard, supervisor or WQ-8 checkpoints.
 
-**Acceptance.** The chosen baseline and migration head are recorded; the
-combined non-live regression result, formatting and type-check results are
-recorded exactly; only scoped formatting/lifecycle fixes are included; the
-WQ-8 active handoff is archived before the V2-00 handoff replaces it; no real
-submission or live mutation occurs. The first real form family remains an
-explicit owner decision until an available approved queue target exists.
+**Checkpoint result.** The selected baseline, migration head, formatting and
+type-check results are recorded in the archived V2-00 handoff. The first
+combined `pytest -m "not live" -q` attempt printed a failure before it was
+stopped, so no full combined result is claimed. A focused dashboard-plus-
+consent reproducer later isolated the sync Playwright lifecycle conflict; the
+consent tests were changed to use pytest-playwright's page fixture and the
+ordered 8-test reproducer plus standalone 7-test module passed. The complete
+Playwright-inclusive suite has not been rerun. The WQ-8 handoff remains
+archived, and no live mutation or real submission occurred. The first real
+form family remains an explicit owner decision until an approved queue target
+is available.
 
-### V2-01 — Immediate correctness blockers (next; wait for V2-00 supervisor review)
+### V2-01 — Immediate correctness blockers (active; F1 first milestone in review)
 
 **Objective.** Correct unsupported fact assertions, missing field read-back,
 destructive re-import of UAA operational state, inconsistent duplicate gates,
@@ -69,9 +74,16 @@ produce truthful readiness. Include the plan cases T01–T06, T10–T11, T19 and
 T29 where applicable, then run the full regression gate. No new local model is
 required.
 
-**Predecessor.** V2-00 supervisor checkpoint review. Do not start
-implementation before that review. Owner approval is required separately for
-any real target/live action under the existing WQ-8 contract.
+**Current authorized slice.** F1 / T01–T02 only: abstain for absent,
+negated, or contradictory skill claims, including German negative evidence;
+do not infer valid-visa possession from `requires_sponsorship`. Focused tests
+and the 1,474-test unit/contract/integration/pipeline selection pass. Review
+and checkpoint F1 before continuing. The consent-test fixture repair is a
+separate checkpoint and does not implement V2-01 behavior.
+
+**Predecessor.** V2-00 baseline checkpoint `0e21adb43b400dd90a91a3ba754269e1a061375e`.
+Owner approval is separately required for any real target/live action under
+the existing WQ-8 contract; no code review gate blocks this synthetic work.
 
 ### V2-07A — Dashboard interaction design (separate follow-up)
 
