@@ -25,7 +25,7 @@ from universal_auto_applier.persistence.db import (
 )
 from universal_auto_applier.persistence.job_repository import upsert_application_job
 from universal_auto_applier.persistence.migrations import apply_migrations
-from universal_auto_applier.persistence.models import Base
+from universal_auto_applier.persistence.models import Base, SubmissionApprovalRow
 from universal_auto_applier.submission.models import (
     SubmissionSnapshot,
     SubmissionSnapshotDocument,
@@ -33,6 +33,7 @@ from universal_auto_applier.submission.models import (
     SubmissionSnapshotSubmitControl,
     derive_unconfirmed_high_risk_count,
     derive_unresolved_required_count,
+    derive_unresolved_upload_count,
 )
 from universal_auto_applier.submission.store import create_approval
 
@@ -98,16 +99,27 @@ def _make_snapshot(
             document_kind=d.get("document_kind", "cv"),
             path=d.get("path", "/cv.pdf"),
             content_hash=d.get("content_hash", "abc123"),
+            status=d.get("status"),
+            upload_contract=d.get("upload_contract"),
+            selected_file_names=d.get("selected_file_names", []),
+            observed_constraints=d.get("observed_constraints", {}),
+            evidence_source=d.get("evidence_source"),
+            evidence_detail=d.get("evidence_detail", ""),
+            message=d.get("message", ""),
         )
         for d in (documents or [])
     ]
+    unresolved_upload_count = derive_unresolved_upload_count(snap_docs)
     snap = SubmissionSnapshot(
         application_id=app_id,
         application_url=url,
         fields=snap_fields,
         documents=snap_docs,
         pending_intervention_count=pending,
-        unresolved_required_field_count=derive_unresolved_required_count(snap_fields),
+        unresolved_required_field_count=max(
+            derive_unresolved_required_count(snap_fields), unresolved_upload_count
+        ),
+        unresolved_upload_count=unresolved_upload_count,
         high_risk_unconfirmed_count=derive_unconfirmed_high_risk_count(snap_fields),
         submit_control=SubmissionSnapshotSubmitControl(
             text="Submit", selector="button[type='submit']"
@@ -175,6 +187,308 @@ class TestCompleteStatusResponse:
             assert snap_data["fields"][0]["filled_value"] == "Mohamed"
             assert len(snap_data["documents"]) == 1
             assert snap_data["documents"][0]["document_kind"] == "cv"
+            assert snap_data["unresolved_upload_count"] == 1
+            assert snap_data["documents"][0]["status"] is None
+            assert snap_data["can_approve"] is False
+        engine.dispose()
+
+    def test_fallback_uses_persisted_snapshot_and_blocks_unresolved_upload(
+        self, tmp_path: Path
+    ) -> None:
+        settings = _make_settings(tmp_path)
+        job = _make_job(tmp_path)
+        engine, sf = _setup(tmp_path, settings, job)
+        snapshot = _make_snapshot(
+            job.application_id,
+            documents=[
+                {
+                    "document_kind": "cv",
+                    "path": str(tmp_path / "cv.pdf"),
+                    "status": "unknown",
+                    "upload_contract": "declared_async_status",
+                    "selected_file_names": ["cv.pdf"],
+                    "evidence_source": "declared_site_status",
+                    "evidence_detail": "No unique target-form status was observed.",
+                }
+            ],
+        )
+        with session_scope(sf) as session:
+            approval = create_approval(
+                session,
+                application_id=job.application_id,
+                snapshot=snapshot,
+            )
+        app = _create_app(settings, engine, sf)
+        with TestClient(app) as client:
+            # Force the no-browser-context fallback path. It must load the
+            # active persisted snapshot before it can report readiness.
+            app.state.submission_context_factory = None
+            response = client.post(
+                f"/api/submit/{job.application_id}/submit",
+                json={"approval_id": approval.approval_id, "confirm": True},
+            )
+            assert response.status_code == 200
+            data = response.json()
+            assert data["state"] == "submission_not_allowed"
+            assert data["clicked"] is False
+            assert "1 unresolved uploads remain" in data["error_message"]
+        engine.dispose()
+
+    def test_fallback_with_passing_gates_still_requires_submission_context(
+        self, tmp_path: Path
+    ) -> None:
+        settings = _make_settings(tmp_path)
+        job = _make_job(tmp_path)
+        engine, sf = _setup(tmp_path, settings, job)
+        snapshot = _make_snapshot(job.application_id)
+        with session_scope(sf) as session:
+            approval = create_approval(
+                session,
+                application_id=job.application_id,
+                snapshot=snapshot,
+            )
+        app = _create_app(settings, engine, sf)
+        with TestClient(app) as client:
+            app.state.submission_context_factory = None
+            response = client.post(
+                f"/api/submit/{job.application_id}/submit",
+                json={"approval_id": approval.approval_id, "confirm": True},
+            )
+            assert response.status_code == 200
+            data = response.json()
+            assert data["state"] == "submission_not_allowed"
+            assert data["clicked"] is False
+            assert "submission context unavailable" in data["error_message"]
+            assert "final submission was not attempted" in data["error_message"]
+        engine.dispose()
+
+    def test_fallback_rejects_stale_approval_id(self, tmp_path: Path) -> None:
+        settings = _make_settings(tmp_path)
+        job = _make_job(tmp_path)
+        engine, sf = _setup(tmp_path, settings, job)
+        snapshot = _make_snapshot(job.application_id)
+        with session_scope(sf) as session:
+            create_approval(
+                session,
+                application_id=job.application_id,
+                snapshot=snapshot,
+            )
+        app = _create_app(settings, engine, sf)
+        with TestClient(app) as client:
+            app.state.submission_context_factory = None
+            response = client.post(
+                f"/api/submit/{job.application_id}/submit",
+                json={"approval_id": "stale-approval-id", "confirm": True},
+            )
+            assert response.status_code == 200
+            data = response.json()
+            assert data["state"] == "approval_stale"
+            assert data["clicked"] is False
+        engine.dispose()
+
+    def test_fallback_rejects_corrupt_persisted_snapshot(self, tmp_path: Path) -> None:
+        settings = _make_settings(tmp_path)
+        job = _make_job(tmp_path)
+        engine, sf = _setup(tmp_path, settings, job)
+        snapshot = _make_snapshot(job.application_id)
+        with session_scope(sf) as session:
+            approval = create_approval(
+                session,
+                application_id=job.application_id,
+                snapshot=snapshot,
+            )
+            persisted = session.get(SubmissionApprovalRow, approval.approval_id)
+            assert persisted is not None
+            persisted.snapshot_json = {"not": "a valid submission snapshot"}
+        app = _create_app(settings, engine, sf)
+        with TestClient(app) as client:
+            app.state.submission_context_factory = None
+            response = client.post(
+                f"/api/submit/{job.application_id}/submit",
+                json={"approval_id": approval.approval_id, "confirm": True},
+            )
+            assert response.status_code == 200
+            data = response.json()
+            assert data["state"] == "submission_not_allowed"
+            assert data["clicked"] is False
+            assert "persisted approval snapshot context unavailable" in data["error_message"]
+        engine.dispose()
+
+    def test_upload_evidence_is_returned_and_unresolved_upload_blocks_approval(
+        self, tmp_path: Path
+    ) -> None:
+        settings = _make_settings(tmp_path)
+        job = _make_job(tmp_path)
+        engine, sf = _setup(tmp_path, settings, job)
+        snap = _make_snapshot(
+            job.application_id,
+            documents=[
+                {
+                    "document_kind": "cv",
+                    "path": str(tmp_path / "cv.pdf"),
+                    "status": "unknown",
+                    "upload_contract": "declared_async_status",
+                    "selected_file_names": ["cv.pdf"],
+                    "observed_constraints": {"accept": ".pdf", "required": True},
+                    "evidence_source": "declared_site_status",
+                    "evidence_detail": "No terminal status arrived before timeout.",
+                    "message": "Remote acceptance remains unknown.",
+                }
+            ],
+        )
+        with session_scope(sf) as session:
+            create_approval(session, application_id=job.application_id, snapshot=snap)
+        app = _create_app(settings, engine, sf)
+        with TestClient(app) as client:
+            response = client.get(f"/api/submit/{job.application_id}/status")
+            assert response.status_code == 200
+            data = response.json()["snapshot"]
+            assert data["documents"][0]["status"] == "unknown"
+            assert data["documents"][0]["upload_contract"] == "declared_async_status"
+            assert data["documents"][0]["selected_file_names"] == ["cv.pdf"]
+            assert data["documents"][0]["observed_constraints"] == {
+                "accept": ".pdf",
+                "required": True,
+            }
+            assert data["documents"][0]["evidence_source"] == "declared_site_status"
+            assert data["documents"][0]["evidence_detail"] == (
+                "No terminal status arrived before timeout."
+            )
+            assert data["documents"][0]["message"] == "Remote acceptance remains unknown."
+            assert data["unresolved_upload_count"] == 1
+            assert data["is_complete"] is False
+            assert data["can_approve"] is False
+            assert data["approve_blocking_reason"] == "1 unresolved uploads"
+
+            approve = client.post(
+                f"/api/submit/{job.application_id}/approve",
+                json={"snapshot_hash": snap.snapshot_hash, "confirm": True},
+            )
+            assert approve.status_code == 409
+            assert "1 unresolved uploads" in approve.json()["detail"]
+        engine.dispose()
+
+    def test_native_selection_without_flow_contract_remains_visible_but_unresolved(
+        self, tmp_path: Path
+    ) -> None:
+        settings = _make_settings(tmp_path)
+        job = _make_job(tmp_path)
+        engine, sf = _setup(tmp_path, settings, job)
+        snap = _make_snapshot(
+            job.application_id,
+            documents=[
+                {
+                    "document_kind": "cv",
+                    "path": str(tmp_path / "cv.pdf"),
+                    "status": "selection_verified",
+                    "selected_file_names": ["cv.pdf"],
+                    "observed_constraints": {"accept": ".pdf", "required": True},
+                    "evidence_source": "native_selection",
+                    "evidence_detail": "Native selection was observed without a flow contract.",
+                }
+            ],
+        )
+        with session_scope(sf) as session:
+            create_approval(session, application_id=job.application_id, snapshot=snap)
+        app = _create_app(settings, engine, sf)
+        with TestClient(app) as client:
+            response = client.get(f"/api/submit/{job.application_id}/status")
+            assert response.status_code == 200
+            data = response.json()["snapshot"]
+            document = data["documents"][0]
+            assert document["status"] == "selection_verified"
+            assert document["upload_contract"] is None
+            assert document["selected_file_names"] == ["cv.pdf"]
+            assert data["unresolved_upload_count"] == 1
+            assert data["is_complete"] is False
+            assert data["can_approve"] is False
+
+            approve = client.post(
+                f"/api/submit/{job.application_id}/approve",
+                json={"snapshot_hash": snap.snapshot_hash, "confirm": True},
+            )
+            assert approve.status_code == 409
+            assert "1 unresolved uploads" in approve.json()["detail"]
+        engine.dispose()
+
+    def test_remote_acceptance_without_declared_async_contract_is_unknown(
+        self, tmp_path: Path
+    ) -> None:
+        settings = _make_settings(tmp_path)
+        job = _make_job(tmp_path)
+        engine, sf = _setup(tmp_path, settings, job)
+        snap = _make_snapshot(
+            job.application_id,
+            documents=[
+                {
+                    "document_kind": "cv",
+                    "path": str(tmp_path / "cv.pdf"),
+                    "status": "remote_accepted",
+                    "selected_file_names": ["cv.pdf"],
+                    "observed_constraints": {"accept": ".pdf", "required": True},
+                    "evidence_source": "declared_site_status",
+                    "evidence_detail": "Site text claimed acceptance without a protocol contract.",
+                }
+            ],
+        )
+        with session_scope(sf) as session:
+            create_approval(session, application_id=job.application_id, snapshot=snap)
+        app = _create_app(settings, engine, sf)
+        with TestClient(app) as client:
+            response = client.get(f"/api/submit/{job.application_id}/status")
+            assert response.status_code == 200
+            data = response.json()["snapshot"]
+            document = data["documents"][0]
+            assert document["status"] == "unknown"
+            assert document["upload_contract"] is None
+            assert document["evidence_source"] == "unknown"
+            assert "lacked matching evidence" in document["evidence_detail"]
+            assert data["unresolved_upload_count"] == 1
+            assert data["is_complete"] is False
+            assert data["can_approve"] is False
+        engine.dispose()
+
+    def test_malformed_remote_acceptance_is_reported_unknown_and_blocked(
+        self, tmp_path: Path
+    ) -> None:
+        settings = _make_settings(tmp_path)
+        job = _make_job(tmp_path)
+        engine, sf = _setup(tmp_path, settings, job)
+        snap = _make_snapshot(
+            job.application_id,
+            documents=[
+                {
+                    "document_kind": "cv",
+                    "path": str(tmp_path / "cv.pdf"),
+                    "status": "remote_accepted",
+                    "selected_file_names": [],
+                    "observed_constraints": {},
+                    "evidence_source": "native_selection",
+                    "evidence_detail": "Untrusted acceptance claim.",
+                }
+            ],
+        )
+        with session_scope(sf) as session:
+            create_approval(session, application_id=job.application_id, snapshot=snap)
+        app = _create_app(settings, engine, sf)
+        with TestClient(app) as client:
+            response = client.get(f"/api/submit/{job.application_id}/status")
+            assert response.status_code == 200
+            data = response.json()["snapshot"]
+            document = data["documents"][0]
+            assert document["status"] == "unknown"
+            assert document["evidence_source"] == "unknown"
+            assert "lacked matching evidence" in document["evidence_detail"]
+            assert data["unresolved_upload_count"] == 1
+            assert data["is_complete"] is False
+            assert data["can_approve"] is False
+
+            approve = client.post(
+                f"/api/submit/{job.application_id}/approve",
+                json={"snapshot_hash": snap.snapshot_hash, "confirm": True},
+            )
+            assert approve.status_code == 409
+            assert "unresolved uploads" in approve.json()["detail"]
         engine.dispose()
 
 

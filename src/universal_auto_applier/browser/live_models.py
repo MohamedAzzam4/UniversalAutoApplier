@@ -9,9 +9,24 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 LiveRunStatus = Literal["review_ready", "needs_user_input", "failed", "recon_complete"]
+LiveUploadStatus = Literal[
+    "selection_verified",
+    "remote_accepted",
+    "rejected",
+    "unknown",
+    "missing",
+    "failed",
+]
+LiveUploadEvidenceSource = Literal[
+    "native_selection",
+    "declared_site_status",
+    "input_constraint",
+    "unknown",
+]
+LiveUploadContract = Literal["native_final_submit", "declared_async_status"]
 
 
 class LiveClickRecord(BaseModel):
@@ -59,14 +74,49 @@ class LiveFieldRecord(BaseModel):
 
 
 class LiveUploadRecord(BaseModel):
-    """Evidence that a document upload was attempted."""
+    """Evidence about native file selection and, when observable, site acceptance."""
 
     page_url: str
     selector: str
     document_kind: Literal["cv", "cover_letter", "transcript", "attachment", "unknown"]
     path: str
-    status: Literal["uploaded", "missing", "failed"]
+    status: LiveUploadStatus
+    selected_file_names: list[str] = Field(default_factory=list[str])
+    observed_constraints: dict[str, str | bool] = Field(default_factory=dict[str, str | bool])
+    evidence_source: LiveUploadEvidenceSource = "unknown"
+    # `None` preserves selected-file evidence without qualifying it for final
+    # review readiness. A flow must explicitly declare how the file is sent.
+    upload_contract: LiveUploadContract | None = None
+    evidence_detail: str = ""
     message: str = ""
+
+    @model_validator(mode="after")
+    def validate_upload_evidence(self) -> LiveUploadRecord:
+        """Do not allow a successful status without matching evidence."""
+        expected_name = self.path.replace("\\", "/").rsplit("/", 1)[-1].casefold()
+        observed_names = {name.casefold() for name in self.selected_file_names}
+        matched_selection = bool(expected_name and expected_name in observed_names)
+        if self.status == "selection_verified":
+            if (
+                self.evidence_source != "native_selection"
+                or not matched_selection
+                or not self.evidence_detail.strip()
+                or self.upload_contract not in {None, "native_final_submit"}
+            ):
+                raise ValueError(
+                    "selection_verified requires matching native selected-filename evidence"
+                )
+        elif self.status in {"remote_accepted", "rejected"}:
+            if (
+                self.evidence_source != "declared_site_status"
+                or not matched_selection
+                or not self.evidence_detail.strip()
+                or self.upload_contract != "declared_async_status"
+            ):
+                raise ValueError(
+                    f"{self.status} requires matching selected filenames and declared site-status evidence"
+                )
+        return self
 
 
 class LiveFormObservation(BaseModel):
@@ -162,5 +212,8 @@ __all__ = [
     "LiveRunReport",
     "LiveRunStatus",
     "LiveUploadRecord",
+    "LiveUploadEvidenceSource",
+    "LiveUploadContract",
+    "LiveUploadStatus",
     "SubmitInterlockCounters",
 ]

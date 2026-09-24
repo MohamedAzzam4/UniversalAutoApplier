@@ -12,6 +12,12 @@ from datetime import datetime
 
 from pydantic import BaseModel, Field
 
+from universal_auto_applier.browser.live_models import (
+    LiveUploadContract,
+    LiveUploadEvidenceSource,
+    LiveUploadStatus,
+)
+
 
 class LiveReviewField(BaseModel):
     """One field in the persisted live-review snapshot."""
@@ -33,7 +39,7 @@ class LiveReviewField(BaseModel):
 
 
 class LiveReviewDocument(BaseModel):
-    """One uploaded document in the persisted snapshot."""
+    """One selected document and its persisted upload evidence."""
 
     document_kind: str
     filename: str = ""
@@ -41,6 +47,15 @@ class LiveReviewDocument(BaseModel):
     content_hash: str = ""
     exists: bool = True
     readable: bool = True
+    # Optional to keep snapshots created before upload evidence was added
+    # readable through this response model.
+    status: LiveUploadStatus | None = None
+    upload_contract: LiveUploadContract | None = None
+    selected_file_names: list[str] = Field(default_factory=list[str])
+    observed_constraints: dict[str, str | bool] = Field(default_factory=dict[str, str | bool])
+    evidence_source: LiveUploadEvidenceSource | None = None
+    evidence_detail: str = ""
+    message: str = ""
 
 
 class LiveReviewSubmitControl(BaseModel):
@@ -71,6 +86,7 @@ class LiveReviewSnapshotResponse(BaseModel):
     documents: list[LiveReviewDocument] = Field(default_factory=list[LiveReviewDocument])
     pending_intervention_count: int = 0
     unresolved_required_field_count: int = 0
+    unresolved_upload_count: int = 0
     unconfirmed_high_risk_count: int = 0
     active_approval_id: str | None = None
     approval_state: str = "none"

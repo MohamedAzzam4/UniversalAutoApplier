@@ -28,6 +28,8 @@ from universal_auto_applier.core.question_models import (
 )
 from universal_auto_applier.core.statuses import ApplicationStatus, Platform
 from universal_auto_applier.form_engine.live_executor import (
+    AsyncUploadProtocol,
+    NativeFinalSubmitUploadContract,
     execute_live_form,
     execute_live_form_with_llm,
 )
@@ -106,12 +108,17 @@ def _runner(tmp_path: Path) -> LiveBrowserRunner:
     )
 
 
-def _assert_review_ready_without_submit(report, context: BrowserContext) -> None:
-    assert report.status == "review_ready", report.model_dump_json(indent=2)
-    assert report.stopped_reason == "final_submit_detected"
+def _assert_upload_selection_is_unresolved_without_flow_contract(
+    report, context: BrowserContext
+) -> None:
+    assert report.status == "needs_user_input", report.model_dump_json(indent=2)
+    assert report.stopped_reason == "required_fields_unresolved"
     assert report.submitted is False
     assert report.report_path is not None and Path(report.report_path).exists()
     assert report.trace_path is not None and Path(report.trace_path).exists()
+    assert report.uploads
+    assert all(upload.status == "selection_verified" for upload in report.uploads)
+    assert all(upload.upload_contract is None for upload in report.uploads)
     final_page = context.pages[-1]
     assert final_page.locator("body").get_attribute("data-submitted") == "false"
 
@@ -126,7 +133,7 @@ def test_direct_ats_form_fills_and_uploads(
         context, job, artifact_dir=tmp_path / "direct-artifacts"
     )
 
-    _assert_review_ready_without_submit(report, context)
+    _assert_upload_selection_is_unresolved_without_flow_contract(report, context)
     page = context.pages[-1]
     assert page.locator("#first_name").input_value() == "Mohamed"
     assert page.locator("#last_name").input_value() == "Azzam"
@@ -135,7 +142,361 @@ def test_direct_ats_form_fills_and_uploads(
     assert page.locator("input[name='sponsorship'][value='No']").is_checked()
     assert all(record.label != "Search options" for record in report.fields)
     assert {upload.document_kind for upload in report.uploads} == {"cv", "cover_letter"}
-    assert all(upload.status == "uploaded" for upload in report.uploads)
+    assert all(upload.status == "selection_verified" for upload in report.uploads)
+    assert all(upload.upload_contract is None for upload in report.uploads)
+    assert all(upload.selected_file_names for upload in report.uploads)
+    assert all(upload.evidence_source == "native_selection" for upload in report.uploads)
+
+
+def test_native_file_selection_without_uaa_protocol_propagates_to_snapshot(
+    page: Page,
+    tmp_path: Path,
+) -> None:
+    page.set_content(
+        """<form>
+          <label for="cv">Upload CV</label>
+          <input id="cv" name="cv" type="file" accept=".pdf" required
+                 data-site-status="accepted">
+        </form>"""
+    )
+    job = _make_job(tmp_path, "http://uaa.test/native-upload", "native-upload")
+
+    execution = execute_live_form(page, CandidateProfile(), job)
+
+    assert execution.required_unresolved == 1
+    assert len(execution.uploads) == 1
+    upload = execution.uploads[0]
+    assert upload.status == "selection_verified"
+    assert upload.selected_file_names == [Path(job.cv_pdf or "").name]
+    assert upload.observed_constraints == {
+        "accept": ".pdf",
+        "multiple": False,
+        "required": True,
+    }
+    assert upload.evidence_source == "native_selection"
+    assert upload.upload_contract is None
+    assert "does not establish upload readiness" in upload.evidence_detail
+    assert "not qualified for review readiness" in upload.message
+    assert execution.fields[0].status == "intervention_needed"
+
+    snapshot = build_snapshot_from_report(
+        application_id=job.application_id,
+        application_url=job.url,
+        fields=execution.fields,
+        uploads=execution.uploads,
+        pending_intervention_count=execution.required_unresolved,
+    )
+    assert len(snapshot.documents) == 1
+    document = snapshot.documents[0]
+    assert document.status == "selection_verified"
+    assert document.selected_file_names == upload.selected_file_names
+    assert document.observed_constraints == upload.observed_constraints
+    assert document.evidence_source == "native_selection"
+    assert document.upload_contract is None
+    assert snapshot.unresolved_upload_count == 1
+    assert snapshot.unresolved_required_field_count == 1
+
+
+def test_declared_native_final_submit_contract_makes_selection_ready(
+    page: Page,
+    tmp_path: Path,
+) -> None:
+    page.set_content(
+        """<form>
+          <label for="cv">Upload CV</label>
+          <input id="cv" name="cv" type="file" accept=".pdf" required>
+        </form>"""
+    )
+    job = _make_job(tmp_path, "http://uaa.test/native-qualified", "native-qualified")
+
+    execution = execute_live_form(
+        page,
+        CandidateProfile(),
+        job,
+        native_upload_contracts=(NativeFinalSubmitUploadContract(file_input_selector="#cv"),),
+    )
+
+    assert execution.required_unresolved == 0
+    assert execution.fields[0].status == "filled"
+    upload = execution.uploads[0]
+    assert upload.status == "selection_verified"
+    assert upload.upload_contract == "native_final_submit"
+    snapshot = build_snapshot_from_report(
+        application_id=job.application_id,
+        application_url=job.url,
+        fields=execution.fields,
+        uploads=execution.uploads,
+        pending_intervention_count=execution.required_unresolved,
+    )
+    assert snapshot.documents[0].upload_contract == "native_final_submit"
+    assert snapshot.unresolved_upload_count == 0
+
+
+def test_native_file_selection_records_accept_hint_mismatch_as_unknown(
+    page: Page,
+    tmp_path: Path,
+) -> None:
+    page.set_content(
+        """<form>
+          <label for="cv">Upload CV</label>
+          <input id="cv" name="cv" type="file" accept=".docx" required>
+        </form>"""
+    )
+    job = _make_job(tmp_path, "http://uaa.test/upload-constraint", "upload-constraint")
+
+    execution = execute_live_form(page, CandidateProfile(), job)
+
+    assert len(execution.uploads) == 1
+    upload = execution.uploads[0]
+    assert upload.status == "unknown"
+    assert upload.evidence_source == "input_constraint"
+    assert upload.selected_file_names == [Path(job.cv_pdf or "").name]
+    assert upload.observed_constraints["accept"] == ".docx"
+    assert "site did not report rejection" in upload.evidence_detail
+    assert execution.fields[0].status == "intervention_needed"
+    assert execution.required_unresolved == 1
+
+    snapshot = build_snapshot_from_report(
+        application_id=job.application_id,
+        application_url=job.url,
+        fields=execution.fields,
+        uploads=execution.uploads,
+        pending_intervention_count=execution.required_unresolved,
+    )
+    assert snapshot.documents[0].status == "unknown"
+    assert snapshot.unresolved_upload_count == 1
+    assert snapshot.unresolved_required_field_count == 1
+
+
+@pytest.mark.parametrize(
+    ("site_status", "expected_upload_status"),
+    [("accepted", "remote_accepted"), ("rejected", "rejected")],
+)
+def test_declared_async_upload_protocol_requires_post_selection_site_evidence(
+    page: Page,
+    tmp_path: Path,
+    site_status: str,
+    expected_upload_status: str,
+) -> None:
+    page.set_content(
+        f"""<form>
+          <label for="cv">Upload CV</label>
+          <input id="cv" name="cv" type="file" accept=".pdf" required>
+          <output id="upload-status" data-state="pending"></output>
+        </form>
+        <script>
+          document.querySelector('#cv').addEventListener('change', () => {{
+            setTimeout(() => document.querySelector('#upload-status')
+              .setAttribute('data-state', '{site_status}'), 10);
+          }});
+        </script>"""
+    )
+    job = _make_job(tmp_path, f"http://uaa.test/async-{site_status}", f"async-{site_status}")
+    protocol = AsyncUploadProtocol(
+        file_input_selector="#cv",
+        status_selector="#upload-status",
+        status_attribute="data-state",
+        timeout_ms=1_000,
+    )
+
+    execution = execute_live_form(
+        page,
+        CandidateProfile(),
+        job,
+        async_upload_protocols=(protocol,),
+    )
+
+    assert len(execution.uploads) == 1
+    upload = execution.uploads[0]
+    assert upload.status == expected_upload_status
+    assert upload.upload_contract == "declared_async_status"
+    assert upload.evidence_source == "declared_site_status"
+    assert (
+        "report acceptance" if site_status == "accepted" else "report rejection"
+    ) in upload.evidence_detail
+    snapshot = build_snapshot_from_report(
+        application_id=job.application_id,
+        application_url=job.url,
+        fields=execution.fields,
+        uploads=execution.uploads,
+        pending_intervention_count=execution.required_unresolved,
+    )
+    assert snapshot.documents[0].status == expected_upload_status
+    assert snapshot.documents[0].upload_contract == "declared_async_status"
+    if site_status == "accepted":
+        assert execution.required_unresolved == 0
+        assert snapshot.unresolved_upload_count == 0
+    else:
+        assert execution.fields[0].status == "intervention_needed"
+        assert execution.required_unresolved == 1
+        assert snapshot.unresolved_upload_count == 1
+        assert snapshot.unresolved_required_field_count == 1
+
+
+def test_declared_async_upload_requires_unique_status_inside_target_form(
+    page: Page,
+    tmp_path: Path,
+) -> None:
+    page.set_content(
+        """<form>
+          <label for="cv">Upload CV</label>
+          <input id="cv" name="cv" type="file" accept=".pdf" required>
+          <output class="upload-status" data-state="pending"></output>
+          <output class="upload-status" data-state="accepted"></output>
+        </form>"""
+    )
+    job = _make_job(tmp_path, "http://uaa.test/duplicate-status", "duplicate-status")
+    protocol = AsyncUploadProtocol(
+        file_input_selector="#cv",
+        status_selector=".upload-status",
+        status_attribute="data-state",
+        timeout_ms=100,
+    )
+
+    execution = execute_live_form(
+        page,
+        CandidateProfile(),
+        job,
+        async_upload_protocols=(protocol,),
+    )
+
+    assert execution.uploads[0].status == "unknown"
+    assert "not unique within the target form" in execution.uploads[0].evidence_detail
+    assert execution.required_unresolved == 1
+
+
+def test_declared_async_upload_is_unknown_with_multiple_file_inputs_in_form(
+    page: Page,
+    tmp_path: Path,
+) -> None:
+    page.set_content(
+        """<form>
+          <label for="cv">Upload CV</label>
+          <input id="cv" name="cv" type="file" accept=".pdf" required>
+          <label for="cover">Upload cover letter</label>
+          <input id="cover" name="cover" type="file" accept=".pdf" required>
+          <output id="upload-status" data-state="accepted"></output>
+        </form>"""
+    )
+    job = _make_job(tmp_path, "http://uaa.test/multiple-file-inputs", "multiple-file-inputs")
+    protocol = AsyncUploadProtocol(
+        file_input_selector="#cv",
+        status_selector="#upload-status",
+        status_attribute="data-state",
+        timeout_ms=100,
+    )
+
+    execution = execute_live_form(
+        page,
+        CandidateProfile(),
+        job,
+        async_upload_protocols=(protocol,),
+    )
+
+    cv_upload = next(upload for upload in execution.uploads if upload.document_kind == "cv")
+    assert cv_upload.status == "unknown"
+    assert "multiple file inputs" in cv_upload.evidence_detail
+    assert execution.required_unresolved >= 1
+
+
+def test_declared_async_upload_does_not_read_signal_from_another_frame(
+    page: Page,
+    tmp_path: Path,
+) -> None:
+    page.set_content(
+        """<form><output id="upload-status" data-state="accepted"></output></form>
+        <iframe id="upload-frame"></iframe>
+        <script>
+          document.querySelector('#upload-frame').srcdoc =
+            '<form><label for="cv">Upload CV</label>' +
+            '<input id="cv" name="cv" type="file" accept=".pdf" required></form>';
+        </script>"""
+    )
+    page.frame_locator("#upload-frame").locator("#cv").wait_for()
+    job = _make_job(tmp_path, "http://uaa.test/wrong-frame", "wrong-frame")
+    protocol = AsyncUploadProtocol(
+        file_input_selector="#cv",
+        status_selector="#upload-status",
+        status_attribute="data-state",
+        timeout_ms=50,
+    )
+
+    execution = execute_live_form(
+        page,
+        CandidateProfile(),
+        job,
+        async_upload_protocols=(protocol,),
+    )
+
+    assert execution.uploads[0].status == "unknown"
+    assert "target-form signal" in execution.uploads[0].evidence_detail
+    assert execution.required_unresolved == 1
+
+
+def test_async_upload_protocol_rejects_ambiguous_configuration() -> None:
+    with pytest.raises(ValueError, match="accepted_value and rejected_value must be distinct"):
+        AsyncUploadProtocol(
+            file_input_selector="#cv",
+            status_selector="#state",
+            accepted_value="accepted",
+            rejected_value=" ACCEPTED ",
+        )
+    with pytest.raises(ValueError, match="accepted_value and rejected_value must not be empty"):
+        AsyncUploadProtocol(
+            file_input_selector="#cv",
+            status_selector="#state",
+            accepted_value=" ",
+        )
+    with pytest.raises(ValueError, match="timeout_ms must be positive"):
+        AsyncUploadProtocol(
+            file_input_selector="#cv",
+            status_selector="#state",
+            timeout_ms=0,
+        )
+
+
+def test_declared_async_upload_timeout_is_unknown_and_blocks_readiness(
+    page: Page,
+    tmp_path: Path,
+) -> None:
+    page.set_content(
+        """<form>
+          <label for="cv">Upload CV</label>
+          <input id="cv" name="cv" type="file" accept=".pdf" required>
+          <output id="upload-status" data-state="pending"></output>
+        </form>"""
+    )
+    job = _make_job(tmp_path, "http://uaa.test/async-timeout", "async-timeout")
+    protocol = AsyncUploadProtocol(
+        file_input_selector="#cv",
+        status_selector="#upload-status",
+        status_attribute="data-state",
+        timeout_ms=50,
+    )
+
+    execution = execute_live_form(
+        page,
+        CandidateProfile(),
+        job,
+        async_upload_protocols=(protocol,),
+    )
+
+    upload = execution.uploads[0]
+    assert upload.status == "unknown"
+    assert upload.evidence_source == "declared_site_status"
+    assert "within 50 ms" in upload.evidence_detail
+    assert execution.fields[0].status == "intervention_needed"
+    assert execution.required_unresolved == 1
+    snapshot = build_snapshot_from_report(
+        application_id=job.application_id,
+        application_url=job.url,
+        fields=execution.fields,
+        uploads=execution.uploads,
+        pending_intervention_count=execution.required_unresolved,
+    )
+    assert snapshot.documents[0].status == "unknown"
+    assert snapshot.unresolved_upload_count == 1
+    assert snapshot.unresolved_required_field_count == 1
 
 
 def test_linkedin_outbound_apply_reaches_company_form(
@@ -148,7 +509,7 @@ def test_linkedin_outbound_apply_reaches_company_form(
         context, job, artifact_dir=tmp_path / "linkedin-artifacts"
     )
 
-    _assert_review_ready_without_submit(report, context)
+    _assert_upload_selection_is_unresolved_without_flow_contract(report, context)
     assert [record.text for record in report.click_path] == [
         "Apply on company website",
         "Online bewerben",
@@ -168,7 +529,7 @@ def test_softgarden_online_bewerben_reaches_form(
         context, job, artifact_dir=tmp_path / "softgarden-artifacts"
     )
 
-    _assert_review_ready_without_submit(report, context)
+    _assert_upload_selection_is_unresolved_without_flow_contract(report, context)
     assert [record.text for record in report.click_path] == ["Online bewerben", "Continue"]
 
 
@@ -182,10 +543,12 @@ def test_multistep_form_fills_each_page(
         context, job, artifact_dir=tmp_path / "multistep-artifacts"
     )
 
-    _assert_review_ready_without_submit(report, context)
+    _assert_upload_selection_is_unresolved_without_flow_contract(report, context)
     assert [record.text for record in report.click_path] == ["Continue"]
     labels = {record.label for record in report.fields if record.status == "filled"}
-    assert {"First name", "Email address", "Phone number", "Upload CV"} <= labels
+    assert {"First name", "Email address", "Phone number"} <= labels
+    upload_fields = [record for record in report.fields if record.field_type == "file"]
+    assert upload_fields and all(record.status == "intervention_needed" for record in upload_fields)
 
 
 @pytest.mark.parametrize(
@@ -237,8 +600,8 @@ def test_invisible_recaptcha_badge_is_not_a_captcha_blocker(
         artifact_dir=tmp_path / "invisible-badge-artifacts",
     )
 
-    assert report.status == "review_ready", report.model_dump_json(indent=2)
-    assert report.stopped_reason == "final_submit_detected"
+    assert report.status == "needs_user_input", report.model_dump_json(indent=2)
+    assert report.stopped_reason == "required_fields_unresolved"
     assert report.click_path == []
     assert report.submitted is False
     assert report.fields, "the form must have been filled despite the badge"
@@ -290,8 +653,8 @@ def test_lever_cards_named_groups_are_not_a_payment_wall(
         artifact_dir=tmp_path / "lever-cards-artifacts",
     )
 
-    assert report.status == "review_ready", report.model_dump_json(indent=2)
-    assert report.stopped_reason == "final_submit_detected"
+    assert report.status == "needs_user_input", report.model_dump_json(indent=2)
+    assert report.stopped_reason == "required_fields_unresolved"
     assert report.click_path == []
     assert report.submitted is False
     assert report.fields, "the Lever-style form must have been filled"

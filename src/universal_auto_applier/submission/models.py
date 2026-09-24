@@ -35,7 +35,10 @@ from pydantic import BaseModel, Field
 
 from universal_auto_applier.browser.live_models import (
     LiveFieldRecord,
+    LiveUploadContract,
+    LiveUploadEvidenceSource,
     LiveUploadRecord,
+    LiveUploadStatus,
 )
 
 
@@ -63,11 +66,20 @@ class SubmissionSnapshotField(BaseModel):
 
 
 class SubmissionSnapshotDocument(BaseModel):
-    """One uploaded document in the submission snapshot."""
+    """One selected document and its upload evidence in the snapshot."""
 
     document_kind: str
     path: str
     content_hash: str = ""
+    # None is retained only for snapshots written before upload evidence was
+    # part of the model. New live reports always populate these fields.
+    status: LiveUploadStatus | None = None
+    upload_contract: LiveUploadContract | None = None
+    selected_file_names: list[str] = Field(default_factory=list[str])
+    observed_constraints: dict[str, str | bool] = Field(default_factory=dict[str, str | bool])
+    evidence_source: LiveUploadEvidenceSource | None = None
+    evidence_detail: str = ""
+    message: str = ""
 
 
 class SubmissionSnapshotSubmitControl(BaseModel):
@@ -111,6 +123,7 @@ class SubmissionSnapshot(BaseModel):
     # inferred from pending_intervention_count — they are direct checks
     # on the field records.
     unresolved_required_field_count: int = 0
+    unresolved_upload_count: int = 0
     high_risk_unconfirmed_count: int = 0
     created_at: datetime = Field(default_factory=_utcnow)
     form_fingerprint: str = ""
@@ -174,6 +187,7 @@ class SubmissionSnapshot(BaseModel):
             ),
             "pending_intervention_count": self.pending_intervention_count,
             "unresolved_required_field_count": self.unresolved_required_field_count,
+            "unresolved_upload_count": self.unresolved_upload_count,
             "high_risk_unconfirmed_count": self.high_risk_unconfirmed_count,
             "submit_control": self.submit_control.model_dump() if self.submit_control else None,
         }
@@ -208,6 +222,7 @@ _UNRESOLVED_STATUSES = frozenset(
         "unsupported",
     }
 )
+_RESOLVED_UPLOAD_STATUSES = frozenset({"selection_verified", "remote_accepted"})
 
 
 def _count_unresolved_fields(
@@ -230,6 +245,77 @@ def derive_unresolved_required_count(fields: list[SubmissionSnapshotField]) -> i
     """
     unresolved_required, unresolved_any = _count_unresolved_fields(fields)
     return max(unresolved_required, unresolved_any)
+
+
+def derive_unresolved_upload_count(documents: list[SubmissionSnapshotDocument]) -> int:
+    """Count uploads without current affirmative selection/acceptance evidence.
+
+    A legacy document with no status is readable but cannot prove that the
+    current form selected it. It therefore requires a fresh observation
+    before approval or submission.
+    """
+    return sum(
+        1
+        for document in documents
+        if document.status not in _RESOLVED_UPLOAD_STATUSES
+        or not has_trustworthy_upload_evidence(document)
+    )
+
+
+def has_trustworthy_upload_evidence(document: SubmissionSnapshotDocument) -> bool:
+    """Return whether upload status, evidence and declared send contract agree."""
+    if document.status not in {*_RESOLVED_UPLOAD_STATUSES, "rejected"}:
+        return False
+    expected_name = document.path.replace("\\", "/").rsplit("/", 1)[-1].casefold()
+    selected_names = {name.casefold() for name in document.selected_file_names}
+    if (
+        not expected_name
+        or expected_name not in selected_names
+        or not document.evidence_detail.strip()
+    ):
+        return False
+    if document.status == "selection_verified":
+        return (
+            document.evidence_source == "native_selection"
+            and document.upload_contract == "native_final_submit"
+        )
+    return (
+        document.evidence_source == "declared_site_status"
+        and document.upload_contract == "declared_async_status"
+    )
+
+
+def has_consistent_upload_evidence(document: SubmissionSnapshotDocument) -> bool:
+    """Return whether the status accurately describes its observed evidence."""
+    if document.status not in {*_RESOLVED_UPLOAD_STATUSES, "rejected"}:
+        return False
+    expected_name = document.path.replace("\\", "/").rsplit("/", 1)[-1].casefold()
+    selected_names = {name.casefold() for name in document.selected_file_names}
+    if (
+        not expected_name
+        or expected_name not in selected_names
+        or not document.evidence_detail.strip()
+    ):
+        return False
+    if document.status == "selection_verified":
+        return document.evidence_source == "native_selection" and document.upload_contract in {
+            None,
+            "native_final_submit",
+        }
+    return (
+        document.evidence_source == "declared_site_status"
+        and document.upload_contract == "declared_async_status"
+    )
+
+
+def display_upload_status(document: SubmissionSnapshotDocument) -> LiveUploadStatus | None:
+    """Avoid presenting contradictory success/rejection evidence as observed."""
+    if document.status in {
+        *_RESOLVED_UPLOAD_STATUSES,
+        "rejected",
+    } and not has_consistent_upload_evidence(document):
+        return "unknown"
+    return document.status
 
 
 def derive_unconfirmed_high_risk_count(
@@ -264,6 +350,13 @@ def check_snapshot_consistency(
     computed at snapshot-creation time when no confirmations existed.
     """
     derived_unresolved = derive_unresolved_required_count(snapshot.fields)
+    derived_uploads = derive_unresolved_upload_count(snapshot.documents)
+    if derived_uploads != snapshot.unresolved_upload_count:
+        return (
+            f"Snapshot inconsistency: persisted unresolved_upload_count="
+            f"{snapshot.unresolved_upload_count} but document evidence shows {derived_uploads}"
+        )
+    derived_unresolved = max(derived_unresolved, derived_uploads)
     if derived_unresolved != snapshot.unresolved_required_field_count:
         return (
             f"Snapshot inconsistency: persisted unresolved_required_field_count="
@@ -336,6 +429,13 @@ def build_snapshot_from_report(
                 document_kind=u.document_kind,
                 path=u.path,
                 content_hash=content_hash,
+                status=u.status,
+                upload_contract=u.upload_contract,
+                selected_file_names=list(u.selected_file_names),
+                observed_constraints=dict(u.observed_constraints),
+                evidence_source=u.evidence_source,
+                evidence_detail=u.evidence_detail,
+                message=u.message,
             )
         )
 
@@ -352,6 +452,7 @@ def build_snapshot_from_report(
     high_risk_unconfirmed = sum(
         1 for f in snap_fields if f.requires_confirmation or f.risk_level.lower() == "high"
     )
+    unresolved_upload_count = derive_unresolved_upload_count(snap_docs)
 
     snap = SubmissionSnapshot(
         application_id=application_id,
@@ -360,7 +461,12 @@ def build_snapshot_from_report(
         documents=snap_docs,
         pending_intervention_count=pending_intervention_count,
         submit_control=submit_control,
-        unresolved_required_field_count=max(unresolved_required, unresolved_any),
+        unresolved_required_field_count=max(
+            unresolved_required,
+            unresolved_any,
+            unresolved_upload_count,
+        ),
+        unresolved_upload_count=unresolved_upload_count,
         high_risk_unconfirmed_count=high_risk_unconfirmed,
     )
     return snap.with_hashes()
@@ -498,4 +604,8 @@ __all__ = [
     "derive_is_complete",
     "derive_unconfirmed_high_risk_count",
     "derive_unresolved_required_count",
+    "derive_unresolved_upload_count",
+    "display_upload_status",
+    "has_consistent_upload_evidence",
+    "has_trustworthy_upload_evidence",
 ]

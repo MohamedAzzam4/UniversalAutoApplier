@@ -42,7 +42,7 @@ archived, and no live mutation or real submission occurred. The first real
 form family remains an explicit owner decision until an approved queue target
 is available.
 
-### V2-01 — Immediate correctness blockers (active; F4/T06 eligibility in progress)
+### V2-01 — Immediate correctness blockers (active; F2b upload-evidence integration in review)
 
 **Objective.** Correct unsupported fact assertions, missing field read-back,
 destructive re-import of UAA operational state, inconsistent duplicate gates,
@@ -58,13 +58,27 @@ do not blindly deep-merge arbitrary imported metadata. Full versioned
 upstream/local fact separation is V2-03.
 
 **Document/readiness contract.** Report native file selection as
-`selection_verified`, never as remote acceptance. Asynchronous flows report
-`uploading`, `remote_accepted`, `rejected` or `unknown` with evidence; rejection
-or unknown blocks readiness. `review_ready` requires a verified final review
-boundary, full-attempt snapshot, read-back of required answers, evidence that
-meets the flow's declared upload contract, guarded final action, and no
-pending intervention or unknown side effect. An intermediate completed form
-step is not review-ready.
+`selection_verified`, never as remote acceptance. Native selection alone is
+visible evidence and does not make a document resolved: a typed,
+UAA-owned `NativeFinalSubmitUploadContract` must explicitly qualify the
+specific input for the final submit flow. No ATS or generic flow is qualified
+by default. An asynchronous flow may report `remote_accepted` or `rejected`
+only under an explicitly declared, validated status protocol scoped to the
+target form and frame; timeout or ambiguous evidence remains `unknown`. A
+status signal remains unknown when a form has multiple file inputs or a
+single input carries multiple files without an explicit correlation or
+aggregate-status contract. A local `accept` hint mismatch is an unknown local
+constraint result, not a site rejection. Legacy snapshots remain readable, but
+missing or contradictory
+upload evidence blocks new approval. WQ-8 Phase A therefore requires a
+qualified upload contract and fresh observation before it can be review-ready;
+this does not authorize or perform a real submission.
+
+`review_ready` requires a verified final review boundary, full-attempt
+snapshot, read-back of required answers, evidence that meets the flow's
+declared upload contract, guarded final action, and no pending intervention
+or unknown side effect. An intermediate completed form step is not
+review-ready.
 
 **Acceptance and tests.** Negative skill evidence and ambiguous visa answers
 abstain; cleared/rewritten values fail read-back; rejected files are not
@@ -105,8 +119,7 @@ upstream/local fact separation remains V2-03. Validation passed: 37 focused
 repository/importer tests, Ruff check/format, Pyright, and the 1,479-test
 unit/contract/integration/pipeline selection.
 
-**Current bounded slice — F4/T06 manual-submission eligibility (implemented;
-supervisor checkpoint review pending).** A shared domain eligibility check
+**F4/T06 manual-submission eligibility checkpointed.** A shared domain eligibility check
 blocks canonical `submitted`/`applied` jobs and the UAA-owned
 `dashboard_submitted=true` marker from repeat preparation or submission across
 the coordinator, retry API, supervisor, and existing pipeline/orchestration
@@ -127,13 +140,40 @@ non-live/non-Playwright gate passed **1,481 tests** with **303 deselected** in
 separate stale dashboard header assertion (`Documents` expected versus
 `DOCUMENTS` rendered) after **385 passed**; the full Playwright-inclusive
 suite is not claimed green. The broad non-Playwright result includes the
-parallel unstaged F2b source changes present in the shared working tree; the
-F4/T06 focused tests isolate this package. Stage only the shared eligibility code, direct
-coordinator/retry/supervisor/pipeline tests, and the active handoff/archive
-paths. Keep parallel F2b edits unstaged. Supervisor checkpoint review is
-required before commit/push; no real target or submission is in scope. F2b
-integration still needs to propagate upload evidence through the API response
-mapping and preserve the WQ-8 plan-hash binding.
+parallel F2b source changes present in the shared working tree; the F4/T06
+focused tests isolate that package. No real target or submission was in scope.
+
+**Current bounded slice — F2b/T04/T19 upload evidence integration
+(implemented; supervisor checkpoint review pending).** Live file execution
+preserves per-document selected filenames, observed constraints and evidence
+source/detail. A native `selection_verified` record without an explicit
+native-final-submit flow contract remains visible but unresolved; an explicit
+typed contract qualifies only its matching file input. Declared async status
+is validated, unique, and scoped to the same form/frame. Invalid combinations
+cannot establish readiness, local accept-hint mismatches remain `unknown`, and
+exception details exposed as evidence are sanitized. API review responses
+expose the same document evidence and unresolved-upload count; completeness,
+approval and coordinator gates block every unresolved or legacy-unobserved
+document. WQ-8 review-plan hashing binds status, flow contract and evidence,
+while legacy documents keep their prior plan encoding until re-observed.
+
+F2b validation passed: focused API, WQ-8 authorization/coordinator, snapshot
+safety, bundle, live-executor and WQ-8 persistence tests — **133 passed** in
+165.52 seconds; the WQ-7C synthetic-mutation Playwright module passed **9/9**
+in 39.69 seconds; the ordered Playwright lifecycle reproduction passed **3/3**
+in 5.64 seconds; and
+the full non-live/non-Playwright gate passed **1,502 tests, 309 deselected** in
+787.59 seconds. Ruff check and format check passed (**239 files already
+formatted**); Pyright reported **0 errors, 0 warnings, 0 informations**; and
+staged/unstaged `git diff --check` passed. The complete Playwright-inclusive
+suite was not rerun; the Phase 6 dashboard header test update is separate and
+excluded from this package. No new ATS protocol is enabled by default, and no
+real ATS action or submission occurred.
+
+**Next action.** Supervisor checkpoint review of the exact staged F2b source,
+test and handoff paths; commit and push only after that review, verify local
+HEAD equals `origin/checkpoint/v2-01-correctness`, and stop before V2-01's next
+slice.
 
 **Predecessor.** V2-00 baseline checkpoint `0e21adb43b400dd90a91a3ba754269e1a061375e`.
 Owner approval is separately required for any real target/live action under

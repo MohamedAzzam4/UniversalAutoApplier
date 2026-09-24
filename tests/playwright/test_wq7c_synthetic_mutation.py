@@ -144,7 +144,7 @@ class TestGreenhouseSyntheticMutation:
 
         # Approved synthetic documents were uploaded (resume + cover letter).
         assert len(report.uploads) >= 2
-        assert all(u.status == "uploaded" for u in report.uploads)
+        assert all(u.status == "selection_verified" for u in report.uploads)
         for upload in report.uploads:
             # Every uploaded file's SHA-256 MUST be in the approved set.
             from universal_auto_applier.synthetic_profile import sha256_file
@@ -279,7 +279,7 @@ class TestLeverSyntheticMutation:
         filled = {f.label for f in report.fields if f.status == "filled"}
         assert {"Full name", "Email", "Phone"} <= filled
         assert len(report.uploads) >= 2
-        assert all(u.status == "uploaded" for u in report.uploads)
+        assert all(u.status == "selection_verified" for u in report.uploads)
 
 
 class TestConditionalRevealPlanChain:

@@ -14,9 +14,12 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
+import pytest
 from fastapi.testclient import TestClient
+from pydantic import ValidationError
 
 from universal_auto_applier.api.app import create_app
+from universal_auto_applier.browser.live_models import LiveUploadRecord
 from universal_auto_applier.config import Settings
 from universal_auto_applier.core.identity import compute_application_id
 from universal_auto_applier.core.models import ApplicationJob
@@ -33,12 +36,14 @@ from universal_auto_applier.persistence.models import Base
 from universal_auto_applier.submission.coordinator import SubmissionCoordinator
 from universal_auto_applier.submission.models import (
     SubmissionSnapshot,
+    SubmissionSnapshotDocument,
     SubmissionSnapshotField,
     SubmissionSnapshotSubmitControl,
     check_snapshot_consistency,
     derive_is_complete,
     derive_unconfirmed_high_risk_count,
     derive_unresolved_required_count,
+    derive_unresolved_upload_count,
 )
 from universal_auto_applier.submission.store import (
     create_approval,
@@ -202,6 +207,95 @@ class TestDeriveUnconfirmedHighRiskCount:
     def test_confirmed_not_counted(self) -> None:
         fields = [_field(field_token="f1", risk_level="high", requires_confirmation=True)]
         assert derive_unconfirmed_high_risk_count(fields, {"f1"}) == 0
+
+
+class TestLiveUploadEvidenceContract:
+    @pytest.mark.parametrize(
+        ("status", "selected_file_names", "evidence_source"),
+        [
+            ("remote_accepted", ["cv.pdf"], "native_selection"),
+            ("remote_accepted", [], "declared_site_status"),
+            ("selection_verified", [], "native_selection"),
+        ],
+    )
+    def test_success_status_requires_matching_selection_and_source(
+        self,
+        status: str,
+        selected_file_names: list[str],
+        evidence_source: str,
+    ) -> None:
+        with pytest.raises(ValidationError):
+            LiveUploadRecord(
+                page_url="https://uaa.test/apply",
+                selector="input[type=file]",
+                document_kind="cv",
+                path="/candidate/cv.pdf",
+                status=status,
+                selected_file_names=selected_file_names,
+                evidence_source=evidence_source,
+                evidence_detail="Untrusted upload claim.",
+            )
+
+    def test_native_selection_is_visible_but_unqualified_selection_is_unresolved(self) -> None:
+        upload = LiveUploadRecord(
+            page_url="https://uaa.test/apply",
+            selector="#cv",
+            document_kind="cv",
+            path="/candidate/cv.pdf",
+            status="selection_verified",
+            selected_file_names=["cv.pdf"],
+            evidence_source="native_selection",
+            evidence_detail="The native input exposes cv.pdf.",
+        )
+        document = SubmissionSnapshotDocument(
+            document_kind=upload.document_kind,
+            path=upload.path,
+            status=upload.status,
+            upload_contract=upload.upload_contract,
+            selected_file_names=upload.selected_file_names,
+            evidence_source=upload.evidence_source,
+            evidence_detail=upload.evidence_detail,
+        )
+        assert upload.status == "selection_verified"
+        assert upload.upload_contract is None
+        assert derive_unresolved_upload_count([document]) == 1
+
+    def test_declared_native_final_submit_contract_resolves_selection(self) -> None:
+        upload = LiveUploadRecord(
+            page_url="https://uaa.test/apply",
+            selector="#cv",
+            document_kind="cv",
+            path="/candidate/cv.pdf",
+            status="selection_verified",
+            upload_contract="native_final_submit",
+            selected_file_names=["cv.pdf"],
+            evidence_source="native_selection",
+            evidence_detail="The qualified final-submit flow includes this file input.",
+        )
+        document = SubmissionSnapshotDocument(
+            document_kind=upload.document_kind,
+            path=upload.path,
+            status=upload.status,
+            upload_contract=upload.upload_contract,
+            selected_file_names=upload.selected_file_names,
+            evidence_source=upload.evidence_source,
+            evidence_detail=upload.evidence_detail,
+        )
+        assert derive_unresolved_upload_count([document]) == 0
+
+    def test_native_contract_cannot_qualify_remote_acceptance(self) -> None:
+        with pytest.raises(ValidationError):
+            LiveUploadRecord(
+                page_url="https://uaa.test/apply",
+                selector="#cv",
+                document_kind="cv",
+                path="/candidate/cv.pdf",
+                status="remote_accepted",
+                upload_contract="native_final_submit",
+                selected_file_names=["cv.pdf"],
+                evidence_source="declared_site_status",
+                evidence_detail="Remote accepted.",
+            )
 
 
 # ===================================================================

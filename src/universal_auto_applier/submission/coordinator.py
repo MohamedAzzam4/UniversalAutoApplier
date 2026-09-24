@@ -78,6 +78,7 @@ from universal_auto_applier.submission.models import (
     check_snapshot_consistency,
     derive_unconfirmed_high_risk_count,
     derive_unresolved_required_count,
+    derive_unresolved_upload_count,
 )
 from universal_auto_applier.submission.store import (
     acquire_claim,
@@ -169,6 +170,7 @@ class SubmissionCoordinator:
         4. No pending interventions (DB check).
         4b. No unresolved required fields (direct field check).
         4c. No high-risk unconfirmed answers (direct field check).
+        4d. No upload lacking trustworthy selection/acceptance evidence.
         5. No unconsumed claim (in-progress submission).
         6. No previous unknown outcome.
         7. Application is not canonically submitted/applied or manually marked submitted.
@@ -244,7 +246,7 @@ class SubmissionCoordinator:
                     state=SubmissionResultState.SUBMISSION_NOT_ALLOWED,
                 )
 
-            # Gates 4b-4c: field-level checks derived from field data.
+            # Gates 4b-4d: readiness checks derived from snapshot evidence.
             if current_snapshot is not None:
                 confirmed_tokens = set(approval.confirmed_high_risk_fields_json or [])
                 consistency_error = check_snapshot_consistency(current_snapshot, confirmed_tokens)
@@ -252,6 +254,13 @@ class SubmissionCoordinator:
                     return GateResult(
                         allowed=False,
                         reason=consistency_error,
+                        state=SubmissionResultState.SUBMISSION_NOT_ALLOWED,
+                    )
+                unresolved_uploads = derive_unresolved_upload_count(current_snapshot.documents)
+                if unresolved_uploads > 0:
+                    return GateResult(
+                        allowed=False,
+                        reason=f"{unresolved_uploads} unresolved uploads remain",
                         state=SubmissionResultState.SUBMISSION_NOT_ALLOWED,
                     )
                 unresolved = derive_unresolved_required_count(current_snapshot.fields)

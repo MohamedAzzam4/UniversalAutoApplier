@@ -55,6 +55,7 @@ from universal_auto_applier.submission.models import (
     SubmissionSnapshotSubmitControl,
     derive_unconfirmed_high_risk_count,
     derive_unresolved_required_count,
+    derive_unresolved_upload_count,
 )
 
 
@@ -132,16 +133,27 @@ def _make_snapshot(
             document_kind=d.get("document_kind", "cv"),
             path=d.get("path", "/cv.pdf"),
             content_hash=d.get("content_hash", "doc-hash"),
+            status=d.get("status"),
+            upload_contract=d.get("upload_contract"),
+            selected_file_names=d.get("selected_file_names", []),
+            observed_constraints=d.get("observed_constraints", {}),
+            evidence_source=d.get("evidence_source"),
+            evidence_detail=d.get("evidence_detail", ""),
+            message=d.get("message", ""),
         )
         for d in (documents or [])
     ]
+    unresolved_upload_count = derive_unresolved_upload_count(snap_docs)
     snap = SubmissionSnapshot(
         application_id=app_id,
         application_url=url,
         fields=snap_fields,
         documents=snap_docs,
         pending_intervention_count=pending,
-        unresolved_required_field_count=derive_unresolved_required_count(snap_fields),
+        unresolved_required_field_count=max(
+            derive_unresolved_required_count(snap_fields), unresolved_upload_count
+        ),
+        unresolved_upload_count=unresolved_upload_count,
         high_risk_unconfirmed_count=derive_unconfirmed_high_risk_count(snap_fields),
         submit_control=SubmissionSnapshotSubmitControl(
             text=submit_text, selector="button[type='submit']"
@@ -311,6 +323,81 @@ class TestReviewPlanHashDeterminism:
             documents=docs_b,
         )
         assert a != b
+
+    def test_legacy_document_plan_hash_remains_unchanged(self) -> None:
+        """Defaulted evidence fields do not change pre-evidence plan hashes."""
+        legacy_dict = {
+            "document_kind": "cv",
+            "path": "/home/user/cv.pdf",
+            "content_hash": "h1",
+        }
+        legacy_model = SubmissionSnapshotDocument(**legacy_dict)
+        from_dict = compute_frozen_review_plan_hash(
+            application_id="app-1",
+            company="Acme",
+            job_title="Engineer",
+            application_url="https://x/job",
+            fields=self._fields(),
+            documents=[legacy_dict],
+        )
+        from_model = compute_frozen_review_plan_hash(
+            application_id="app-1",
+            company="Acme",
+            job_title="Engineer",
+            application_url="https://x/job",
+            fields=self._fields(),
+            documents=[legacy_model],
+        )
+        assert from_dict == from_model
+
+    @pytest.mark.parametrize(
+        ("status", "evidence_source", "evidence_detail"),
+        [
+            ("remote_accepted", "declared_site_status", "ATS accepted the file."),
+            ("rejected", "declared_site_status", "ATS rejected the file."),
+        ],
+    )
+    def test_upload_outcome_and_evidence_change_plan_hash(
+        self,
+        status: str,
+        evidence_source: str,
+        evidence_detail: str,
+    ) -> None:
+        selection = {
+            "document_kind": "cv",
+            "path": "/cv.pdf",
+            "content_hash": "h1",
+            "status": "selection_verified",
+            "upload_contract": "native_final_submit",
+            "selected_file_names": ["cv.pdf"],
+            "observed_constraints": {"accept": ".pdf", "required": True},
+            "evidence_source": "native_selection",
+            "evidence_detail": "Native input selection was verified.",
+        }
+        changed = {
+            **selection,
+            "status": status,
+            "upload_contract": "declared_async_status",
+            "evidence_source": evidence_source,
+            "evidence_detail": evidence_detail,
+        }
+        baseline_hash = compute_frozen_review_plan_hash(
+            application_id="app-1",
+            company="Acme",
+            job_title="Engineer",
+            application_url="https://x/job",
+            fields=self._fields(),
+            documents=[selection],
+        )
+        changed_hash = compute_frozen_review_plan_hash(
+            application_id="app-1",
+            company="Acme",
+            job_title="Engineer",
+            application_url="https://x/job",
+            fields=self._fields(),
+            documents=[changed],
+        )
+        assert baseline_hash != changed_hash
 
 
 # ---------------------------------------------------------------------------
@@ -518,6 +605,144 @@ class TestAuthorizationStore:
 
 
 class TestCoordinatorWQ8Gate:
+    @pytest.mark.parametrize(
+        ("changed_status", "changed_evidence"),
+        [
+            ("remote_accepted", "The declared ATS status changed to accepted."),
+            ("rejected", "The declared ATS status changed to rejected."),
+        ],
+    )
+    def test_upload_evidence_change_invalidates_frozen_authorization(
+        self,
+        tmp_path: Path,
+        changed_status: str,
+        changed_evidence: str,
+    ) -> None:
+        settings = _make_settings(tmp_path)
+        job = _make_job(tmp_path)
+        engine, sf = _setup(tmp_path, settings, job)
+        try:
+            reviewed = _make_snapshot(
+                job.application_id,
+                url=job.url,
+                documents=[
+                    {
+                        "document_kind": "cv",
+                        "path": "/cv.pdf",
+                        "content_hash": "doc-hash",
+                        "status": "selection_verified",
+                        "upload_contract": "native_final_submit",
+                        "selected_file_names": ["cv.pdf"],
+                        "observed_constraints": {"accept": ".pdf", "required": True},
+                        "evidence_source": "native_selection",
+                        "evidence_detail": "Native input selection was verified.",
+                    }
+                ],
+            )
+            from types import SimpleNamespace
+
+            authorization = SimpleNamespace(
+                application_id=job.application_id,
+                application_url=job.url,
+                job_company=job.company,
+                job_title=job.title,
+                review_plan_hash=_plan_hash_for_snapshot(job, reviewed),
+                document_hashes=["doc-hash"],
+            )
+            changed_document = reviewed.documents[0].model_copy(
+                update={
+                    "status": changed_status,
+                    "upload_contract": "declared_async_status",
+                    "evidence_source": "declared_site_status",
+                    "evidence_detail": changed_evidence,
+                    "message": changed_evidence,
+                }
+            )
+            unresolved_upload_count = int(changed_status == "rejected")
+            changed = reviewed.model_copy(
+                update={
+                    "documents": [changed_document],
+                    "unresolved_upload_count": unresolved_upload_count,
+                    "unresolved_required_field_count": unresolved_upload_count,
+                }
+            ).with_hashes()
+
+            result = SubmissionCoordinator._validate_wq8_binding(authorization, changed, job)
+
+            assert result is not None
+            assert result.state == SubmissionResultState.APPROVAL_STALE
+            assert "review plan hash mismatch" in result.reason
+        finally:
+            engine.dispose()
+
+    def test_unresolved_upload_blocks_submission_gate(self, tmp_path: Path) -> None:
+        settings = _make_settings(tmp_path)
+        job = _make_job(tmp_path)
+        engine, sf = _setup(tmp_path, settings, job)
+        try:
+            snapshot = _make_snapshot(
+                job.application_id,
+                url=job.url,
+                documents=[
+                    {
+                        "document_kind": "cv",
+                        "path": "/cv.pdf",
+                        "content_hash": "doc-hash",
+                        "status": "unknown",
+                        "selected_file_names": ["cv.pdf"],
+                        "evidence_source": "declared_site_status",
+                        "evidence_detail": "No terminal upload signal observed.",
+                    }
+                ],
+            )
+            coordinator = SubmissionCoordinator(settings, sf)
+            coordinator.approve_snapshot(application_id=job.application_id, snapshot=snapshot)
+
+            gate = coordinator.check_gates(
+                application_id=job.application_id,
+                current_snapshot=snapshot,
+            )
+
+            assert not gate.allowed
+            assert gate.state == SubmissionResultState.SUBMISSION_NOT_ALLOWED
+            assert "1 unresolved uploads remain" in gate.reason
+        finally:
+            engine.dispose()
+
+    def test_malformed_remote_acceptance_claim_blocks_submission_gate(self, tmp_path: Path) -> None:
+        settings = _make_settings(tmp_path)
+        job = _make_job(tmp_path)
+        engine, sf = _setup(tmp_path, settings, job)
+        try:
+            snapshot = _make_snapshot(
+                job.application_id,
+                url=job.url,
+                documents=[
+                    {
+                        "document_kind": "cv",
+                        "path": "/cv.pdf",
+                        "content_hash": "doc-hash",
+                        "status": "remote_accepted",
+                        "selected_file_names": [],
+                        "evidence_source": "native_selection",
+                        "evidence_detail": "Untrusted acceptance claim.",
+                    }
+                ],
+            )
+            coordinator = SubmissionCoordinator(settings, sf)
+            coordinator.approve_snapshot(application_id=job.application_id, snapshot=snapshot)
+
+            gate = coordinator.check_gates(
+                application_id=job.application_id,
+                current_snapshot=snapshot,
+            )
+
+            assert not gate.allowed
+            assert gate.state == SubmissionResultState.SUBMISSION_NOT_ALLOWED
+            assert "1 unresolved uploads remain" in gate.reason
+        finally:
+            engine.dispose()
+
     def test_no_authorization_is_no_op(self, tmp_path: Path) -> None:
         """Without an authorization the gate is a no-op — existing behavior."""
         settings = _make_settings(tmp_path)

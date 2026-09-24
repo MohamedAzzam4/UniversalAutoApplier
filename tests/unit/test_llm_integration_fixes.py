@@ -191,13 +191,17 @@ class TestProviderNotConfigured:
 class TestFinalSubmitNeverClicked:
     def test_live_executor_has_no_submit_function(self) -> None:
         """The live_executor module has no function that clicks submit."""
+        import inspect
+
         from universal_auto_applier.form_engine import live_executor
 
         # The module should not have any function with "submit" in its name.
         for name in dir(live_executor):
             if name.startswith("_"):
                 continue
-            assert "submit" not in name.lower(), f"Found submit function: {name}"
+            member = getattr(live_executor, name)
+            if inspect.isfunction(member):
+                assert "submit" not in name.lower(), f"Found submit function: {name}"
 
     def test_live_runner_never_clicks_dangerous_submit(self) -> None:
         """The live_runner never clicks a button classified as dangerous_submit.

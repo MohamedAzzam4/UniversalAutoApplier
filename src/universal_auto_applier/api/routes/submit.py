@@ -49,6 +49,8 @@ from universal_auto_applier.submission.models import (
     derive_is_complete,
     derive_unconfirmed_high_risk_count,
     derive_unresolved_required_count,
+    derive_unresolved_upload_count,
+    display_upload_status,
 )
 from universal_auto_applier.submission.store import (
     confirm_high_risk_fields,
@@ -138,6 +140,8 @@ def _build_snapshot_response(
     # Build document list.
     documents: list[LiveReviewDocument] = []
     for d in snapshot.documents:
+        displayed_status = display_upload_status(d)
+        evidence_matches_status = displayed_status == d.status
         filename = Path(d.path).name if d.path else ""
         file_exists = False
         file_readable = False
@@ -153,6 +157,21 @@ def _build_snapshot_response(
                 content_hash=d.content_hash,
                 exists=file_exists,
                 readable=file_readable,
+                status=displayed_status,
+                upload_contract=d.upload_contract,
+                selected_file_names=list(d.selected_file_names),
+                observed_constraints=dict(d.observed_constraints),
+                evidence_source=d.evidence_source if evidence_matches_status else "unknown",
+                evidence_detail=(
+                    d.evidence_detail
+                    if evidence_matches_status
+                    else "Stored upload status lacked matching evidence; re-observe before approval."
+                ),
+                message=(
+                    d.message
+                    if evidence_matches_status
+                    else "Upload status could not be confirmed from its evidence."
+                ),
             )
         )
 
@@ -182,8 +201,9 @@ def _build_snapshot_response(
 
     # Derive safety state from field data (source of truth).
     derived_unresolved = derive_unresolved_required_count(snapshot.fields)
+    derived_unresolved_uploads = derive_unresolved_upload_count(snapshot.documents)
     derived_unconfirmed = derive_unconfirmed_high_risk_count(snapshot.fields, confirmed_tokens)
-    is_complete = derive_is_complete(snapshot.fields)
+    is_complete = derive_is_complete(snapshot.fields) and derived_unresolved_uploads == 0
 
     # Consistency check: detect stale aggregates that contradict field data.
     consistency_error = check_snapshot_consistency(snapshot, confirmed_tokens)
@@ -194,6 +214,9 @@ def _build_snapshot_response(
     if consistency_error:
         can_approve = False
         approve_blocking_reason = consistency_error
+    elif derived_unresolved_uploads > 0:
+        can_approve = False
+        approve_blocking_reason = f"{derived_unresolved_uploads} unresolved uploads"
     elif derived_unresolved > 0:
         can_approve = False
         approve_blocking_reason = f"{derived_unresolved} unresolved required fields"
@@ -233,6 +256,7 @@ def _build_snapshot_response(
         documents=documents,
         pending_intervention_count=snapshot.pending_intervention_count,
         unresolved_required_field_count=derived_unresolved,
+        unresolved_upload_count=derived_unresolved_uploads,
         unconfirmed_high_risk_count=derived_unconfirmed,
         active_approval_id=approval.approval_id
         if approval and approval_state == "active"
@@ -466,7 +490,7 @@ def approve_snapshot_endpoint(
 
     Accepts the snapshot_hash (not an arbitrary client-built snapshot).
     Rejects:
-    - Incomplete snapshots (unresolved required fields).
+    - Incomplete snapshots (unresolved required fields or uploads).
     - Pending interventions.
     - Unconfirmed high-risk fields.
     - Stale snapshots (hash mismatch).
@@ -516,6 +540,12 @@ def approve_snapshot_endpoint(
             raise HTTPException(
                 status_code=409,
                 detail=f"cannot approve: {derived_unresolved} unresolved required fields",
+            )
+        unresolved_uploads = derive_unresolved_upload_count(snapshot.documents)
+        if unresolved_uploads > 0:
+            raise HTTPException(
+                status_code=409,
+                detail=f"cannot approve: {unresolved_uploads} unresolved uploads",
             )
         pending = count_pending_interventions(session, application_id)
         if pending > 0:
@@ -605,7 +635,40 @@ def submit_endpoint(
         )
     else:
         coordinator = SubmissionCoordinator(settings, session_factory)
-        gate = coordinator.check_gates(application_id=application_id)
+        with session_scope(session_factory) as session:
+            approval = get_active_approval(session, application_id)
+            snapshot = _load_snapshot_from_approval(approval) if approval is not None else None
+            if approval is None or snapshot is None:
+                return LiveReviewSubmitResponse(
+                    application_id=application_id,
+                    state="submission_not_allowed",
+                    clicked=False,
+                    error_message=(
+                        "persisted approval snapshot context unavailable; observe and approve "
+                        "the current application before checking submission readiness"
+                    ),
+                )
+            if approval.approval_id != body.approval_id:
+                return LiveReviewSubmitResponse(
+                    application_id=application_id,
+                    state="approval_stale",
+                    clicked=False,
+                    error_message="requested approval does not match the active persisted approval",
+                )
+            if approval.snapshot_hash != snapshot.snapshot_hash or (
+                snapshot.compute_hash() != snapshot.snapshot_hash
+            ):
+                return LiveReviewSubmitResponse(
+                    application_id=application_id,
+                    state="approval_stale",
+                    clicked=False,
+                    error_message="persisted approval snapshot hash does not match its contents",
+                )
+
+        gate = coordinator.check_gates(
+            application_id=application_id,
+            current_snapshot=snapshot,
+        )
         if not gate.allowed:
             return LiveReviewSubmitResponse(
                 application_id=application_id,
@@ -615,7 +678,10 @@ def submit_endpoint(
             )
         return LiveReviewSubmitResponse(
             application_id=application_id,
-            state="ready_to_submit",
+            state="submission_not_allowed",
             clicked=False,
-            confirmation_evidence="gates passed; no browser context factory registered",
+            error_message=(
+                "submission context unavailable; no browser context factory is registered, "
+                "so final submission was not attempted"
+            ),
         )

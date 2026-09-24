@@ -138,7 +138,9 @@ def build_review_plan(
     ``filled_value``, ``selected_value``, ``status``, ``risk_level``,
     ``requires_confirmation``. Document entries contribute ``document_kind``
     and ``content_hash`` (their ``path`` is reduced to the filename only so
-    the hash is machine-independent).
+    the hash is machine-independent). Upload status and evidence are included
+    when present. Legacy documents without upload evidence retain their
+    previous canonical representation and hash.
     """
     field_rows: list[dict[str, Any]] = []
     for f in fields or []:
@@ -157,18 +159,44 @@ def build_review_plan(
         )
     field_rows.sort(key=lambda r: r.get("field_token", ""))
 
-    doc_rows: list[dict[str, str]] = []
+    doc_rows: list[dict[str, Any]] = []
     for d in documents or []:
         data = _as_dict(d)
         path = str(data.get("path", ""))
-        doc_rows.append(
-            {
-                "document_kind": data.get("document_kind", ""),
-                "content_hash": data.get("content_hash", ""),
-                "filename": path.rsplit("/", 1)[-1].rsplit("\\", 1)[-1] if path else "",
-            }
+        row: dict[str, Any] = {
+            "document_kind": data.get("document_kind", ""),
+            "content_hash": data.get("content_hash", ""),
+            "filename": path.rsplit("/", 1)[-1].rsplit("\\", 1)[-1] if path else "",
+        }
+        evidence_keys = (
+            "status",
+            "upload_contract",
+            "selected_file_names",
+            "observed_constraints",
+            "evidence_source",
+            "evidence_detail",
+            "message",
         )
-    doc_rows.sort(key=lambda r: (r.get("document_kind", ""), r.get("filename", "")))
+        if any(data.get(key) not in (None, "", [], {}) for key in evidence_keys):
+            row.update(
+                {
+                    "upload_status": data.get("status"),
+                    "upload_contract": data.get("upload_contract"),
+                    "selected_file_names": sorted(data.get("selected_file_names") or []),
+                    "observed_constraints": data.get("observed_constraints") or {},
+                    "evidence_source": data.get("evidence_source"),
+                    "evidence_detail": data.get("evidence_detail", ""),
+                    "evidence_message": data.get("message", ""),
+                }
+            )
+        doc_rows.append(row)
+    doc_rows.sort(
+        key=lambda r: (
+            r.get("document_kind", ""),
+            r.get("filename", ""),
+            json.dumps(r, sort_keys=True, default=str),
+        )
+    )
 
     submit_control: dict[str, str] | None = None
     if submit_control_text or submit_control_selector:

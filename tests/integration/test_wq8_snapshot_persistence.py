@@ -28,7 +28,7 @@ from typing import Any
 
 import pytest
 from fastapi.testclient import TestClient
-from playwright.sync_api import BrowserContext, sync_playwright
+from playwright.sync_api import Browser, BrowserContext
 
 from universal_auto_applier.api.app import create_app
 from universal_auto_applier.config import Settings
@@ -463,18 +463,25 @@ class TestProductionAppObserveRegression:
             assert "Full Name" in labels, f"'Full Name' field missing; labels: {labels}"
             assert "Email" in labels, f"'Email' field missing; labels: {labels}"
             assert "Resume" in labels, f"'Resume' field missing; labels: {labels}"
-            # At least the Resume file field must be filled (the synthetic CV
-            # is mapped via the 'resume' label pattern to job.cv_pdf).
+            # Native selection is visible, but does not establish readiness
+            # until this form has an explicit UAA final-submit contract.
             resume_field = next(f for f in fields if f.get("label") == "Resume")
             assert resume_field.get("field_type") == "file", (
                 f"Resume field type is {resume_field.get('field_type')!r}, expected 'file'"
             )
-            assert resume_field.get("status") == "filled", (
-                f"Resume field status is {resume_field.get('status')!r}, expected 'filled'"
+            assert resume_field.get("status") == "intervention_needed", (
+                f"Resume field status is {resume_field.get('status')!r}, expected an unresolved state"
             )
             assert resume_field.get("filled_value"), (
                 "Resume filled_value is empty — the synthetic CV path was not captured"
             )
+            resume_document = next(
+                document for document in snap["documents"] if document["document_kind"] == "cv"
+            )
+            assert resume_document["status"] == "selection_verified"
+            assert resume_document["upload_contract"] is None
+            assert snap["unresolved_upload_count"] == 1
+            assert snap["is_complete"] is False
 
     def test_observe_snapshot_reloadable_from_fresh_session(self, wq8_obs_app) -> None:
         """After observe, a FRESH DB session (not the request's session) must
@@ -899,7 +906,7 @@ class TestObservationCannotAuthorizeOrSubmit:
             )
 
     def test_observe_interlock_records_zero_authorized_submits(
-        self, tmp_path: Path, fixture_server: _FixtureHTTPServer
+        self, tmp_path: Path, fixture_server: _FixtureHTTPServer, browser: Browser
     ) -> None:
         """The interlock installed during observation must record zero
         authorized_submits (no one-shot allowance was ever armed) and zero
@@ -923,8 +930,8 @@ class TestObservationCannotAuthorizeOrSubmit:
             read_counters,
         )
 
-        with sync_playwright() as pw:
-            browser = pw.chromium.launch(headless=True)
+        ctx: BrowserContext | None = None
+        try:
             ctx = browser.new_context(accept_downloads=False)
             # Install the interlock EXACTLY as observe_and_persist_snapshot does.
             install_interlock(ctx)
@@ -944,6 +951,9 @@ class TestObservationCannotAuthorizeOrSubmit:
             assert counters["blocked_submissions"] >= 3, (
                 f"interlock did not block submit attempts; counters: {counters}"
             )
-            ctx.close()
-            browser.close()
-        engine.dispose()
+        finally:
+            try:
+                if ctx is not None:
+                    ctx.close()
+            finally:
+                engine.dispose()

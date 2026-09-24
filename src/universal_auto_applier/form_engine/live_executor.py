@@ -17,7 +17,9 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import mimetypes
 import re
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 from datetime import datetime
 from decimal import Decimal, InvalidOperation
@@ -26,7 +28,13 @@ from typing import TYPE_CHECKING, Any, cast
 
 from playwright.sync_api import Locator, Page
 
-from universal_auto_applier.browser.live_models import LiveFieldRecord, LiveUploadRecord
+from universal_auto_applier.browser.live_models import (
+    LiveFieldRecord,
+    LiveUploadContract,
+    LiveUploadEvidenceSource,
+    LiveUploadRecord,
+    LiveUploadStatus,
+)
 from universal_auto_applier.core.models import (
     ApplicationJob,
     CandidateProfile,
@@ -161,6 +169,73 @@ class _LiveFieldTarget:
     frame_url: str
     field: FormField
     locator: Locator
+
+
+@dataclass(frozen=True)
+class _FileUploadEvidence:
+    status: LiveUploadStatus
+    selected_file_names: tuple[str, ...]
+    observed_constraints: dict[str, str | bool]
+    evidence_source: LiveUploadEvidenceSource
+    evidence_detail: str
+    message: str
+    upload_contract: LiveUploadContract | None = None
+
+    @property
+    def readiness_met(self) -> bool:
+        """Whether a declared flow contract makes this evidence review-ready."""
+        return (
+            self.status == "selection_verified" and self.upload_contract == "native_final_submit"
+        ) or (self.status == "remote_accepted" and self.upload_contract == "declared_async_status")
+
+
+@dataclass(frozen=True)
+class NativeFinalSubmitUploadContract:
+    """UAA-owned declaration that this input is included on final form submit.
+
+    Native browser selection alone does not establish that the application
+    flow sends that file with its final request. Callers may provide this
+    declaration only for a specifically qualified flow.
+    """
+
+    file_input_selector: str
+
+    def __post_init__(self) -> None:
+        if not self.file_input_selector.strip():
+            raise ValueError("file_input_selector must not be empty")
+
+
+@dataclass(frozen=True)
+class AsyncUploadProtocol:
+    """UAA-owned declaration of an observable async upload-status signal.
+
+    A site cannot opt itself into this protocol. A caller must explicitly
+    provide the file input and status selectors before remote acceptance is
+    reported. The live runner does not declare any ATS protocol by default.
+    """
+
+    file_input_selector: str
+    status_selector: str
+    status_attribute: str = "data-upload-status"
+    accepted_value: str = "accepted"
+    rejected_value: str = "rejected"
+    timeout_ms: int = 5_000
+
+    def __post_init__(self) -> None:
+        if not self.file_input_selector.strip():
+            raise ValueError("file_input_selector must not be empty")
+        if not self.status_selector.strip():
+            raise ValueError("status_selector must not be empty")
+        if not self.status_attribute.strip():
+            raise ValueError("status_attribute must not be empty")
+        accepted = self.accepted_value.strip().casefold()
+        rejected = self.rejected_value.strip().casefold()
+        if not accepted or not rejected:
+            raise ValueError("accepted_value and rejected_value must not be empty")
+        if accepted == rejected:
+            raise ValueError("accepted_value and rejected_value must be distinct")
+        if self.timeout_ms <= 0:
+            raise ValueError("timeout_ms must be positive")
 
 
 @dataclass
@@ -856,6 +931,422 @@ def _is_multiple_file_input(locator: Locator) -> bool:
         return False
 
 
+def _file_input_observation(locator: Locator) -> tuple[list[str], dict[str, str | bool]]:
+    """Read the selected native filenames and constraints from the DOM."""
+    raw = locator.evaluate(
+        """el => ({
+          names: Array.from(el.files || []).map(file => file.name),
+          accept: el.getAttribute('accept') || '',
+          multiple: Boolean(el.multiple),
+          required: Boolean(el.required || el.getAttribute('aria-required') === 'true')
+        })"""
+    )
+    if not isinstance(raw, dict):
+        return [], {"accept": "", "multiple": False, "required": False}
+    names = [str(name) for name in raw.get("names", [])]
+    constraints: dict[str, str | bool] = {
+        "accept": str(raw.get("accept", "")),
+        "multiple": bool(raw.get("multiple", False)),
+        "required": bool(raw.get("required", False)),
+    }
+    return names, constraints
+
+
+def _safe_file_operation_error(exc: Exception) -> str:
+    """Describe a file-operation failure without exposing browser exception text."""
+    return f"Browser file operation failed ({type(exc).__name__}); file selection was not verified."
+
+
+def _matches_accept_constraint(path: Path, accept: str) -> bool:
+    """Return whether a local path matches the observed HTML ``accept`` list."""
+    tokens = [token.strip().casefold() for token in accept.split(",") if token.strip()]
+    if not tokens:
+        return True
+    mime_type, _encoding = mimetypes.guess_type(path.name)
+    for token in tokens:
+        if token.startswith(".") and path.suffix.casefold() == token:
+            return True
+        if token.endswith("/*") and mime_type and mime_type.startswith(token[:-1]):
+            return True
+        if mime_type and mime_type.casefold() == token:
+            return True
+    return False
+
+
+def _initial_async_status(
+    target: _LiveFieldTarget,
+    protocol: AsyncUploadProtocol,
+) -> tuple[str | None, str | None]:
+    """Capture status only when one signal exists inside the target form/frame."""
+    try:
+        result = target.locator.evaluate(
+            """(el, {selector, attribute}) => {
+              const form = el.closest('form');
+              if (!form) return {kind: 'no_form'};
+              let matches;
+              try {
+                matches = [
+                  ...(form.matches(selector) ? [form] : []),
+                  ...form.querySelectorAll(selector)
+                ];
+              } catch (_) {
+                return {kind: 'invalid_selector'};
+              }
+              if (matches.length > 1) return {kind: 'multiple'};
+              if (matches.length === 0) return {kind: 'missing'};
+              return {kind: 'found', value: matches[0].getAttribute(attribute)};
+            }""",
+            {"selector": protocol.status_selector, "attribute": protocol.status_attribute},
+        )
+        if not isinstance(result, dict):
+            return None, "configured upload status signal could not be observed"
+        kind = result.get("kind")
+        if kind == "no_form":
+            return None, "configured upload status signal has no target form to scope to"
+        if kind == "invalid_selector":
+            return None, "configured upload status selector is invalid"
+        if kind == "multiple":
+            return None, "configured upload status selector is not unique within the target form"
+        if kind == "missing":
+            return None, None
+        value = result.get("value")
+        return (str(value).strip().casefold() if value is not None else None), None
+    except Exception:
+        return None, "configured upload status signal could not be observed"
+
+
+def _wait_for_declared_async_status(
+    target: _LiveFieldTarget,
+    protocol: AsyncUploadProtocol,
+    initial_status: str | None,
+) -> tuple[str, str]:
+    """Wait for one post-selection terminal status scoped to the target form/frame."""
+    try:
+        result = target.locator.evaluate(
+            """async (el, {selector, attribute, accepted, rejected, previous, timeoutMs}) => {
+              const deadline = Date.now() + timeoutMs;
+              while (Date.now() <= deadline) {
+                const form = el.closest('form');
+                if (!form) return {kind: 'no_form'};
+                let matches;
+                try {
+                  matches = [
+                    ...(form.matches(selector) ? [form] : []),
+                    ...form.querySelectorAll(selector)
+                  ];
+                } catch (_) {
+                  return {kind: 'invalid_selector'};
+                }
+                if (matches.length > 1) return {kind: 'multiple'};
+                if (matches.length === 1) {
+                  const value = (matches[0].getAttribute(attribute) || '').trim().toLowerCase();
+                  if ((value === accepted || value === rejected) && value !== previous) {
+                    return {kind: 'terminal', value};
+                  }
+                }
+                await new Promise(resolve => setTimeout(resolve, 25));
+              }
+              return {kind: 'timeout'};
+            }""",
+            {
+                "selector": protocol.status_selector,
+                "attribute": protocol.status_attribute,
+                "accepted": protocol.accepted_value.strip().casefold(),
+                "rejected": protocol.rejected_value.strip().casefold(),
+                "previous": initial_status,
+                "timeoutMs": protocol.timeout_ms,
+            },
+        )
+        if not isinstance(result, dict):
+            return "unknown", "Configured upload status signal could not be observed."
+        kind = result.get("kind")
+        if kind == "multiple":
+            return (
+                "unknown",
+                "Configured upload status selector is not unique within the target form.",
+            )
+        if kind == "no_form":
+            return "unknown", "Configured upload status signal lost its target form."
+        if kind == "invalid_selector":
+            return "unknown", "Configured upload status selector is invalid."
+        if kind == "timeout":
+            return "unknown", (
+                "No terminal upload status was observed from the configured target-form signal "
+                f"within {protocol.timeout_ms} ms."
+            )
+        normalized = str(result.get("value", "")).strip().casefold()
+        if normalized == protocol.accepted_value.strip().casefold():
+            return "remote_accepted", (
+                "Observed the declared target-form upload signal report acceptance after file selection."
+            )
+        if normalized == protocol.rejected_value.strip().casefold():
+            return "rejected", (
+                "Observed the declared target-form upload signal report rejection after file selection."
+            )
+        return "unknown", "Configured upload status changed to an unrecognized value."
+    except Exception:
+        return "unknown", (
+            "No terminal upload status was observed from the configured target-form signal "
+            f"within {protocol.timeout_ms} ms."
+        )
+
+
+def _protocol_for_target(
+    target: _LiveFieldTarget,
+    protocols: Sequence[AsyncUploadProtocol],
+) -> tuple[AsyncUploadProtocol | None, bool]:
+    matches: list[AsyncUploadProtocol] = []
+    for protocol in protocols:
+        try:
+            if target.locator.evaluate(
+                "(el, selector) => el.matches(selector)", protocol.file_input_selector
+            ):
+                matches.append(protocol)
+        except Exception:
+            continue
+    if len(matches) == 1:
+        return matches[0], False
+    return None, len(matches) > 1
+
+
+def _async_status_correlation_error(
+    target: _LiveFieldTarget,
+    paths: list[str],
+) -> str | None:
+    """Require enough form context to tie one async status to one selection."""
+    if len(paths) > 1:
+        return (
+            "The async upload signal cannot be attributed to every file in this multi-file "
+            "bundle without an explicit aggregate-status contract."
+        )
+    try:
+        input_count = int(
+            target.locator.evaluate(
+                """(el) => {
+                  const form = el.closest('form');
+                  return form ? form.querySelectorAll('input[type="file"]').length : 0;
+                }"""
+            )
+        )
+    except Exception:
+        return "The target form's file inputs could not be checked to attribute async status."
+    if input_count != 1:
+        return (
+            "The async upload signal cannot be attributed when the target form contains "
+            "multiple file inputs."
+        )
+    return None
+
+
+def _native_contract_for_target(
+    target: _LiveFieldTarget,
+    contracts: Sequence[NativeFinalSubmitUploadContract],
+) -> tuple[NativeFinalSubmitUploadContract | None, bool]:
+    matches: list[NativeFinalSubmitUploadContract] = []
+    for contract in contracts:
+        try:
+            if target.locator.evaluate(
+                "(el, selector) => el.matches(selector)", contract.file_input_selector
+            ):
+                matches.append(contract)
+        except Exception:
+            continue
+    if len(matches) == 1:
+        return matches[0], False
+    return None, len(matches) > 1
+
+
+def _select_files_with_evidence(
+    *,
+    target: _LiveFieldTarget,
+    paths: list[str],
+    async_upload_protocols: Sequence[AsyncUploadProtocol] = (),
+    native_upload_contracts: Sequence[NativeFinalSubmitUploadContract] = (),
+) -> _FileUploadEvidence:
+    """Select local files, verify the native control, and optionally observe a declared signal.
+
+    Native selection proves only that the rendered input holds the expected
+    filenames and accepts their types. It is review-ready only when the UAA
+    caller supplies a matching :class:`NativeFinalSubmitUploadContract`.
+    Remote acceptance is reported only when the caller supplies a matching
+    :class:`AsyncUploadProtocol`.
+    """
+    protocol, ambiguous_protocol = _protocol_for_target(target, async_upload_protocols)
+    native_contract, ambiguous_native_contract = _native_contract_for_target(
+        target, native_upload_contracts
+    )
+    if ambiguous_protocol or ambiguous_native_contract or (protocol and native_contract):
+        contract_error = True
+    else:
+        contract_error = False
+    upload_contract = (
+        "declared_async_status"
+        if protocol is not None and not contract_error
+        else ("native_final_submit" if native_contract is not None and not contract_error else None)
+    )
+    initial_status: str | None = None
+    protocol_error: str | None = None
+    if protocol is not None:
+        protocol_error = _async_status_correlation_error(target, paths)
+        if protocol_error is None:
+            initial_status, protocol_error = _initial_async_status(target, protocol)
+
+    try:
+        target.locator.set_input_files(paths)
+        selected_file_names, constraints = _file_input_observation(target.locator)
+    except Exception as exc:
+        try:
+            selected_file_names, constraints = _file_input_observation(target.locator)
+        except Exception:
+            selected_file_names, constraints = (
+                [],
+                {
+                    "accept": "",
+                    "multiple": False,
+                    "required": False,
+                },
+            )
+        return _FileUploadEvidence(
+            status="failed",
+            selected_file_names=tuple(selected_file_names),
+            observed_constraints=constraints,
+            evidence_source="unknown",
+            evidence_detail="Native file selection failed before it could be verified.",
+            message=_safe_file_operation_error(exc),
+            upload_contract=upload_contract,
+        )
+
+    expected_names = [Path(path).name for path in paths]
+    if selected_file_names != expected_names:
+        return _FileUploadEvidence(
+            status="unknown",
+            selected_file_names=tuple(selected_file_names),
+            observed_constraints=constraints,
+            evidence_source="native_selection",
+            evidence_detail=(
+                f"Expected selected filenames {expected_names!r}; observed {selected_file_names!r}."
+            ),
+            message="The native file input did not expose the expected selected filenames.",
+            upload_contract=upload_contract,
+        )
+
+    accept = str(constraints.get("accept", ""))
+    mismatched = [path for path in paths if not _matches_accept_constraint(Path(path), accept)]
+    if mismatched:
+        return _FileUploadEvidence(
+            status="unknown",
+            selected_file_names=tuple(selected_file_names),
+            observed_constraints=constraints,
+            evidence_source="input_constraint",
+            evidence_detail=(
+                f"Observed local accept hint {accept!r} does not match "
+                f"{[Path(path).name for path in mismatched]!r}; the site did not report rejection."
+            ),
+            message="The observed local file-type hint does not match the selected file.",
+            upload_contract=upload_contract,
+        )
+
+    if contract_error:
+        return _FileUploadEvidence(
+            status="unknown",
+            selected_file_names=tuple(selected_file_names),
+            observed_constraints=constraints,
+            evidence_source="unknown",
+            evidence_detail=("Upload flow declarations are ambiguous for this file input."),
+            message="Upload readiness is ambiguous because multiple or conflicting flow declarations matched.",
+        )
+
+    if protocol is not None:
+        if protocol_error is not None:
+            return _FileUploadEvidence(
+                status="unknown",
+                selected_file_names=tuple(selected_file_names),
+                observed_constraints=constraints,
+                evidence_source="declared_site_status",
+                evidence_detail=protocol_error,
+                message="Native selection is verified, but the configured site status signal was unavailable.",
+                upload_contract=upload_contract,
+            )
+        status, detail = _wait_for_declared_async_status(target, protocol, initial_status)
+        if status == "remote_accepted":
+            return _FileUploadEvidence(
+                status="remote_accepted",
+                selected_file_names=tuple(selected_file_names),
+                observed_constraints=constraints,
+                evidence_source="declared_site_status",
+                evidence_detail=detail,
+                message="The configured site signal explicitly reported acceptance.",
+                upload_contract=upload_contract,
+            )
+        if status == "rejected":
+            return _FileUploadEvidence(
+                status="rejected",
+                selected_file_names=tuple(selected_file_names),
+                observed_constraints=constraints,
+                evidence_source="declared_site_status",
+                evidence_detail=detail,
+                message="The configured site signal explicitly reported rejection.",
+                upload_contract=upload_contract,
+            )
+        return _FileUploadEvidence(
+            status="unknown",
+            selected_file_names=tuple(selected_file_names),
+            observed_constraints=constraints,
+            evidence_source="declared_site_status",
+            evidence_detail=detail,
+            message="Native file selection is verified, but remote acceptance remains unknown.",
+            upload_contract=upload_contract,
+        )
+
+    native_readiness_text = (
+        "The qualified flow declares this native file input is included in the final submit."
+        if upload_contract == "native_final_submit"
+        else "No native final-submit flow contract was declared; selection alone does not establish upload readiness."
+    )
+    return _FileUploadEvidence(
+        status="selection_verified",
+        selected_file_names=tuple(selected_file_names),
+        observed_constraints=constraints,
+        evidence_source="native_selection",
+        evidence_detail=(
+            "Observed the expected filenames in the native file input and checked its "
+            f"accept constraint. {native_readiness_text}"
+        ),
+        message=(
+            "Native file selection verified under a qualified final-submit flow."
+            if upload_contract == "native_final_submit"
+            else "Native file selection is visible, but the flow is not qualified for review readiness."
+        ),
+        upload_contract=upload_contract,
+    )
+
+
+def _upload_record(
+    *,
+    page: Page,
+    target: _LiveFieldTarget,
+    path: str,
+    document_kind: str,
+    evidence: _FileUploadEvidence,
+    selected_file_names: Sequence[str] | None = None,
+) -> LiveUploadRecord:
+    return LiveUploadRecord(
+        page_url=page.url,
+        selector=target.selector_hint,
+        document_kind=cast(Any, document_kind),
+        path=path,
+        status=evidence.status,
+        selected_file_names=list(
+            evidence.selected_file_names if selected_file_names is None else selected_file_names
+        ),
+        observed_constraints=evidence.observed_constraints,
+        evidence_source=evidence.evidence_source,
+        upload_contract=evidence.upload_contract,
+        evidence_detail=evidence.evidence_detail,
+        message=evidence.message,
+    )
+
+
 def _validation_errors(page: Page) -> list[str]:
     errors: list[str] = []
     for frame in page.frames:
@@ -962,6 +1453,8 @@ def execute_live_form(
     page: Page,
     candidate: CandidateProfile,
     job: ApplicationJob,
+    async_upload_protocols: Sequence[AsyncUploadProtocol] = (),
+    native_upload_contracts: Sequence[NativeFinalSubmitUploadContract] = (),
 ) -> LiveFormExecution:
     """Fill the current rendered form page and upload known documents.
 
@@ -995,7 +1488,8 @@ def execute_live_form(
         )
         bundle_upload_handled = False
         if is_file_bundle and status == "filled" and result.value is not None:
-            bundle = result.document_bundle  # type: ignore[union-attr]
+            assert result.document_bundle is not None
+            bundle = result.document_bundle
             # Validate typed answer for the first path (scalar check) is not
             # sufficient for bundles — the fill_engine already validated every
             # path, but we re-validate the bundle shape before touching the
@@ -1028,16 +1522,15 @@ def execute_live_form(
                     bundle_valid = False
                 else:
                     try:
-                        # ONE Playwright call with the complete ordered bundle
-                        target.locator.set_input_files(paths)
+                        evidence = _select_files_with_evidence(
+                            target=target,
+                            paths=paths,
+                            async_upload_protocols=async_upload_protocols,
+                            native_upload_contracts=native_upload_contracts,
+                        )
                         filled_value = ", ".join(paths)
-                        actual_selected = filled_value
-                        page.wait_for_timeout(1_000)
-                        execution.filled += 1
-                        filled_tokens.add(target.token)
-                        # One LiveUploadRecord per physical file, each with its
-                        # own deterministic content hash later via snapshot
-                        for entry in bundle:
+                        actual_selected = ", ".join(evidence.selected_file_names)
+                        for index, entry in enumerate(bundle):
                             kind = entry.kind
                             if kind not in (
                                 "cv",
@@ -1048,19 +1541,31 @@ def execute_live_form(
                             ):
                                 kind = _document_kind(target)
                             execution.uploads.append(
-                                LiveUploadRecord(
-                                    page_url=page.url,
-                                    selector=target.selector_hint,
+                                _upload_record(
+                                    page=page,
+                                    target=target,
                                     document_kind=cast(Any, kind),
                                     path=entry.path,
-                                    status="uploaded",
-                                    message=explanation,
+                                    evidence=evidence,
+                                    selected_file_names=(
+                                        [evidence.selected_file_names[index]]
+                                        if index < len(evidence.selected_file_names)
+                                        else []
+                                    ),
                                 )
                             )
+                        if evidence.readiness_met:
+                            execution.filled += 1
+                            filled_tokens.add(target.token)
+                        else:
+                            status = (
+                                "failed" if evidence.status == "failed" else "intervention_needed"
+                            )
+                            explanation = evidence.message
                         bundle_upload_handled = True
                     except Exception as exc:
                         status = "failed"
-                        explanation = f"Playwright fill failed: {exc}"
+                        explanation = _safe_file_operation_error(exc)
                         logger.warning(
                             "[%s] fill failed selector=%s: %s",
                             job.application_id[:12],
@@ -1113,17 +1618,46 @@ def execute_live_form(
                         # filled_value and selected_value so the report and
                         # persisted interventions reflect what the form
                         # actually received, not the normalized alias.
-                        actual_selected = _execute_field(target, result.value)
-                        filled_value = actual_selected
                         if target.field.type == "file":
-                            page.wait_for_timeout(1_000)
-                        elif target.field.type in ("radio", "select", "checkbox"):
+                            evidence = _select_files_with_evidence(
+                                target=target,
+                                paths=[result.value],
+                                async_upload_protocols=async_upload_protocols,
+                                native_upload_contracts=native_upload_contracts,
+                            )
+                            actual_selected = ", ".join(evidence.selected_file_names)
+                            filled_value = result.value
+                            execution.uploads.append(
+                                _upload_record(
+                                    page=page,
+                                    target=target,
+                                    document_kind=_document_kind(target),
+                                    path=str(Path(result.value)),
+                                    evidence=evidence,
+                                )
+                            )
+                            if evidence.readiness_met:
+                                execution.filled += 1
+                                filled_tokens.add(target.token)
+                            else:
+                                status = (
+                                    "failed"
+                                    if evidence.status == "failed"
+                                    else "intervention_needed"
+                                )
+                                explanation = evidence.message
+                        else:
+                            # _execute_field returns the actual DOM selection,
+                            # not an alias proposed by the fill engine.
+                            actual_selected = _execute_field(target, result.value)
+                            filled_value = actual_selected
+                            execution.filled += 1
+                            filled_tokens.add(target.token)
+                        if target.field.type in ("radio", "select", "checkbox"):
                             # Radio/select/checkbox changes may trigger JavaScript
                             # that reveals conditional fields. Wait briefly for the
                             # DOM to update.
                             page.wait_for_timeout(500)
-                        execution.filled += 1
-                        filled_tokens.add(target.token)
                     except Exception as exc:
                         if isinstance(exc, _FieldReadbackMismatch):
                             status = "intervention_needed"
@@ -1133,7 +1667,11 @@ def execute_live_form(
                             execution.validation_errors.append(explanation)
                         else:
                             status = "failed"
-                            explanation = f"Playwright fill failed: {exc}"
+                            explanation = (
+                                _safe_file_operation_error(exc)
+                                if target.field.type == "file"
+                                else f"Playwright fill failed: {exc}"
+                            )
                         logger.warning(
                             "[%s] fill failed selector=%s: %s",
                             job.application_id[:12],
@@ -1141,22 +1679,10 @@ def execute_live_form(
                             exc,
                         )
 
-                if target.field.type == "file":
-                    # Single-file scalar path (backwards compatible)
-                    path = Path(result.value)
-                    upload_status = "uploaded" if status == "filled" else "failed"
-                    execution.uploads.append(
-                        LiveUploadRecord(
-                            page_url=page.url,
-                            selector=target.selector_hint,
-                            document_kind=cast(Any, _document_kind(target)),
-                            path=str(path),
-                            status=cast(Any, upload_status),
-                            message=explanation,
-                        )
-                    )
-
-        if target.field.required and status in {"blocked", "intervention_needed", "failed"}:
+        if status in {"blocked", "intervention_needed", "failed"} and (
+            target.field.required
+            or (target.field.type == "file" and (result.value is not None or is_file_bundle))
+        ):
             execution.required_unresolved += 1
         execution.fields.append(
             LiveFieldRecord(
@@ -1218,7 +1744,8 @@ def execute_live_form(
                 and len(result.document_bundle) > 0
             )
             if is_file_bundle_revealed and status == "filled" and result.value is not None:
-                bundle = result.document_bundle  # type: ignore[union-attr]
+                assert result.document_bundle is not None
+                bundle = result.document_bundle
                 paths = [e.path for e in bundle]
                 bundle_valid = True
                 for entry in bundle:
@@ -1238,11 +1765,15 @@ def execute_live_form(
                         )
                     else:
                         try:
-                            target.locator.set_input_files(paths)
+                            evidence = _select_files_with_evidence(
+                                target=target,
+                                paths=paths,
+                                async_upload_protocols=async_upload_protocols,
+                                native_upload_contracts=native_upload_contracts,
+                            )
                             filled_value = ", ".join(paths)
-                            actual_selected = filled_value
-                            execution.filled += 1
-                            for entry in bundle:
+                            actual_selected = ", ".join(evidence.selected_file_names)
+                            for index, entry in enumerate(bundle):
                                 kind = entry.kind
                                 if kind not in (
                                     "cv",
@@ -1253,18 +1784,31 @@ def execute_live_form(
                                 ):
                                     kind = _document_kind(target)
                                 execution.uploads.append(
-                                    LiveUploadRecord(
-                                        page_url=page.url,
-                                        selector=target.selector_hint,
+                                    _upload_record(
+                                        page=page,
+                                        target=target,
                                         document_kind=cast(Any, kind),
                                         path=entry.path,
-                                        status="uploaded",
-                                        message=explanation,
+                                        evidence=evidence,
+                                        selected_file_names=(
+                                            [evidence.selected_file_names[index]]
+                                            if index < len(evidence.selected_file_names)
+                                            else []
+                                        ),
                                     )
                                 )
+                            if not evidence.readiness_met:
+                                status = (
+                                    "failed"
+                                    if evidence.status == "failed"
+                                    else "intervention_needed"
+                                )
+                                explanation = evidence.message
+                            else:
+                                execution.filled += 1
                         except Exception as exc:
                             status = "failed"
-                            explanation = f"Playwright fill failed: {exc}"
+                            explanation = _safe_file_operation_error(exc)
             elif status == "filled" and result.value is not None:
                 # Validate typed answer BEFORE Playwright filling. Same rule
                 # as the initial pass: invalid -> intervention_needed (not failed).
@@ -1276,21 +1820,37 @@ def execute_live_form(
                     explanation = f"typed-answer validation failed: {reason}"
                 else:
                     try:
-                        actual_selected = _execute_field(target, result.value)
-                        filled_value = actual_selected
-                        execution.filled += 1
                         if target.field.type == "file":
-                            # Single file upload (scalar) — create one record
+                            evidence = _select_files_with_evidence(
+                                target=target,
+                                paths=[result.value],
+                                async_upload_protocols=async_upload_protocols,
+                                native_upload_contracts=native_upload_contracts,
+                            )
+                            actual_selected = ", ".join(evidence.selected_file_names)
+                            filled_value = result.value
                             execution.uploads.append(
-                                LiveUploadRecord(
-                                    page_url=page.url,
-                                    selector=target.selector_hint,
-                                    document_kind=cast(Any, _document_kind(target)),
-                                    path=result.value,
-                                    status="uploaded",
-                                    message=explanation,
+                                _upload_record(
+                                    page=page,
+                                    target=target,
+                                    document_kind=_document_kind(target),
+                                    path=str(Path(result.value)),
+                                    evidence=evidence,
                                 )
                             )
+                            if not evidence.readiness_met:
+                                status = (
+                                    "failed"
+                                    if evidence.status == "failed"
+                                    else "intervention_needed"
+                                )
+                                explanation = evidence.message
+                            else:
+                                execution.filled += 1
+                        else:
+                            actual_selected = _execute_field(target, result.value)
+                            filled_value = actual_selected
+                            execution.filled += 1
                     except Exception as exc:
                         if isinstance(exc, _FieldReadbackMismatch):
                             status = "intervention_needed"
@@ -1300,20 +1860,36 @@ def execute_live_form(
                             execution.validation_errors.append(explanation)
                         else:
                             status = "failed"
-                            explanation = f"Playwright fill failed: {exc}"
+                            explanation = (
+                                _safe_file_operation_error(exc)
+                                if target.field.type == "file"
+                                else f"Playwright fill failed: {exc}"
+                            )
                         if target.field.type == "file":
                             execution.uploads.append(
-                                LiveUploadRecord(
-                                    page_url=page.url,
-                                    selector=target.selector_hint,
-                                    document_kind=cast(Any, _document_kind(target)),
+                                _upload_record(
+                                    page=page,
+                                    target=target,
+                                    document_kind=_document_kind(target),
                                     path=result.value or "",
-                                    status="failed",
-                                    message=explanation,
+                                    evidence=_FileUploadEvidence(
+                                        status="failed",
+                                        selected_file_names=(),
+                                        observed_constraints={},
+                                        evidence_source="unknown",
+                                        evidence_detail=explanation,
+                                        message=explanation,
+                                    ),
                                 )
                             )
 
-            if target.field.required and status in {"blocked", "intervention_needed", "failed"}:
+            if status in {"blocked", "intervention_needed", "failed"} and (
+                target.field.required
+                or (
+                    target.field.type == "file"
+                    and (result.value is not None or is_file_bundle_revealed)
+                )
+            ):
                 execution.required_unresolved += 1
             execution.fields.append(
                 LiveFieldRecord(
@@ -1353,6 +1929,8 @@ def execute_live_form_with_llm(
     job: ApplicationJob,
     qa_service: Any = None,
     answer_memory_facts: list[Any] | None = None,
+    async_upload_protocols: Sequence[AsyncUploadProtocol] = (),
+    native_upload_contracts: Sequence[NativeFinalSubmitUploadContract] = (),
 ) -> LiveFormExecution:
     """Fill the current rendered form page with deterministic + LLM answers.
 
@@ -1391,7 +1969,13 @@ def execute_live_form_with_llm(
         A :class:`LiveFormExecution` with all field outcomes.
     """
     # First, run the deterministic fill (existing behavior).
-    execution = execute_live_form(page, candidate, job)
+    execution = execute_live_form(
+        page,
+        candidate,
+        job,
+        async_upload_protocols=async_upload_protocols,
+        native_upload_contracts=native_upload_contracts,
+    )
 
     # If there are no unresolved required fields, we're done.
     if execution.required_unresolved == 0:
@@ -1406,7 +1990,9 @@ def execute_live_form_with_llm(
     # Uses the stable field_token propagated from execute_live_form.
     unresolved_tokens: set[str] = set()
     for record in execution.fields:
-        if record.status in ("blocked", "intervention_needed", "failed"):
+        if record.status in ("blocked", "intervention_needed", "failed") and (
+            record.field_type != "file"
+        ):
             if record.field_token:
                 unresolved_tokens.add(record.field_token)
 
@@ -1704,6 +2290,8 @@ def _run_mutation_pass(
     approved_document_hashes: frozenset[str],
     budget: int,
     existing_tokens: set[str] | None = None,
+    async_upload_protocols: Sequence[AsyncUploadProtocol] = (),
+    native_upload_contracts: Sequence[NativeFinalSubmitUploadContract] = (),
 ) -> SyntheticMutationExecution:
     """Extract, plan, and execute one mutation pass (initial or revealed).
 
@@ -1818,11 +2406,62 @@ def _run_mutation_pass(
                     )
                 )
                 continue
+            if target.field.type == "file":
+                evidence = _select_files_with_evidence(
+                    target=target,
+                    paths=[entry.proposed_value],
+                    async_upload_protocols=async_upload_protocols,
+                    native_upload_contracts=native_upload_contracts,
+                )
+                kind = _document_kind(target)
+                execution.uploads.append(
+                    _upload_record(
+                        page=page,
+                        target=target,
+                        document_kind=kind,
+                        path=str(entry.proposed_value),
+                        evidence=evidence,
+                    )
+                )
+                selected_value = ", ".join(evidence.selected_file_names)
+                if evidence.status in {"selection_verified", "remote_accepted"}:
+                    execution.mutations_performed += 1
+                    execution.budget_consumed += 1
+                    budget_remaining -= 1
+                    execution.fields.append(
+                        _record_for_entry(
+                            entry=entry,
+                            target=target,
+                            page=page,
+                            status="filled",
+                            selected_value=selected_value,
+                            filled_value=str(entry.proposed_value),
+                        )
+                    )
+                else:
+                    if selected_value == Path(entry.proposed_value).name:
+                        execution.mutations_performed += 1
+                        execution.budget_consumed += 1
+                        budget_remaining -= 1
+                    execution.required_unresolved += 1
+                    failed_status = (
+                        "failed" if evidence.status == "failed" else "intervention_needed"
+                    )
+                    execution.fields.append(
+                        _record_for_entry(
+                            entry=entry,
+                            target=target,
+                            page=page,
+                            status=failed_status,
+                            selected_value=selected_value,
+                            filled_value=str(entry.proposed_value),
+                            explanation=evidence.message,
+                        )
+                    )
+                continue
             try:
                 actual = _execute_field(target, entry.proposed_value)
-                if target.field.type == "file":
-                    page.wait_for_timeout(1_000)
-                elif target.field.type in ("radio", "select", "checkbox"):
+                if target.field.type in ("radio", "select", "checkbox"):
                     page.wait_for_timeout(500)
                 execution.mutations_performed += 1
                 execution.budget_consumed += 1
@@ -1837,18 +2476,6 @@ def _run_mutation_pass(
                         filled_value=actual,
                     )
                 )
-                if target.field.type == "file":
-                    kind = cast(Any, _document_kind(target))
-                    execution.uploads.append(
-                        LiveUploadRecord(
-                            page_url=page.url,
-                            selector=target.selector_hint,
-                            document_kind=kind,
-                            path=str(entry.proposed_value),
-                            status="uploaded",
-                            message="approved synthetic document",
-                        )
-                    )
             except Exception as exc:
                 if isinstance(exc, _FieldReadbackMismatch):
                     explanation = f"Text-field read-back validation failed: {exc}"
@@ -1913,6 +2540,8 @@ def execute_live_form_synthetic(
     *,
     approved_document_hashes: frozenset[str],
     mutation_budget: int,
+    async_upload_protocols: Sequence[AsyncUploadProtocol] = (),
+    native_upload_contracts: Sequence[NativeFinalSubmitUploadContract] = (),
 ) -> SyntheticMutationExecution:
     """Fill the current rendered form page with WQ-7C synthetic data only.
 
@@ -1933,6 +2562,8 @@ def execute_live_form_synthetic(
         job=job,
         approved_document_hashes=approved_document_hashes,
         budget=mutation_budget,
+        async_upload_protocols=async_upload_protocols,
+        native_upload_contracts=native_upload_contracts,
     )
 
     # Deterministic ordered plan chain: the initial pass is always pass 0;
@@ -1959,6 +2590,8 @@ def execute_live_form_synthetic(
             approved_document_hashes=approved_document_hashes,
             budget=remaining_budget,
             existing_tokens=existing_tokens,
+            async_upload_protocols=async_upload_protocols,
+            native_upload_contracts=native_upload_contracts,
         )
         # Merge revealed fields/records into the main execution. The
         # budget is shared: revealed mutations count against it.
@@ -1987,6 +2620,8 @@ def execute_live_form_synthetic(
 
 
 __all__ = [
+    "AsyncUploadProtocol",
+    "NativeFinalSubmitUploadContract",
     "LiveFormExecution",
     "SyntheticMutationExecution",
     "SyntheticMutationPass",
