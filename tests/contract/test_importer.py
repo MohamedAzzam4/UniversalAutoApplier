@@ -16,8 +16,12 @@ from universal_auto_applier.application_queue.importer import (
     import_queue_file,
 )
 from universal_auto_applier.core.identity import compute_application_id
-from universal_auto_applier.persistence.db import make_session_factory
-from universal_auto_applier.persistence.job_repository import get_application_job
+from universal_auto_applier.persistence.db import make_session_factory, session_scope
+from universal_auto_applier.persistence.job_repository import (
+    get_application_job,
+    set_manual_submitted,
+    upsert_application_job,
+)
 from universal_auto_applier.persistence.models import Base
 
 
@@ -56,6 +60,7 @@ def _make_valid_job_line(
     cover_letter_pdf: str | None = None,
     status: str = "evaluated",
     score: float = 4.1,
+    metadata: dict[str, object] | None = None,
 ) -> str:
     """Return a single valid JSONL line.
 
@@ -65,7 +70,7 @@ def _make_valid_job_line(
     application_id = compute_application_id(
         platform=platform, external_job_id=external_job_id, url=url
     )
-    data = {
+    data: dict[str, object] = {
         "application_id": application_id,
         "platform": platform,
         "source": "linkedin",
@@ -81,6 +86,8 @@ def _make_valid_job_line(
         "status": status,
         "external_job_id": external_job_id,
     }
+    if metadata is not None:
+        data["metadata"] = metadata
     return json.dumps(data)
 
 
@@ -127,7 +134,8 @@ class TestImportValidQueue:
         application_id = compute_application_id(
             platform="greenhouse", external_job_id="j1", url="https://example.com/jobs/1"
         )
-        job = get_application_job(_open_session(session_factory), application_id)
+        with session_scope(session_factory) as session:
+            job = get_application_job(session, application_id)
         assert job is not None
         assert job.company == "Acme Corp"
         assert job.cv_pdf is not None  # path retained
@@ -249,9 +257,70 @@ class TestImportDuplicate:
         )
         import_queue_file(queue2, session_factory)
 
-        job = get_application_job(_open_session(session_factory), application_id)
+        with session_scope(session_factory) as session:
+            job = get_application_job(session, application_id)
         assert job is not None
         assert job.company == "Acme Corporation"
+
+    def test_reimport_preserves_local_answers_and_manual_submission_marker(
+        self,
+        tmp_path: Path,
+        session_factory,
+    ) -> None:
+        application_id = compute_application_id(
+            platform="greenhouse", external_job_id="j1", url="https://example.com/jobs/1"
+        )
+        queue1 = tmp_path / "q1.jsonl"
+        queue1.write_text(
+            _make_valid_job_line(
+                external_job_id="j1",
+                company="Acme Corp",
+                metadata={
+                    "candidate_profile": {"first_name": "Initial"},
+                    "producer_revision": 1,
+                },
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+        import_queue_file(queue1, session_factory)
+
+        with session_scope(session_factory) as session:
+            job = get_application_job(session, application_id)
+            assert job is not None
+            job.metadata["form_answers"] = {"Do you know Python?": "Yes"}
+            upsert_application_job(session, job)
+            set_manual_submitted(session, application_id, submitted=True)
+            marked_job = get_application_job(session, application_id)
+            assert marked_job is not None
+            submitted_at = marked_job.metadata["dashboard_submitted_at"]
+
+        queue2 = tmp_path / "q2.jsonl"
+        queue2.write_text(
+            _make_valid_job_line(
+                external_job_id="j1",
+                company="Acme Corporation",
+                metadata={
+                    "candidate_profile": {"first_name": "Updated"},
+                    "producer_revision": 2,
+                    "dashboard_submitted": False,
+                    "dashboard_submitted_at": "producer-value",
+                },
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+        import_queue_file(queue2, session_factory)
+
+        with session_scope(session_factory) as session:
+            job = get_application_job(session, application_id)
+        assert job is not None
+        assert job.company == "Acme Corporation"
+        assert job.metadata["candidate_profile"] == {"first_name": "Updated"}
+        assert job.metadata["producer_revision"] == 2
+        assert job.metadata["form_answers"] == {"Do you know Python?": "Yes"}
+        assert job.metadata["dashboard_submitted"] is True
+        assert job.metadata["dashboard_submitted_at"] == submitted_at
 
 
 class TestImportArtifactPaths:

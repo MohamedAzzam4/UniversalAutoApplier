@@ -42,7 +42,7 @@ archived, and no live mutation or real submission occurred. The first real
 form family remains an explicit owner decision until an approved queue target
 is available.
 
-### V2-01 — Immediate correctness blockers (active; F2/T03 review pending)
+### V2-01 — Immediate correctness blockers (active; F4/T10 review pending)
 
 **Objective.** Correct unsupported fact assertions, missing field read-back,
 destructive re-import of UAA operational state, inconsistent duplicate gates,
@@ -83,25 +83,32 @@ The separate consent-test fixture lifecycle repair is committed and pushed at
 `4b85767b8d48fa01a30cf9d24d75dcce25276d60`; its ordered dashboard-plus-consent
 reproduction passed 8/8 and its standalone module passed 7/7.
 
-**Current bounded slice — F2/T03.** Supervisor review is pending for the
-text-field read-back and requiredness changes in `form_engine/live_executor.py`,
-`browser/live_models.py` and `submission/models.py`. The executor records a
-verified stable post-blur DOM value, returns only compatible normalization, and
-routes cleared or incompatible values to intervention/validation failure with
-no verified filled value. Requiredness follows live field records into the
-snapshot. Hermetic deterministic and LLM browser cases cover a value cleared
-on blur, while an email case-normalization case records the actual DOM value.
-Validation passed: 13 focused Playwright executor tests, 1,479
-unit/contract/integration/pipeline tests excluding live markers, scoped Ruff
-check and format, Pyright with 0 diagnostics, and `git diff --check`. The full
-Playwright-inclusive combined gate remains unverified. F2b upload evidence is
-deferred, and no real site or submission was used.
+**F2/T03 checkpointed.** Commit `706831cf86f5d28ab7cd862de098b72f643a0112`
+verifies stable text-field values after blur, reports cleared or incompatible
+rewrites as interventions with no verified fill, and carries live requiredness
+into the submission snapshot. Deterministic and LLM mismatch cases plus a
+compatible email-normalization case passed in the focused 13-test Playwright
+executor module. The full non-Playwright selection passed 1,479 tests; the
+shared working tree also contained the parallel F4 changes now under review.
+Ruff, Pyright and `git diff --check` passed. The combined Playwright-inclusive
+gate remains unverified; upload evidence is deferred to F2b.
 
-F2/T03 remains uncommitted until supervisor review. Stage only its executor,
-live model, snapshot model, focused Playwright test, and handoff paths; do not
-include the parallel F4 repository/import files. After F2 is reviewed and
-checkpointed, wait for a separate supervisor assignment before F4 integration
-or further V2-01 work.
+**Current bounded slice — F4/T10.** Supervisor review is pending for the
+interim re-import metadata allowlist in `persistence/job_repository.py` and its
+unit/contract tests. Re-import preserves local `dashboard_submitted` and
+`dashboard_submitted_at` markers, strips producer attempts to set them on a new
+insert, refreshes producer metadata, and retains the whole per-job answer-map
+keys `application_answers`, `form_answers`, and `question_answers` only when
+the producer omits those keys. An explicitly supplied producer answer map
+replaces the prior map; arbitrary old metadata is not deep-merged. Full
+upstream/local fact separation remains V2-03.
+
+F4 validation passed: 37 focused repository/importer tests, Ruff check and
+format on the three F4 files, and the 1,479-test unit/contract/integration/
+pipeline selection with these F4 changes present. Stage only the repository,
+repository/importer tests, and F4 handoff paths; keep other workpackage paths
+out. After the F4 review and checkpoint, wait for another bounded supervisor
+assignment before F2b or remaining V2-01 slices.
 
 **Predecessor.** V2-00 baseline checkpoint `0e21adb43b400dd90a91a3ba754269e1a061375e`.
 Owner approval is separately required for any real target/live action under

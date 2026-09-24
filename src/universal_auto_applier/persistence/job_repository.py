@@ -34,9 +34,46 @@ from universal_auto_applier.core.statuses import (
 )
 from universal_auto_applier.persistence.models import ApplicationJobRow
 
+_UAA_SUBMISSION_MARKER_KEYS = ("dashboard_submitted", "dashboard_submitted_at")
+_QUESTION_ANSWER_METADATA_KEYS = ("application_answers", "form_answers", "question_answers")
+
 
 def _utcnow() -> datetime:
     return datetime.now(UTC)
+
+
+def _metadata_for_insert(metadata: dict[str, object]) -> dict[str, object]:
+    """Copy producer metadata without accepting UAA-owned submission markers."""
+    result = dict(metadata)
+    for key in _UAA_SUBMISSION_MARKER_KEYS:
+        result.pop(key, None)
+    return result
+
+
+def _metadata_for_reimport(
+    existing_metadata: dict[str, object] | None,
+    producer_metadata: dict[str, object],
+) -> dict[str, object]:
+    """Refresh producer data while retaining narrowly owned UAA state.
+
+    Dashboard submission markers are authoritative once set in the local
+    database. Per-job answer maps are retained only when the producer omits
+    the whole key; an explicitly supplied producer map replaces the old map.
+    This is intentionally a shallow, key-specific policy rather than a general
+    metadata merge.
+    """
+    existing = existing_metadata or {}
+    result = _metadata_for_insert(producer_metadata)
+
+    for key in _UAA_SUBMISSION_MARKER_KEYS:
+        if key in existing:
+            result[key] = existing[key]
+
+    for key in _QUESTION_ANSWER_METADATA_KEYS:
+        if key not in result and key in existing:
+            result[key] = existing[key]
+
+    return result
 
 
 def _row_to_job(row: ApplicationJobRow) -> ApplicationJob:
@@ -110,6 +147,9 @@ def upsert_application_job(session: Session, job: ApplicationJob) -> Application
     - If the job exists, update all descriptive fields (company, title, url,
       score, verdict, documents, etc.) and refresh ``last_updated_at``.
       ``first_seen_at`` is preserved.
+      Producer metadata is refreshed while UAA-owned dashboard submission
+      markers are retained. Known per-job answer maps are retained only when
+      the producer omits the whole key; an explicit map replaces the old one.
     - Re-import may update descriptive job metadata and artifact paths, but
       it must **not** erase attempt history or downgrade a final state.
       If the existing row is in a terminal status (applied, rejected,
@@ -127,8 +167,10 @@ def upsert_application_job(session: Session, job: ApplicationJob) -> Application
 
     if existing is None:
         # Insert.
+        row_data = _job_to_row_data(job)
+        row_data["metadata_json"] = _metadata_for_insert(job.metadata)
         row = ApplicationJobRow(
-            **_job_to_row_data(job),
+            **row_data,
             first_seen_at=_utcnow(),
             last_updated_at=_utcnow(),
         )
@@ -156,7 +198,10 @@ def upsert_application_job(session: Session, job: ApplicationJob) -> Application
     existing.evaluation_reason = job.evaluation_reason
     existing.german_filter_result = job.german_filter_result
     existing.documents_json = job.documents.model_dump() if job.documents else None
-    existing.metadata_json = job.metadata
+    existing.metadata_json = _metadata_for_reimport(
+        existing.metadata_json,
+        job.metadata,
+    )
 
     # Do not downgrade terminal statuses on re-import.
     current_status = ApplicationStatus(existing.status)

@@ -19,6 +19,7 @@ from universal_auto_applier.persistence.job_repository import (
     count_application_jobs,
     get_application_job,
     list_application_jobs,
+    set_manual_submitted,
     upsert_application_job,
 )
 from universal_auto_applier.persistence.models import Base
@@ -114,6 +115,121 @@ class TestUpsertIdempotent:
         assert retrieved is not None
         assert retrieved.company == "Acme Corporation"
         assert retrieved.score == 4.8
+
+    def test_reimport_preserves_manual_submission_and_omitted_answer_maps(
+        self,
+        session_factory,
+    ) -> None:
+        job = _make_job().model_copy(
+            update={
+                "metadata": {
+                    "candidate_profile": {"first_name": "Old"},
+                    "producer_only_old": "remove me",
+                    "application_answers": {"What is your role?": "Developer"},
+                }
+            }
+        )
+        with session_scope(session_factory) as session:
+            upsert_application_job(session, job)
+            set_manual_submitted(session, job.application_id, submitted=True)
+            existing = get_application_job(session, job.application_id)
+            assert existing is not None
+            submitted_at = existing.metadata["dashboard_submitted_at"]
+            existing.metadata["form_answers"] = {"Do you know Python?": "Yes"}
+            existing.metadata["question_answers"] = {"Will you relocate?": "No"}
+            upsert_application_job(session, existing)
+
+        reimported = _make_job().model_copy(
+            update={
+                "metadata": {
+                    "candidate_profile": {"first_name": "Updated"},
+                    "producer_only_new": "keep me",
+                }
+            }
+        )
+        with session_scope(session_factory) as session:
+            upsert_application_job(session, reimported)
+            persisted = get_application_job(session, job.application_id)
+
+        assert persisted is not None
+        assert persisted.metadata["dashboard_submitted"] is True
+        assert persisted.metadata["dashboard_submitted_at"] == submitted_at
+        assert persisted.metadata["form_answers"] == {"Do you know Python?": "Yes"}
+        assert persisted.metadata["question_answers"] == {"Will you relocate?": "No"}
+        assert persisted.metadata["application_answers"] == {"What is your role?": "Developer"}
+        assert persisted.metadata["candidate_profile"] == {"first_name": "Updated"}
+        assert persisted.metadata["producer_only_new"] == "keep me"
+        assert "producer_only_old" not in persisted.metadata
+
+    def test_reimport_replaces_answer_maps_explicitly_supplied_by_producer(
+        self,
+        session_factory,
+    ) -> None:
+        job = _make_job().model_copy(
+            update={"metadata": {"form_answers": {"Local correction": "No"}}}
+        )
+        with session_scope(session_factory) as session:
+            upsert_application_job(session, job)
+
+        reimported = _make_job().model_copy(
+            update={"metadata": {"form_answers": {"Producer answer": "Yes"}}}
+        )
+        with session_scope(session_factory) as session:
+            upsert_application_job(session, reimported)
+            persisted = get_application_job(session, job.application_id)
+
+        assert persisted is not None
+        assert persisted.metadata["form_answers"] == {"Producer answer": "Yes"}
+
+    def test_insert_does_not_accept_producer_dashboard_submission_marker(
+        self,
+        session_factory,
+    ) -> None:
+        job = _make_job().model_copy(
+            update={
+                "metadata": {
+                    "dashboard_submitted": True,
+                    "dashboard_submitted_at": "producer-value",
+                    "candidate_profile": {"first_name": "John"},
+                }
+            }
+        )
+        with session_scope(session_factory) as session:
+            upsert_application_job(session, job)
+            persisted = get_application_job(session, job.application_id)
+
+        assert persisted is not None
+        assert "dashboard_submitted" not in persisted.metadata
+        assert "dashboard_submitted_at" not in persisted.metadata
+        assert persisted.metadata["candidate_profile"] == {"first_name": "John"}
+
+    def test_reimport_preserves_manually_cleared_submission_marker(self, session_factory) -> None:
+        job = _make_job()
+        with session_scope(session_factory) as session:
+            upsert_application_job(session, job)
+            set_manual_submitted(session, job.application_id, submitted=True)
+            set_manual_submitted(session, job.application_id, submitted=False)
+            cleared = get_application_job(session, job.application_id)
+            assert cleared is not None
+            cleared_at = cleared.metadata["dashboard_submitted_at"]
+
+        reimported = _make_job().model_copy(
+            update={
+                "metadata": {
+                    "candidate_profile": {"first_name": "Updated"},
+                    "dashboard_submitted": True,
+                    "dashboard_submitted_at": "producer-value",
+                }
+            }
+        )
+        with session_scope(session_factory) as session:
+            upsert_application_job(session, reimported)
+            persisted = get_application_job(session, job.application_id)
+
+        assert persisted is not None
+        assert persisted.metadata["dashboard_submitted"] is False
+        assert persisted.metadata["dashboard_submitted_at"] == cleared_at
+        assert persisted.metadata["candidate_profile"] == {"first_name": "Updated"}
 
 
 class TestTimestampPreservation:
