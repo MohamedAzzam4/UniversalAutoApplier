@@ -42,7 +42,7 @@ archived, and no live mutation or real submission occurred. The first real
 form family remains an explicit owner decision until an approved queue target
 is available.
 
-### V2-01 — Immediate correctness blockers (active; F1 first milestone in review)
+### V2-01 — Immediate correctness blockers (active; F1 checkpointed)
 
 **Objective.** Correct unsupported fact assertions, missing field read-back,
 destructive re-import of UAA operational state, inconsistent duplicate gates,
@@ -74,12 +74,15 @@ produce truthful readiness. Include the plan cases T01–T06, T10–T11, T19 and
 T29 where applicable, then run the full regression gate. No new local model is
 required.
 
-**Current authorized slice.** F1 / T01–T02 only: abstain for absent,
-negated, or contradictory skill claims, including German negative evidence;
-do not infer valid-visa possession from `requires_sponsorship`. Focused tests
-and the 1,474-test unit/contract/integration/pipeline selection pass. Review
-and checkpoint F1 before continuing. The consent-test fixture repair is a
-separate checkpoint and does not implement V2-01 behavior.
+**Checkpointed slice.** F1 / T01–T02 is committed and pushed at
+`e77940b4fb7ee2d8d22e8a09adc887734ac59edb`: abstain for absent, negated, or
+contradictory skill claims, including tested German negative evidence; do not
+infer valid-visa possession from `requires_sponsorship`. The focused mapper
+tests and 1,474-test unit/contract/integration/pipeline selection pass. A
+separate consent-test fixture lifecycle repair has passed its ordered 8-test
+dashboard-plus-consent reproduction and standalone 7-test module and has
+received supervisor approval as a separate test-only checkpoint. Do not begin
+F2–F6 before the next bounded supervisor assignment.
 
 **Predecessor.** V2-00 baseline checkpoint `0e21adb43b400dd90a91a3ba754269e1a061375e`.
 Owner approval is separately required for any real target/live action under
