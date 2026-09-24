@@ -39,6 +39,7 @@ from universal_auto_applier.adapters.registry import AdapterRegistry, NoAdapterE
 from universal_auto_applier.adapters.siemens_adapter import SiemensAdapter, SiemensAdapterConfig
 from universal_auto_applier.candidate_profile_loader import resolve_candidate_profile
 from universal_auto_applier.config import Settings
+from universal_auto_applier.core.eligibility import is_repeat_processing_eligible
 from universal_auto_applier.core.models import (
     ApplicationJob,
     CandidateProfile,
@@ -70,6 +71,7 @@ from universal_auto_applier.navigator.page_observer import observe_html
 from universal_auto_applier.navigator.safe_explorer import safe_explore
 from universal_auto_applier.persistence.db import session_scope
 from universal_auto_applier.persistence.job_repository import (
+    get_application_job,
     list_application_jobs,
     upsert_application_job,
 )
@@ -205,8 +207,6 @@ class PipelineOrchestrator:
             # retryable state (failed, blocked, needs_review). Freshly
             # imported jobs from JobHunter's exporter have status
             # ready_to_apply; we process them directly.
-            from universal_auto_applier.persistence.job_repository import is_manual_submitted
-
             queued_jobs = [
                 j
                 for j in jobs
@@ -218,7 +218,7 @@ class PipelineOrchestrator:
                     ApplicationStatus.BLOCKED,
                     ApplicationStatus.NEEDS_REVIEW,
                 )
-                and not is_manual_submitted(j)
+                and is_repeat_processing_eligible(j)
             ]
 
             jobs_to_process = queued_jobs[:max_jobs]
@@ -304,6 +304,15 @@ class PipelineOrchestrator:
 
     def _process_job(self, job: ApplicationJob, fixture_html: str | None) -> None:
         """Process a single job through the pipeline."""
+        with session_scope(self.session_factory) as session:
+            stored_job = get_application_job(session, job.application_id)
+        eligibility_job = stored_job if stored_job is not None else job
+        if not is_repeat_processing_eligible(eligibility_job):
+            self._log(
+                "info",
+                f"skipping already-submitted job {job.application_id[:12]}",
+            )
+            return
         self.state.current_job_id = job.application_id
         self.state.current_phase = "prepare"
         self._log("info", f"processing job: {job.company} - {job.title}")

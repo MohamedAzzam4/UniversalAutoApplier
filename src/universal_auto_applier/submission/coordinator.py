@@ -58,7 +58,7 @@ from playwright.sync_api import (
 )
 
 from universal_auto_applier.config import Settings
-from universal_auto_applier.core.statuses import ApplicationStatus
+from universal_auto_applier.core.eligibility import repeat_processing_block_reason
 from universal_auto_applier.navigator.apply_path_finder import analyze_page
 from universal_auto_applier.persistence.db import session_scope
 from universal_auto_applier.persistence.job_repository import get_application_job
@@ -171,7 +171,7 @@ class SubmissionCoordinator:
         4c. No high-risk unconfirmed answers (direct field check).
         5. No unconsumed claim (in-progress submission).
         6. No previous unknown outcome.
-        7. Application not already submitted/applied.
+        7. Application is not canonically submitted/applied or manually marked submitted.
 
         Returns a :class:`GateResult`.
         """
@@ -295,7 +295,7 @@ class SubmissionCoordinator:
                         state=SubmissionResultState.ALREADY_SUBMITTED,
                     )
 
-            # Gate 7: application not already submitted/applied.
+            # Gate 7: application not already submitted through workflow or owner marker.
             job = get_application_job(session, application_id)
             if job is None:
                 return GateResult(
@@ -303,14 +303,11 @@ class SubmissionCoordinator:
                     reason="application not found",
                     state=SubmissionResultState.SUBMISSION_NOT_ALLOWED,
                 )
-            status = str(job.status)
-            if status in (
-                ApplicationStatus.SUBMITTED.value,
-                ApplicationStatus.APPLIED.value,
-            ):
+            repeat_block = repeat_processing_block_reason(job)
+            if repeat_block is not None:
                 return GateResult(
                     allowed=False,
-                    reason=f"application status is {status}",
+                    reason=repeat_block,
                     state=SubmissionResultState.ALREADY_SUBMITTED,
                 )
 
@@ -762,6 +759,20 @@ class SubmissionCoordinator:
                         state=SubmissionResultState.SUBMISSION_NOT_ALLOWED,
                         clicked=False,
                         error_message="approval not found or does not match",
+                    )
+                    record_result(session, result)
+                    return result
+
+                job = get_application_job(session, application_id)
+                repeat_block = repeat_processing_block_reason(job) if job is not None else None
+                if repeat_block is not None:
+                    result = SubmissionResult(
+                        application_id=application_id,
+                        approval_id=approval_id,
+                        snapshot_hash_at_submit=current_snapshot.snapshot_hash,
+                        state=SubmissionResultState.ALREADY_SUBMITTED,
+                        clicked=False,
+                        error_message=repeat_block,
                     )
                     record_result(session, result)
                     return result

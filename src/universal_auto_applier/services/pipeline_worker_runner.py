@@ -44,6 +44,7 @@ from typing import Any
 from universal_auto_applier.browser.live_runner import LiveBrowserConfig, LiveBrowserRunner
 from universal_auto_applier.candidate_profile_loader import resolve_candidate_profile
 from universal_auto_applier.config import Settings, load_settings
+from universal_auto_applier.core.eligibility import is_repeat_processing_eligible
 from universal_auto_applier.core.models import ApplicationJob
 from universal_auto_applier.core.statuses import ApplicationStatus, InterventionKind
 from universal_auto_applier.interventions.store import create_intervention
@@ -54,6 +55,7 @@ from universal_auto_applier.persistence.db import (
     session_scope,
 )
 from universal_auto_applier.persistence.job_repository import (
+    get_application_job,
     list_application_jobs,
     upsert_application_job,
 )
@@ -178,8 +180,6 @@ class PipelineWorkerRunner:
 
         with session_scope(self.session_factory) as session:
             jobs = list_application_jobs(session)
-        from universal_auto_applier.persistence.job_repository import is_manual_submitted
-
         eligible = [
             job
             for job in jobs
@@ -188,7 +188,7 @@ class PipelineWorkerRunner:
                 ApplicationStatus.READY_TO_APPLY.value,
                 ApplicationStatus.QUEUED.value,
             )
-            and not is_manual_submitted(job)
+            and is_repeat_processing_eligible(job)
         ]
         # If target_application_ids is set (non-empty), restrict to only those IDs.
         if self.target_application_ids:
@@ -301,7 +301,17 @@ class PipelineWorkerRunner:
 
     def _process_job(self, job: ApplicationJob, fixture_html: str | None) -> None:
         """Process one job and persist counters/errors on the run row."""
+        with session_scope(self.session_factory) as session:
+            stored_job = get_application_job(session, job.application_id)
+        eligibility_job = stored_job if stored_job is not None else job
         application_id = job.application_id
+        if not is_repeat_processing_eligible(eligibility_job):
+            self._update(
+                current_job_id=application_id,
+                current_phase="skipped",
+                last_action=f"Skipped already-submitted job {application_id[:12]}",
+            )
+            return
         self._touch_heartbeat()
         self._update(
             current_job_id=application_id,

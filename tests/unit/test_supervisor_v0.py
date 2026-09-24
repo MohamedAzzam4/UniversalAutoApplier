@@ -18,7 +18,10 @@ from universal_auto_applier.core.identity import compute_application_id
 from universal_auto_applier.core.models import ApplicationJob
 from universal_auto_applier.core.statuses import ApplicationStatus, Platform
 from universal_auto_applier.persistence.db import make_session_factory, session_scope
-from universal_auto_applier.persistence.job_repository import upsert_application_job
+from universal_auto_applier.persistence.job_repository import (
+    set_manual_submitted,
+    upsert_application_job,
+)
 from universal_auto_applier.persistence.models import Base
 from universal_auto_applier.submission.models import (
     SubmissionSnapshot,
@@ -189,6 +192,46 @@ def test_a_happy_path_prepare_review_ready(tmp_path: Path) -> None:
         summary = service.run()
         assert job.application_id in summary.review_ready
         assert summary.submission_attempts == 0
+    finally:
+        engine.dispose()
+
+
+def test_manual_submission_skips_supervisor_preparation(tmp_path: Path) -> None:
+    factory, engine = _session_factory(tmp_path)
+    try:
+        settings = _settings(tmp_path)
+        job = _make_job(external_job_id="already-submitted")
+        _insert_job(factory, job)
+        with session_scope(factory) as session:
+            set_manual_submitted(session, job.application_id, submitted=True)
+        prepare_calls = {"count": 0}
+
+        def prepare(app_id: str) -> PrepareOutcome:
+            prepare_calls["count"] += 1
+            return PrepareOutcome(application_id=app_id, snapshot=_snapshot(app_id))
+
+        tools = SupervisorTools(settings=settings, session_factory=factory, prepare_fn=prepare)
+        direct = tools.prepare_application(job.application_id)
+        assert direct.blocked
+        assert direct.error == "application is marked submitted by the operator"
+
+        service = SupervisorService(
+            tools=tools,
+            policy_engine=PolicyEngine(),
+            planner=DeterministicPlanner(PolicyEngine()),
+            session_factory=factory,
+        )
+        summary = service.run(application_ids=[job.application_id])
+
+        assert prepare_calls["count"] == 0
+        assert summary.review_ready == []
+        assert summary.skipped == [
+            {
+                "application_id": job.application_id,
+                "company": job.company,
+                "reason_code": ReasonCode.APPLICATION_ALREADY_SUBMITTED.value,
+            }
+        ]
     finally:
         engine.dispose()
 

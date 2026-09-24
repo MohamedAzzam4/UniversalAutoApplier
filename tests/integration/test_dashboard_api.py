@@ -148,6 +148,56 @@ class TestQueueEndpoint:
         assert client_with_data.get("/api/queue").json()["jobs"][0]["submitted"] is False
 
 
+class TestRetryEligibility:
+    def test_manual_submission_blocks_retry_until_operator_clears_it(
+        self,
+        client_with_data: TestClient,
+    ) -> None:
+        from universal_auto_applier.persistence.models import ApplicationJobRow
+
+        application_id = client_with_data.get("/api/queue").json()["jobs"][0]["application_id"]
+        session_factory = client_with_data.app.state.session_factory
+        with session_factory() as session:
+            row = session.get(ApplicationJobRow, application_id)
+            assert row is not None
+            row.status = "failed"
+            session.commit()
+
+        marked = client_with_data.patch(
+            f"/api/queue/{application_id}/submitted", json={"submitted": True}
+        )
+        assert marked.status_code == 200
+        observation = client_with_data.post(f"/api/submit/{application_id}/observe")
+        assert observation.status_code == 409
+        assert "marked submitted" in observation.json()["detail"]
+        blocked = client_with_data.post(f"/api/queue/{application_id}/retry")
+        assert blocked.status_code == 409
+        assert "marked submitted" in blocked.json()["detail"]
+
+        cleared = client_with_data.patch(
+            f"/api/queue/{application_id}/submitted", json={"submitted": False}
+        )
+        assert cleared.status_code == 200
+        retried = client_with_data.post(f"/api/queue/{application_id}/retry")
+        assert retried.status_code == 200
+        assert retried.json()["status"] == "queued"
+
+    def test_canonical_submitted_status_blocks_retry(self, client_with_data: TestClient) -> None:
+        from universal_auto_applier.persistence.models import ApplicationJobRow
+
+        application_id = client_with_data.get("/api/queue").json()["jobs"][0]["application_id"]
+        session_factory = client_with_data.app.state.session_factory
+        with session_factory() as session:
+            row = session.get(ApplicationJobRow, application_id)
+            assert row is not None
+            row.status = "submitted"
+            session.commit()
+
+        response = client_with_data.post(f"/api/queue/{application_id}/retry")
+        assert response.status_code == 409
+        assert "status is submitted" in response.json()["detail"]
+
+
 class TestInterventionsEndpoint:
     def test_list_empty(self, client: TestClient) -> None:
         response = client.get("/api/interventions")

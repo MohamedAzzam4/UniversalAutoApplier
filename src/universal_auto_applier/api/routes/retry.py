@@ -47,6 +47,7 @@ def retry_job(request: Request, application_id: str) -> RetryResponse:
     The actual retry execution (re-navigation, re-filling) belongs to
     Phase 8 (pipeline orchestration).
     """
+    from universal_auto_applier.core.eligibility import repeat_processing_block_reason
     from universal_auto_applier.core.statuses import ALLOWED_TRANSITIONS, ApplicationStatus
     from universal_auto_applier.interventions.store import count_pending_interventions
     from universal_auto_applier.persistence.job_repository import get_application_job
@@ -61,6 +62,10 @@ def retry_job(request: Request, application_id: str) -> RetryResponse:
             raise HTTPException(status_code=404, detail="Job not found")
 
         current_status = job.status
+        repeat_block = repeat_processing_block_reason(job)
+        if repeat_block is not None:
+            raise HTTPException(status_code=409, detail=f"Cannot retry: {repeat_block}")
+
         # Terminal statuses cannot be retried.
         if current_status in {
             ApplicationStatus.APPLIED,

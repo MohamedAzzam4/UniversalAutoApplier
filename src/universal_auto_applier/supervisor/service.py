@@ -4,6 +4,7 @@ Conceptual loop per application:
 
     inspect status
     if Siemens: skip (DEDICATED_SIEMENS_WORKFLOW — never prepared)
+    if owner-marked/canonically submitted: skip (APPLICATION_ALREADY_SUBMITTED)
     if review_ready: queue for owner review; stop
     prepare (review-only)
     if blocked: human handoff; stop (no retry — conservative)
@@ -27,6 +28,7 @@ from typing import Any
 
 from sqlalchemy.orm import Session, sessionmaker
 
+from universal_auto_applier.core.eligibility import repeat_processing_block_reason
 from universal_auto_applier.core.models import ApplicationJob
 from universal_auto_applier.core.statuses import ApplicationStatus
 from universal_auto_applier.persistence.db import session_scope
@@ -278,6 +280,11 @@ class SupervisorService:
             )
             return
 
+        repeat_block = repeat_processing_block_reason(job)
+        if repeat_block is not None:
+            self._skip_already_submitted(run_id, job, summary, repeat_block)
+            return
+
         job_status = ApplicationStatus(str(job.status))
         if job_status is ApplicationStatus.REVIEW_READY:
             self._record(
@@ -403,6 +410,19 @@ class SupervisorService:
             prepare_attempts += 1
 
             if outcome.blocked:
+                current_job = self._tools.get_job(app_id)
+                repeat_block = (
+                    repeat_processing_block_reason(current_job) if current_job is not None else None
+                )
+                if repeat_block is not None:
+                    self._skip_already_submitted(
+                        run_id,
+                        job,
+                        summary,
+                        repeat_block,
+                        previous_state=SupervisorState.PREPARING,
+                    )
+                    return
                 # Conservative: an unreachable/blocked observation is a human
                 # matter (CAPTCHA, login wall, moved form, cookie banner...) — NEVER
                 # auto-retried, so a blocker can never loop.
@@ -706,6 +726,41 @@ class SupervisorService:
                 "application_id": app_id,
                 "company": job.company,
                 "reason_code": ReasonCode.RETRYABLE_EXECUTION_FAILURE.value,
+            }
+        )
+
+    def _skip_already_submitted(
+        self,
+        run_id: str,
+        job: ApplicationJob,
+        summary: SupervisorRunSummary,
+        reason: str,
+        *,
+        previous_state: SupervisorState = SupervisorState.IMPORTED,
+    ) -> None:
+        """Record an eligibility stop without preparing an already-submitted job."""
+        app_id = job.application_id
+        self._record(
+            run_id,
+            app_id,
+            action="stop",
+            previous_state=previous_state,
+            resulting_state=SupervisorState.SKIPPED,
+            reason_code=ReasonCode.APPLICATION_ALREADY_SUBMITTED,
+            decision_source="policy",
+            tool_result=reason,
+        )
+        self._set_state(
+            run_id,
+            app_id,
+            SupervisorState.SKIPPED,
+            reason_code=ReasonCode.APPLICATION_ALREADY_SUBMITTED,
+        )
+        summary.skipped.append(
+            {
+                "application_id": app_id,
+                "company": job.company,
+                "reason_code": ReasonCode.APPLICATION_ALREADY_SUBMITTED.value,
             }
         )
 

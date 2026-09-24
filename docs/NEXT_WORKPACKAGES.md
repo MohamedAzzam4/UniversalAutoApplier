@@ -42,7 +42,7 @@ archived, and no live mutation or real submission occurred. The first real
 form family remains an explicit owner decision until an approved queue target
 is available.
 
-### V2-01 — Immediate correctness blockers (active; F4/T10 review pending)
+### V2-01 — Immediate correctness blockers (active; F4/T06 eligibility in progress)
 
 **Objective.** Correct unsupported fact assertions, missing field read-back,
 destructive re-import of UAA operational state, inconsistent duplicate gates,
@@ -93,22 +93,47 @@ shared working tree also contained the parallel F4 changes now under review.
 Ruff, Pyright and `git diff --check` passed. The combined Playwright-inclusive
 gate remains unverified; upload evidence is deferred to F2b.
 
-**Current bounded slice — F4/T10.** Supervisor review is pending for the
-interim re-import metadata allowlist in `persistence/job_repository.py` and its
-unit/contract tests. Re-import preserves local `dashboard_submitted` and
-`dashboard_submitted_at` markers, strips producer attempts to set them on a new
-insert, refreshes producer metadata, and retains the whole per-job answer-map
-keys `application_answers`, `form_answers`, and `question_answers` only when
-the producer omits those keys. An explicitly supplied producer answer map
+**F4/T10 checkpointed.** Commit `cb0ceba0bf38206ceb4609e13019b5a6660598f9`
+adds the interim re-import metadata allowlist in `persistence/job_repository.py`
+and its unit/contract tests. Re-import preserves local `dashboard_submitted`
+and `dashboard_submitted_at` markers, strips producer attempts to set them on a
+new insert, refreshes producer metadata, and retains the whole per-job answer
+map keys `application_answers`, `form_answers`, and `question_answers` only
+when the producer omits those keys. An explicitly supplied producer answer map
 replaces the prior map; arbitrary old metadata is not deep-merged. Full
-upstream/local fact separation remains V2-03.
+upstream/local fact separation remains V2-03. Validation passed: 37 focused
+repository/importer tests, Ruff check/format, Pyright, and the 1,479-test
+unit/contract/integration/pipeline selection.
 
-F4 validation passed: 37 focused repository/importer tests, Ruff check and
-format on the three F4 files, and the 1,479-test unit/contract/integration/
-pipeline selection with these F4 changes present. Stage only the repository,
-repository/importer tests, and F4 handoff paths; keep other workpackage paths
-out. After the F4 review and checkpoint, wait for another bounded supervisor
-assignment before F2b or remaining V2-01 slices.
+**Current bounded slice — F4/T06 manual-submission eligibility (implemented;
+supervisor checkpoint review pending).** A shared domain eligibility check
+blocks canonical `submitted`/`applied` jobs and the UAA-owned
+`dashboard_submitted=true` marker from repeat preparation or submission across
+the coordinator, retry API, supervisor, and existing pipeline/orchestration
+entry points. An explicit dashboard correction to `false` restores
+eligibility; the block itself does not advance canonical job status or act as
+ATS confirmation. The marker is rechecked at the submission claim boundary;
+the final coordinator gate remains in place before the click. Tests confirm a
+marker-block result leaves the WQ-8 authorization active and unconsumed, and an
+unknown outcome still blocks after changed-snapshot reapproval. Pipeline
+eligibility checks retain the job object used for result accounting.
+
+F4/T06 validation passed: the focused six-module selection passed **157
+tests**; the API candidate-profile, background-worker and orchestrator
+regressions passed **43 tests** after the pipeline counter fix; Ruff check,
+Ruff format check, Pyright and `git diff --check` passed; and the full default
+non-live/non-Playwright gate passed **1,481 tests** with **303 deselected** in
+832.35 seconds. A bare browser-inclusive `pytest -x -vv` run stopped at the
+separate stale dashboard header assertion (`Documents` expected versus
+`DOCUMENTS` rendered) after **385 passed**; the full Playwright-inclusive
+suite is not claimed green. The broad non-Playwright result includes the
+parallel unstaged F2b source changes present in the shared working tree; the
+F4/T06 focused tests isolate this package. Stage only the shared eligibility code, direct
+coordinator/retry/supervisor/pipeline tests, and the active handoff/archive
+paths. Keep parallel F2b edits unstaged. Supervisor checkpoint review is
+required before commit/push; no real target or submission is in scope. F2b
+integration still needs to propagate upload evidence through the API response
+mapping and preserve the WQ-8 plan-hash binding.
 
 **Predecessor.** V2-00 baseline checkpoint `0e21adb43b400dd90a91a3ba754269e1a061375e`.
 Owner approval is separately required for any real target/live action under

@@ -25,6 +25,7 @@ from typing import Any, cast
 from sqlalchemy.orm import Session, sessionmaker
 
 from universal_auto_applier.config import Settings
+from universal_auto_applier.core.eligibility import repeat_processing_block_reason
 from universal_auto_applier.core.models import ApplicationJob
 from universal_auto_applier.core.statuses import ApplicationStatus, Platform
 from universal_auto_applier.persistence.db import session_scope
@@ -178,6 +179,15 @@ class SupervisorTools:
         return self._prepare(application_id)
 
     def _prepare(self, application_id: str) -> PrepareOutcome:
+        job = self.get_job(application_id)
+        if job is not None:
+            repeat_block = repeat_processing_block_reason(job)
+            if repeat_block is not None:
+                return PrepareOutcome(
+                    application_id=application_id,
+                    snapshot=None,
+                    error=repeat_block,
+                )
         if self._prepare_fn is not None:
             return self._prepare_fn(application_id)
         return self._default_prepare(application_id)

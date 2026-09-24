@@ -37,6 +37,7 @@ from universal_auto_applier.api.models.submission import (
     LiveReviewSubmitResponse,
 )
 from universal_auto_applier.config import Settings
+from universal_auto_applier.core.eligibility import repeat_processing_block_reason
 from universal_auto_applier.interventions.store import count_pending_interventions
 from universal_auto_applier.persistence.db import session_scope
 from universal_auto_applier.persistence.job_repository import get_application_job
@@ -296,6 +297,12 @@ def observe_snapshot_endpoint(
     settings = app.state.settings
     session_factory = app.state.session_factory
 
+    with session_scope(session_factory) as session:
+        job = get_application_job(session, application_id)
+    repeat_block = repeat_processing_block_reason(job) if job is not None else None
+    if repeat_block is not None:
+        raise HTTPException(status_code=409, detail=f"Cannot prepare: {repeat_block}")
+
     context_factory = getattr(app.state, "submission_context_factory", None)
     if context_factory is None:
         raise HTTPException(
@@ -311,6 +318,11 @@ def observe_snapshot_endpoint(
     snapshot = service.observe_and_persist_snapshot(application_id=application_id)
 
     if snapshot is None:
+        with session_scope(session_factory) as session:
+            job = get_application_job(session, application_id)
+        repeat_block = repeat_processing_block_reason(job) if job is not None else None
+        if repeat_block is not None:
+            raise HTTPException(status_code=409, detail=f"Cannot prepare: {repeat_block}")
         raise HTTPException(
             status_code=500,
             detail="failed to observe live form (check logs for details)",

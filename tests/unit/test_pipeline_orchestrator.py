@@ -18,6 +18,7 @@ from universal_auto_applier.core.statuses import ApplicationStatus, Platform
 from universal_auto_applier.persistence.db import make_session_factory, session_scope
 from universal_auto_applier.persistence.job_repository import (
     get_application_job,
+    set_manual_submitted,
     upsert_application_job,
 )
 from universal_auto_applier.persistence.models import Base
@@ -176,6 +177,31 @@ class TestFixturePipeline:
             ApplicationStatus.REVIEW_READY,
             ApplicationStatus.NEEDS_USER_INPUT,
         )
+
+    def test_manual_submission_marker_excludes_pipeline_processing(
+        self,
+        settings,
+        session_factory,
+        tmp_path: Path,
+    ) -> None:
+        job = _make_job(
+            tmp_path,
+            external_job_id="manual-submitted",
+            status=ApplicationStatus.READY_TO_APPLY,
+        )
+        with session_scope(session_factory) as session:
+            upsert_application_job(session, job)
+            set_manual_submitted(session, job.application_id, submitted=True)
+
+        orch = PipelineOrchestrator(settings, session_factory, candidate=_make_candidate())
+        orch.run(fixture_html=_read_fixture("simple_application.html"), max_jobs=1)
+
+        assert orch.state.status == "completed"
+        assert orch.state.jobs_processed == 0
+        with session_scope(session_factory) as session:
+            persisted = get_application_job(session, job.application_id)
+        assert persisted is not None
+        assert persisted.status == ApplicationStatus.READY_TO_APPLY
 
     def test_login_page_creates_intervention(
         self, settings, session_factory, tmp_path: Path

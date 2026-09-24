@@ -1317,27 +1317,18 @@ class OrchestrationService:
         Eligible = READY_TO_APPLY or QUEUED. Returns a set of application_id
         strings (SHA-256 hashes, never candidate data).
         """
-        from sqlalchemy import select
-
+        from universal_auto_applier.core.eligibility import is_repeat_processing_eligible
         from universal_auto_applier.core.statuses import ApplicationStatus
-        from universal_auto_applier.persistence.models import ApplicationJobRow
+        from universal_auto_applier.persistence.job_repository import list_application_jobs
 
         with session_scope(self._session_factory) as session:
-            rows = (
-                session.execute(
-                    select(ApplicationJobRow.application_id).where(
-                        ApplicationJobRow.status.in_(
-                            [
-                                ApplicationStatus.READY_TO_APPLY.value,
-                                ApplicationStatus.QUEUED.value,
-                            ]
-                        )
-                    )
-                )
-                .scalars()
-                .all()
-            )
-        return set(rows)
+            jobs = list_application_jobs(session)
+        return {
+            job.application_id
+            for job in jobs
+            if job.status in {ApplicationStatus.READY_TO_APPLY, ApplicationStatus.QUEUED}
+            and is_repeat_processing_eligible(job)
+        }
 
     @staticmethod
     def _compute_newly_eligible(before: set[str], after: set[str]) -> tuple[list[str], int]:

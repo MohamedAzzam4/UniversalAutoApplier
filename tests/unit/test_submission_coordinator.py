@@ -24,6 +24,7 @@ Test matrix (per workpackage requirements):
 
 from __future__ import annotations
 
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -39,11 +40,18 @@ from universal_auto_applier.persistence.db import (
     session_scope,
 )
 from universal_auto_applier.persistence.job_repository import (
+    get_application_job,
+    set_manual_submitted,
     upsert_application_job,
 )
 from universal_auto_applier.persistence.migrations import apply_migrations
 from universal_auto_applier.persistence.models import Base
-from universal_auto_applier.submission.coordinator import SubmissionCoordinator
+from universal_auto_applier.submission.authorization import compute_frozen_review_plan_hash
+from universal_auto_applier.submission.authorization_store import (
+    create_authorization,
+    get_active_authorization,
+)
+from universal_auto_applier.submission.coordinator import GateResult, SubmissionCoordinator
 from universal_auto_applier.submission.models import (
     SubmissionResultState,
     SubmissionSnapshot,
@@ -57,6 +65,7 @@ from universal_auto_applier.submission.store import (
     create_approval,
     get_active_approval,
     get_latest_result,
+    has_unconsumed_claim,
     record_result,
 )
 
@@ -533,6 +542,109 @@ class TestAlreadySubmitted:
         finally:
             engine.dispose()
 
+    def test_manual_submission_marker_blocks_resubmit(self, tmp_path: Path) -> None:
+        settings = _make_settings(tmp_path, enable_real_submission=True)
+        job = _make_job(tmp_path)
+        engine, sf = _setup_db(tmp_path, settings, job)
+        try:
+            with session_scope(sf) as session:
+                set_manual_submitted(session, job.application_id, submitted=True)
+            coordinator = SubmissionCoordinator(settings, sf)
+            snapshot = _make_snapshot(job.application_id)
+            coordinator.approve_snapshot(application_id=job.application_id, snapshot=snapshot)
+
+            gate = coordinator.check_gates(
+                application_id=job.application_id,
+                current_snapshot=snapshot,
+            )
+
+            assert not gate.allowed
+            assert gate.state == SubmissionResultState.ALREADY_SUBMITTED
+            assert "marked submitted" in gate.reason
+        finally:
+            engine.dispose()
+
+    def test_manual_marker_is_rechecked_before_claim(self, tmp_path: Path, monkeypatch) -> None:
+        settings = _make_settings(tmp_path, enable_real_submission=True)
+        job = _make_job(tmp_path)
+        engine, sf = _setup_db(tmp_path, settings, job)
+        try:
+            coordinator = SubmissionCoordinator(settings, sf)
+            snapshot = _make_snapshot(job.application_id)
+            approval_id = coordinator.approve_snapshot(
+                application_id=job.application_id,
+                snapshot=snapshot,
+            )
+            with session_scope(sf) as session:
+                submit_control = snapshot.submit_control
+                review_plan_hash = compute_frozen_review_plan_hash(
+                    application_id=job.application_id,
+                    company=job.company,
+                    job_title=job.title,
+                    application_url=snapshot.application_url,
+                    fields=snapshot.fields,
+                    documents=snapshot.documents,
+                    submit_control_text=(submit_control.text if submit_control else ""),
+                    submit_control_selector=(submit_control.selector if submit_control else ""),
+                    submit_control_frame_url=(submit_control.frame_url if submit_control else ""),
+                    pending_intervention_count=snapshot.pending_intervention_count,
+                )
+                authorization = create_authorization(
+                    session,
+                    application_id=job.application_id,
+                    application_url=snapshot.application_url,
+                    job_company=job.company,
+                    job_title=job.title,
+                    review_plan_hash=review_plan_hash,
+                    document_hashes=[],
+                    expires_at=datetime.now(UTC) + timedelta(hours=1),
+                )
+                authorization_id = authorization.authorization_id
+            original_check_gates = coordinator.check_gates
+
+            def pass_gate_then_mark(**_kwargs: Any) -> GateResult:
+                # Model another operator setting the marker after the initial
+                # gate reads it but before the transactional claim starts.
+                with session_scope(sf) as session:
+                    set_manual_submitted(session, job.application_id, submitted=True)
+                return GateResult(allowed=True)
+
+            monkeypatch.setattr(coordinator, "check_gates", pass_gate_then_mark)
+
+            result = coordinator.execute_submission(
+                context=None,  # type: ignore[arg-type] — duplicate guard returns before browser use.
+                application_id=job.application_id,
+                approval_id=approval_id,
+                current_snapshot=snapshot,
+                submit_control_selector="#submit",
+            )
+
+            assert result.state == SubmissionResultState.ALREADY_SUBMITTED
+            assert result.clicked is False
+            with session_scope(sf) as session:
+                assert not has_unconsumed_claim(session, job.application_id)
+                persisted_job = get_application_job(session, job.application_id)
+                assert persisted_job is not None
+                assert persisted_job.status == ApplicationStatus.REVIEW_READY
+                latest = get_latest_result(session, job.application_id)
+                assert latest is not None
+                assert latest.state == SubmissionResultState.ALREADY_SUBMITTED.value
+                active_authorization = get_active_authorization(session, job.application_id)
+                assert active_authorization is not None
+                assert active_authorization.authorization_id == authorization_id
+                set_manual_submitted(session, job.application_id, submitted=False)
+
+            # A marker-block result is not ATS evidence: clearing the explicit
+            # dashboard correction restores eligibility and leaves status unchanged.
+            monkeypatch.setattr(coordinator, "check_gates", original_check_gates)
+            corrected_gate = coordinator.check_gates(
+                application_id=job.application_id,
+                current_snapshot=snapshot,
+            )
+            assert corrected_gate.allowed
+        finally:
+            engine.dispose()
+
 
 # ---------------------------------------------------------------------------
 # 11. Unknown outcome blocking retry
@@ -572,19 +684,23 @@ class TestUnknownOutcomeBlocksRetry:
             with session_scope(sf) as session:
                 consume_approval(session, approval_id)
 
-            # Create a NEW approval for the same snapshot (simulating
-            # the user re-approving after manual review).
-            # But the previous unknown outcome still blocks.
-            # Actually, the previous approval is consumed, so there's no
-            # active approval — the gate fails with "no active approval".
-            # That's the correct behavior: after an unknown outcome, the
-            # user must explicitly re-approve AND the system should
-            # transition to NEEDS_REVIEW.
-
-            gate = coordinator.check_gates(application_id=job.application_id)
+            # Even a new explicit approval cannot clear an unknown outcome;
+            # manual review remains required before another attempt.
+            reviewed_snapshot = _make_snapshot(
+                job.application_id,
+                field_values=[{"field_token": "lf-1", "filled_value": "reviewed"}],
+            )
+            coordinator.approve_snapshot(
+                application_id=job.application_id,
+                snapshot=reviewed_snapshot,
+            )
+            gate = coordinator.check_gates(
+                application_id=job.application_id,
+                current_snapshot=reviewed_snapshot,
+            )
             assert not gate.allowed
-            # The first failing gate is "no active approval".
-            assert "no active approval" in gate.reason
+            assert gate.state == SubmissionResultState.OUTCOME_UNKNOWN
+            assert "manual review required" in gate.reason
         finally:
             engine.dispose()
 

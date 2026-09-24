@@ -26,6 +26,7 @@ from playwright.sync_api import BrowserContext, sync_playwright
 
 from universal_auto_applier.candidate_profile_loader import resolve_candidate_profile
 from universal_auto_applier.config import Settings
+from universal_auto_applier.core.eligibility import repeat_processing_block_reason
 from universal_auto_applier.core.models import ApplicationJob
 from universal_auto_applier.form_engine.live_executor import execute_live_form
 from universal_auto_applier.interventions.store import list_pending_interventions
@@ -224,6 +225,10 @@ class SubmissionExecutionService:
             job = get_application_job(session, application_id)
         if job is None:
             logger.warning("[%s] job not found for snapshot observation", application_id[:12])
+            return None
+        repeat_block = repeat_processing_block_reason(job)
+        if repeat_block is not None:
+            logger.info("[%s] snapshot observation blocked: %s", application_id[:12], repeat_block)
             return None
 
         context = self._context_factory.create_context() if self._context_factory else None
@@ -547,8 +552,44 @@ class SubmissionExecutionService:
                 record_result(session, result)
             return result
 
+        repeat_block = repeat_processing_block_reason(job)
+        if repeat_block is not None:
+            result = SubmissionResult(
+                application_id=application_id,
+                approval_id=approval_id,
+                snapshot_hash_at_submit="",
+                state=SubmissionResultState.ALREADY_SUBMITTED,
+                clicked=False,
+                error_message=repeat_block,
+            )
+            with session_scope(self._session_factory) as session:
+                from universal_auto_applier.submission.store import record_result
+
+                record_result(session, result)
+            return result
+
         # Get the approved snapshot hash and acquire claim BEFORE starting browser.
         with session_scope(self._session_factory) as session:
+            # Re-read at the claim boundary so a dashboard marker/status change
+            # after the initial lookup cannot acquire a submission claim.
+            current_job = get_application_job(session, application_id)
+            repeat_block = (
+                repeat_processing_block_reason(current_job) if current_job is not None else None
+            )
+            if repeat_block is not None:
+                result = SubmissionResult(
+                    application_id=application_id,
+                    approval_id=approval_id,
+                    snapshot_hash_at_submit="",
+                    state=SubmissionResultState.ALREADY_SUBMITTED,
+                    clicked=False,
+                    error_message=repeat_block,
+                )
+                from universal_auto_applier.submission.store import record_result
+
+                record_result(session, result)
+                return result
+
             approval = get_active_approval(session, application_id)
             if approval is None:
                 result = SubmissionResult(
@@ -648,7 +689,17 @@ class SubmissionExecutionService:
                 consume_claim(session, claim_id, state=S.OUTCOME_UNKNOWN)
             return result
 
-        return cast(SubmissionResult, result_holder["result"])
+        result = cast(SubmissionResult, result_holder["result"])
+        if result.state == SubmissionResultState.ALREADY_SUBMITTED:
+            with session_scope(self._session_factory) as session:
+                from universal_auto_applier.submission.store import consume_claim
+
+                consume_claim(
+                    session,
+                    claim_id,
+                    state=SubmissionResultState.ALREADY_SUBMITTED,
+                )
+        return result
 
     def _execute_in_browser(
         self,

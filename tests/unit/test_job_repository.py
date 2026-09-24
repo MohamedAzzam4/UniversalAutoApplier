@@ -11,6 +11,7 @@ from pathlib import Path
 
 import pytest
 
+from universal_auto_applier.core.eligibility import repeat_processing_block_reason
 from universal_auto_applier.core.identity import compute_application_id
 from universal_auto_applier.core.models import ApplicationJob, ApplicationJobDocuments
 from universal_auto_applier.core.statuses import ApplicationStatus, Platform
@@ -160,6 +161,9 @@ class TestUpsertIdempotent:
         assert persisted.metadata["candidate_profile"] == {"first_name": "Updated"}
         assert persisted.metadata["producer_only_new"] == "keep me"
         assert "producer_only_old" not in persisted.metadata
+        assert repeat_processing_block_reason(persisted) == (
+            "application is marked submitted by the operator"
+        )
 
     def test_reimport_replaces_answer_maps_explicitly_supplied_by_producer(
         self,
@@ -230,6 +234,7 @@ class TestUpsertIdempotent:
         assert persisted.metadata["dashboard_submitted"] is False
         assert persisted.metadata["dashboard_submitted_at"] == cleared_at
         assert persisted.metadata["candidate_profile"] == {"first_name": "Updated"}
+        assert repeat_processing_block_reason(persisted) is None
 
 
 class TestTimestampPreservation:
