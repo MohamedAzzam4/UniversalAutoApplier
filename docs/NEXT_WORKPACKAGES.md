@@ -5,6 +5,101 @@ forbidden shortcuts, acceptance criteria, required tests, and predecessor.
 Items are not started until they are pulled into an active workpackage in
 `docs/handoffs/ACTIVE_WORKPACKAGE.md`.
 
+## V2 roadmap — current delivery order
+
+The V2 plan and critique are now in [`docs/v2/`](v2/UAA_V2_REVIEW_AND_PLAN.md).
+V2 is the active delivery roadmap for the current checkout. The WQ-1 through
+WQ-10 and Supervisor V0 entries below are retained as historical backlog and
+authorization context; they do not override the V2 ordering. The archived
+WQ-8 handoff remains authoritative for its exact owner-approved submission
+gate.
+
+### V2-00 — Baseline and execution contracts (current; supervisor checkpoint review pending)
+
+**Objective.** Preserve the chosen dashboard-history + supervisor baseline,
+record the migration head and full non-live gate state, repair formatting and
+any narrowly attributable combined browser-test lifecycle issue, promote the
+review/critique into the repository, and adopt the concrete state, re-import,
+upload, readiness and browser-ownership contracts in section 17 of the plan.
+
+**Chosen baseline.** Branch `checkpoint/v2-00-baseline`, created from the
+dashboard-history commit. It descends from the WQ-8 checkpoint
+`18783ffc1da216709d6a36d010157ce3430fd7e3`, then includes the supervisor
+history and dashboard-history commit above `origin/main`. The migration head
+at that starting point is `0016_supervisor`. This is one selected line of
+history; the mixed documentation and quality-baseline package does not rewrite,
+merge or delete the existing dashboard, supervisor or WQ-8 checkpoints.
+
+**Acceptance.** The chosen baseline and migration head are recorded; the
+combined non-live regression result, formatting and type-check results are
+recorded exactly; only scoped formatting/lifecycle fixes are included; the
+WQ-8 active handoff is archived before the V2-00 handoff replaces it; no real
+submission or live mutation occurs. The first real form family remains an
+explicit owner decision until an available approved queue target exists.
+
+### V2-01 — Immediate correctness blockers (next; wait for V2-00 supervisor review)
+
+**Objective.** Correct unsupported fact assertions, missing field read-back,
+destructive re-import of UAA operational state, inconsistent duplicate gates,
+and misleading required-document/request evidence. Unqualified mutation flows
+stop at observation or owner handoff.
+
+**Ownership contract.** JobHunter owns source/job fields and produced
+tailoring outputs. UAA owns its manual-submitted marker, corrections and
+answer provenance, attempts, interventions, approvals, submission outcomes
+and evidence. Implement an explicit interim metadata allowlist that preserves
+at least `dashboard_submitted` and `dashboard_submitted_at` through re-import;
+do not blindly deep-merge arbitrary imported metadata. Full versioned
+upstream/local fact separation is V2-03.
+
+**Document/readiness contract.** Report native file selection as
+`selection_verified`, never as remote acceptance. Asynchronous flows report
+`uploading`, `remote_accepted`, `rejected` or `unknown` with evidence; rejection
+or unknown blocks readiness. `review_ready` requires a verified final review
+boundary, full-attempt snapshot, read-back of required answers, evidence that
+meets the flow's declared upload contract, guarded final action, and no
+pending intervention or unknown side effect. An intermediate completed form
+step is not review-ready.
+
+**Acceptance and tests.** Negative skill evidence and ambiguous visa answers
+abstain; cleared/rewritten values fail read-back; rejected files are not
+accepted; manual-submitted state survives unchanged and updated imports and
+blocks every execution entry point; native and asynchronous upload protocols
+produce truthful readiness. Include the plan cases T01–T06, T10–T11, T19 and
+T29 where applicable, then run the full regression gate. No new local model is
+required.
+
+**Predecessor.** V2-00 supervisor checkpoint review. Do not start
+implementation before that review. Owner approval is required separately for
+any real target/live action under the existing WQ-8 contract.
+
+### V2-07A — Dashboard interaction design (separate follow-up)
+
+**Objective.** Prototype the operator journey and visible action/state
+contract. This package is design work; production UI changes belong to V2-07B
+after the executor command/revision/idempotency and event contracts settle.
+
+**Known design gaps to address.** Replace prompt-based intervention editing,
+10-second status polling and blind resume. Add a queue/document preflight
+before scheduling, per-job next actions, mobile layout and keyboard/screen
+reader access.
+
+**Required interaction contract.** Corrections proceed through explicit
+`Save → Saved → Resume queued → Rechecking` states. Show each job's current
+phase and next action. Distinguish flow support, answer source/confidence and
+document evidence (including local selection versus remote acceptance). A
+stale correction shows a conflict with current state instead of silently
+overwriting it. The prototype must explain why work paused and what the owner
+can do next.
+
+**Acceptance.** The owner can understand the queue, a paused job, a correction
+and its resume state without shell commands. Cover 1440×900 and 390×844 plus
+keyboard/focus and screen-reader labels. This package does not implement the
+dashboard or alter submission controls.
+
+**Predecessor.** Starts from V2-00; implementation dependencies for V2-07B
+remain V2-02–V2-04.
+
 ## WQ-1 — Correct post-submit job / history transitions (CONFIRMED DEFECT)
 
 **Objective.** Close the status-transition defect: a controlled submission

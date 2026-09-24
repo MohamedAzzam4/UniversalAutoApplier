@@ -873,7 +873,9 @@ def _browser_session(settings: Settings, args: argparse.Namespace) -> int:
         ]
         if args.channel:
             # Channel is ignored for subprocess launch; log it.
-            print(f"Note: --channel {args.channel} ignored for attachable host (uses bundled Chromium).")
+            print(
+                f"Note: --channel {args.channel} ignored for attachable host (uses bundled Chromium)."
+            )
         proc = subprocess.Popen(chrome_args, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         # Wait for CDP endpoint to become reachable.
         import httpx
@@ -914,7 +916,9 @@ def _browser_session(settings: Settings, args: argparse.Namespace) -> int:
                 try:
                     if str(args.url) not in (page.url or ""):
                         page.goto(
-                            str(args.url), wait_until="domcontentloaded", timeout=settings.browser_timeout_ms
+                            str(args.url),
+                            wait_until="domcontentloaded",
+                            timeout=settings.browser_timeout_ms,
                         )
                 except Exception:
                     pass
@@ -922,7 +926,9 @@ def _browser_session(settings: Settings, args: argparse.Namespace) -> int:
                 context = browser.new_context(accept_downloads=False)
                 page = context.new_page()
                 page.goto(
-                    str(args.url), wait_until="domcontentloaded", timeout=settings.browser_timeout_ms
+                    str(args.url),
+                    wait_until="domcontentloaded",
+                    timeout=settings.browser_timeout_ms,
                 )
             # Write ready metadata — no credentials/cookies/tokens.
             metadata = {

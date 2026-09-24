@@ -1,5 +1,42 @@
 # Current State
 
+## Current checkout snapshot — V2-00 (2026-09-24)
+
+This section is the current checkout record and takes precedence over the
+historical V1 snapshot below. It records the selected V2-00 baseline at branch
+creation; resolve HEAD dynamically after later V2-00 commits.
+
+- **Repository:** `MohamedAzzam4/UniversalAutoApplier`.
+- **Base:** `origin/main` at branch creation was
+  `76b2e1f166dd56398e7234c733ca24d703d0194a`.
+- **Chosen branch:** `checkpoint/v2-00-baseline`, created from the dashboard
+  history checkpoint `68014659ea7df5d2c1c632e27891ffbe478d978b` and pushed to
+  origin before edits. This is a descendant of
+  `origin/checkpoint/wq-8-controlled-real-submission` at
+  `18783ffc1da216709d6a36d010157ce3430fd7e3`; it then contains the supervisor
+  work and dashboard-history commit. It is one selected line of history from
+  `origin/main`, not three divergent trees that need reconciling. No existing
+  branch was rewritten or merged.
+- **Supervisor reference:** `origin/feature/agent-supervisor-mode-v0` was
+  `bc24a153cd4eb7f1e486b0fcdfc63ed9699f571b` at branch creation.
+- **Migration head:** `0016_supervisor` (verified with the repository venv's
+  Alembic command).
+- **Implemented additions beyond the older V1 snapshot:** the WQ-8 controlled
+  submission authorization and observation path; the review-only Agent
+  Supervisor V0; attachable browser handoff; dashboard history and submitted
+  tracking. WQ-8's exact one-submission owner gate remains active. No real
+  application has been submitted; this V2-00 work performs no submission or
+  live ATS mutation.
+- **V2 plan and contracts:** see
+  [`docs/v2/UAA_V2_REVIEW_AND_PLAN.md`](v2/UAA_V2_REVIEW_AND_PLAN.md),
+  especially section 17. Those later-workpackage contracts are design
+  decisions, not claims that the behavior is implemented.
+- **V2-00 gate results:** recorded in
+  [`docs/handoffs/ACTIVE_WORKPACKAGE.md`](handoffs/ACTIVE_WORKPACKAGE.md) and
+  updated there after each pushed checkpoint.
+
+## Historical V1 snapshot (superseded for the V2-00 checkout)
+
 Authoritative snapshot of `UniversalAutoApplier` as of the project rebaseline.
 If this document contradicts any older planning doc, this document wins for
 "what is implemented"; the planning doc keeps its architectural authority.

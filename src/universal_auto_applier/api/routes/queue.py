@@ -113,10 +113,7 @@ def get_queue(
                     if row.cover_letter_pdf and Path(row.cover_letter_pdf).is_file()
                     else None
                 ),
-                submitted=(
-                    row.status in {"submitted", "applied"}
-                    or dashboard_submitted(row)
-                ),
+                submitted=(row.status in {"submitted", "applied"} or dashboard_submitted(row)),
                 submitted_editable=row.status not in {"submitted", "applied"},
                 submitted_source=(
                     "workflow"
