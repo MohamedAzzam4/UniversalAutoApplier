@@ -19,6 +19,8 @@ import json
 import logging
 import re
 from dataclasses import dataclass, field
+from datetime import datetime
+from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast
 
@@ -555,6 +557,104 @@ def _normalize_option(value: str) -> str:
     return aliases.get(normalized, normalized)
 
 
+class _FieldReadbackMismatch(ValueError):
+    """A text control did not retain a stable, compatible value after blur."""
+
+    def __init__(self, observed_value: str, reason: str) -> None:
+        super().__init__(reason)
+        self.observed_value = observed_value
+
+
+def _date_value(value: str) -> datetime | None:
+    for date_format in ("%Y-%m-%d", "%d.%m.%Y", "%m/%d/%Y"):
+        try:
+            return datetime.strptime(value.strip(), date_format)
+        except ValueError:
+            continue
+    return None
+
+
+def _text_values_compatible(field_type: str, proposed: str, observed: str) -> bool:
+    """Allow only known semantic normalizations of a proposed text value."""
+    if proposed == observed:
+        return True
+    if field_type == "email":
+        return proposed.strip().casefold() == observed.strip().casefold()
+    if field_type == "number":
+        try:
+            proposed_number = Decimal(proposed.strip())
+            observed_number = Decimal(observed.strip())
+        except InvalidOperation:
+            return False
+        return (
+            proposed_number.is_finite()
+            and observed_number.is_finite()
+            and proposed_number == observed_number
+        )
+    if field_type == "date":
+        proposed_date = _date_value(proposed)
+        observed_date = _date_value(observed)
+        return proposed_date is not None and proposed_date == observed_date
+    return False
+
+
+def _read_back_text_value(target: _LiveFieldTarget, proposed: str) -> str:
+    """Blur a filled text control, wait for a stable DOM value, and verify it."""
+    target.locator.fill(proposed)
+    result = target.locator.evaluate(
+        """async (el) => {
+          el.blur();
+          let value = String(el.value ?? '');
+          let stableSince = performance.now();
+          const started = stableSince;
+          const stableForMs = 150;
+          const timeoutMs = 1500;
+          while (performance.now() - started < timeoutMs) {
+            await new Promise(resolve => setTimeout(resolve, 25));
+            if (!el.isConnected) {
+              return { value: String(el.value ?? ''), stable: false };
+            }
+            const current = String(el.value ?? '');
+            if (current !== value) {
+              value = current;
+              stableSince = performance.now();
+            } else if (performance.now() - stableSince >= stableForMs) {
+              return { value, stable: true };
+            }
+          }
+          return { value: String(el.value ?? ''), stable: false };
+        }"""
+    )
+    if not isinstance(result, dict):
+        raise _FieldReadbackMismatch("", "the browser returned no text-field read-back")
+
+    observed = str(result.get("value") or "")
+    if result.get("stable") is not True:
+        raise _FieldReadbackMismatch(
+            observed,
+            "the DOM value did not remain stable after the field lost focus",
+        )
+
+    try:
+        current = target.locator.input_value()
+    except Exception as exc:
+        raise _FieldReadbackMismatch(
+            observed,
+            "the field could not be read back after it lost focus",
+        ) from exc
+    if current != observed:
+        raise _FieldReadbackMismatch(
+            current,
+            "the DOM value changed after its stable read-back",
+        )
+    if not _text_values_compatible(target.field.type, proposed, current):
+        raise _FieldReadbackMismatch(
+            current,
+            "the site cleared or rewrote the value incompatibly",
+        )
+    return current
+
+
 def _select_option(locator: Locator, value: str) -> str:
     """Select a <select> option matching ``value``.
 
@@ -693,10 +793,11 @@ def validate_typed_answer(
 
 
 def _execute_field(target: _LiveFieldTarget, value: str) -> str:
-    """Fill the field with ``value`` and return the actual DOM-recorded value.
+    """Fill the field with ``value`` and return its verified DOM value.
 
-    For text/email/phone/textarea/date/number fields, the returned value is
-    the input value (what was typed).
+    Text-like fields are read back after blur and a bounded stability check.
+    Incompatible site-side changes raise :class:`_FieldReadbackMismatch`;
+    compatible browser normalizations return the actual observed value.
 
     For select/radio/checkbox fields, the returned value is the LABEL or
     VALUE of the option that was actually selected/checked — NOT the
@@ -707,8 +808,7 @@ def _execute_field(target: _LiveFieldTarget, value: str) -> str:
     """
     field_type = target.field.type
     if field_type in {"text", "email", "phone", "textarea", "date", "number"}:
-        target.locator.fill(value)
-        return value
+        return _read_back_text_value(target, value)
     elif field_type == "select":
         return _select_option(target.locator, value)
     elif field_type == "radio":
@@ -882,6 +982,7 @@ def execute_live_form(
         explanation = result.explanation
         filled_value = ""
         actual_selected = target.field.current_value  # DOM selection before fill
+        proposed_answer: str | None = None
         # Structured file-bundle handling: if this is a FILE field with an
         # owner-selected document bundle (e.g. Vollständige Bewerbungsunterlagen
         # with CV + transcript), handle it before scalar validation. The bundle
@@ -1024,8 +1125,15 @@ def execute_live_form(
                         execution.filled += 1
                         filled_tokens.add(target.token)
                     except Exception as exc:
-                        status = "failed"
-                        explanation = f"Playwright fill failed: {exc}"
+                        if isinstance(exc, _FieldReadbackMismatch):
+                            status = "intervention_needed"
+                            actual_selected = exc.observed_value
+                            proposed_answer = result.value
+                            explanation = f"Text-field read-back validation failed: {exc}"
+                            execution.validation_errors.append(explanation)
+                        else:
+                            status = "failed"
+                            explanation = f"Playwright fill failed: {exc}"
                         logger.warning(
                             "[%s] fill failed selector=%s: %s",
                             job.application_id[:12],
@@ -1060,7 +1168,9 @@ def execute_live_form(
                 source=result.source,
                 explanation=explanation,
                 field_token=target.token,
+                proposed_answer=proposed_answer,
                 options=[opt.label or opt.value for opt in target.field.options],
+                required=target.field.required,
                 selected_value=actual_selected,
                 filled_value=filled_value,
             )
@@ -1100,6 +1210,7 @@ def execute_live_form(
             explanation = result.explanation
             filled_value = ""
             actual_selected = target.field.current_value
+            proposed_answer: str | None = None
             # Bundle handling for revealed file fields (same as initial pass)
             is_file_bundle_revealed = (
                 target.field.type == "file"
@@ -1181,8 +1292,15 @@ def execute_live_form(
                                 )
                             )
                     except Exception as exc:
-                        status = "failed"
-                        explanation = f"Playwright fill failed: {exc}"
+                        if isinstance(exc, _FieldReadbackMismatch):
+                            status = "intervention_needed"
+                            actual_selected = exc.observed_value
+                            proposed_answer = result.value
+                            explanation = f"Text-field read-back validation failed: {exc}"
+                            execution.validation_errors.append(explanation)
+                        else:
+                            status = "failed"
+                            explanation = f"Playwright fill failed: {exc}"
                         if target.field.type == "file":
                             execution.uploads.append(
                                 LiveUploadRecord(
@@ -1207,7 +1325,9 @@ def execute_live_form(
                     source=result.source,
                     explanation=explanation,
                     field_token=target.token,
+                    proposed_answer=proposed_answer,
                     options=[opt.label or opt.value for opt in target.field.options],
+                    required=target.field.required,
                     selected_value=actual_selected,
                     filled_value=filled_value,
                 )
@@ -1221,7 +1341,9 @@ def execute_live_form(
     # conditional reveal). The final report must contain ONE terminal
     # record per logical field.
     execution.fields = consolidate_fields(execution.fields)
-    execution.validation_errors = _validation_errors(page)
+    for error in _validation_errors(page):
+        if error not in execution.validation_errors:
+            execution.validation_errors.append(error)
     return execution
 
 
@@ -1344,6 +1466,7 @@ def execute_live_form_with_llm(
                         category=str(resolution.category),
                         risk_level=str(resolution.risk_level),
                         requires_confirmation=True,
+                        required=target.field.required,
                         options=[opt.label or opt.value for opt in target.field.options],
                         selected_value=target.field.current_value,
                     )
@@ -1375,6 +1498,7 @@ def execute_live_form_with_llm(
                             category=str(resolution.category),
                             risk_level=str(resolution.risk_level),
                             requires_confirmation=False,
+                            required=target.field.required,
                             options=[opt.label or opt.value for opt in target.field.options],
                             selected_value=actual_selected,
                             filled_value=actual_selected,
@@ -1385,23 +1509,46 @@ def execute_live_form_with_llm(
                                 0, execution.required_unresolved - 1
                             )
                     except Exception as exc:
-                        execution.fields[i] = LiveFieldRecord(
-                            page_url=record.page_url,
-                            selector=record.selector,
-                            label=record.label,
-                            field_type=record.field_type,
-                            status="failed",
-                            source="llm_grounded",
-                            explanation=f"LLM answer fill failed: {exc}",
-                            field_token=token,
-                            proposed_answer=proposed.value,
-                            confidence=proposed.confidence,
-                            category=str(resolution.category),
-                            risk_level=str(resolution.risk_level),
-                            requires_confirmation=True,
-                            options=[opt.label or opt.value for opt in target.field.options],
-                            selected_value=target.field.current_value,
-                        )
+                        if isinstance(exc, _FieldReadbackMismatch):
+                            explanation = f"Text-field read-back validation failed: {exc}"
+                            execution.validation_errors.append(explanation)
+                            execution.fields[i] = LiveFieldRecord(
+                                page_url=record.page_url,
+                                selector=record.selector,
+                                label=record.label,
+                                field_type=record.field_type,
+                                status="intervention_needed",
+                                source="llm_grounded",
+                                explanation=explanation,
+                                field_token=token,
+                                proposed_answer=proposed.value,
+                                confidence=proposed.confidence,
+                                category=str(resolution.category),
+                                risk_level=str(resolution.risk_level),
+                                requires_confirmation=True,
+                                required=target.field.required,
+                                options=[opt.label or opt.value for opt in target.field.options],
+                                selected_value=exc.observed_value,
+                            )
+                        else:
+                            execution.fields[i] = LiveFieldRecord(
+                                page_url=record.page_url,
+                                selector=record.selector,
+                                label=record.label,
+                                field_type=record.field_type,
+                                status="failed",
+                                source="llm_grounded",
+                                explanation=f"LLM answer fill failed: {exc}",
+                                field_token=token,
+                                proposed_answer=proposed.value,
+                                confidence=proposed.confidence,
+                                category=str(resolution.category),
+                                risk_level=str(resolution.risk_level),
+                                requires_confirmation=True,
+                                required=target.field.required,
+                                options=[opt.label or opt.value for opt in target.field.options],
+                                selected_value=target.field.current_value,
+                            )
                         logger.warning(
                             "[%s] LLM fill failed for %s: %s",
                             job.application_id[:12],
@@ -1430,6 +1577,7 @@ def execute_live_form_with_llm(
                     category=str(resolution.category),
                     risk_level=str(resolution.risk_level),
                     requires_confirmation=True,
+                    required=target.field.required,
                     options=[opt.label or opt.value for opt in target.field.options],
                     selected_value=target.field.current_value,
                 )
@@ -1442,7 +1590,9 @@ def execute_live_form_with_llm(
     # terminal record per logical field before returning to the runner.
     execution.fields = consolidate_fields(execution.fields)
     # Re-check validation errors after LLM fills.
-    execution.validation_errors = _validation_errors(page)
+    for error in _validation_errors(page):
+        if error not in execution.validation_errors:
+            execution.validation_errors.append(error)
     return execution
 
 
@@ -1539,6 +1689,7 @@ def _record_for_entry(
         category=entry.category,
         risk_level=entry.risk_level,
         requires_confirmation=False,
+        required=target.field.required if target else False,
         options=entry.options,
         selected_value=selected_value,
         filled_value=filled_value,
@@ -1699,15 +1850,31 @@ def _run_mutation_pass(
                         )
                     )
             except Exception as exc:
-                execution.fields.append(
-                    _record_for_entry(
-                        entry=entry,
-                        target=target,
-                        page=page,
-                        status="failed",
-                        explanation=f"Playwright mutation failed: {exc}",
+                if isinstance(exc, _FieldReadbackMismatch):
+                    explanation = f"Text-field read-back validation failed: {exc}"
+                    execution.validation_errors.append(explanation)
+                    execution.fields.append(
+                        _record_for_entry(
+                            entry=entry,
+                            target=target,
+                            page=page,
+                            status="intervention_needed",
+                            selected_value=exc.observed_value,
+                            explanation=explanation,
+                        )
                     )
-                )
+                    if target.field.required:
+                        execution.required_unresolved += 1
+                else:
+                    execution.fields.append(
+                        _record_for_entry(
+                            entry=entry,
+                            target=target,
+                            page=page,
+                            status="failed",
+                            explanation=f"Playwright mutation failed: {exc}",
+                        )
+                    )
                 logger.warning(
                     "[%s] wq7c mutation failed selector=%s: %s",
                     job.application_id[:12],
@@ -1813,7 +1980,9 @@ def execute_live_form_synthetic(
     execution.passes = passes
     execution.plan_chain_hash = plan_chain_hash([p.plan_hash for p in passes])
     execution.fields = consolidate_fields(execution.fields)
-    execution.validation_errors = _validation_errors(page)
+    for error in _validation_errors(page):
+        if error not in execution.validation_errors:
+            execution.validation_errors.append(error)
     return execution
 
 

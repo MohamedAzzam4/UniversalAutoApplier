@@ -130,6 +130,7 @@ class SubmissionSnapshot(BaseModel):
                     "token": f.field_token,
                     "type": f.field_type,
                     "label": f.label,
+                    "required": f.required,
                 }
                 for f in self.fields
             ],
@@ -314,7 +315,7 @@ def build_snapshot_from_report(
             filled_value=f.filled_value,
             selected_value=f.selected_value,
             status=f.status,
-            required=False,  # LiveFieldRecord does not track required-ness
+            required=f.required,
             requires_confirmation=f.requires_confirmation,
             risk_level=f.risk_level,
         )

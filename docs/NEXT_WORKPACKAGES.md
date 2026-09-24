@@ -42,7 +42,7 @@ archived, and no live mutation or real submission occurred. The first real
 form family remains an explicit owner decision until an approved queue target
 is available.
 
-### V2-01 — Immediate correctness blockers (active; F1 checkpointed)
+### V2-01 — Immediate correctness blockers (active; F2/T03 review pending)
 
 **Objective.** Correct unsupported fact assertions, missing field read-back,
 destructive re-import of UAA operational state, inconsistent duplicate gates,
@@ -74,15 +74,34 @@ produce truthful readiness. Include the plan cases T01–T06, T10–T11, T19 and
 T29 where applicable, then run the full regression gate. No new local model is
 required.
 
-**Checkpointed slice.** F1 / T01–T02 is committed and pushed at
+**Checkpointed slices.** F1 / T01–T02 is committed and pushed at
 `e77940b4fb7ee2d8d22e8a09adc887734ac59edb`: abstain for absent, negated, or
 contradictory skill claims, including tested German negative evidence; do not
-infer valid-visa possession from `requires_sponsorship`. The focused mapper
-tests and 1,474-test unit/contract/integration/pipeline selection pass. A
-separate consent-test fixture lifecycle repair has passed its ordered 8-test
-dashboard-plus-consent reproduction and standalone 7-test module and has
-received supervisor approval as a separate test-only checkpoint. Do not begin
-F2–F6 before the next bounded supervisor assignment.
+infer valid-visa possession from `requires_sponsorship`. Its focused mapper
+tests and the 1,474-test unit/contract/integration/pipeline selection passed.
+The separate consent-test fixture lifecycle repair is committed and pushed at
+`4b85767b8d48fa01a30cf9d24d75dcce25276d60`; its ordered dashboard-plus-consent
+reproduction passed 8/8 and its standalone module passed 7/7.
+
+**Current bounded slice — F2/T03.** Supervisor review is pending for the
+text-field read-back and requiredness changes in `form_engine/live_executor.py`,
+`browser/live_models.py` and `submission/models.py`. The executor records a
+verified stable post-blur DOM value, returns only compatible normalization, and
+routes cleared or incompatible values to intervention/validation failure with
+no verified filled value. Requiredness follows live field records into the
+snapshot. Hermetic deterministic and LLM browser cases cover a value cleared
+on blur, while an email case-normalization case records the actual DOM value.
+Validation passed: 13 focused Playwright executor tests, 1,479
+unit/contract/integration/pipeline tests excluding live markers, scoped Ruff
+check and format, Pyright with 0 diagnostics, and `git diff --check`. The full
+Playwright-inclusive combined gate remains unverified. F2b upload evidence is
+deferred, and no real site or submission was used.
+
+F2/T03 remains uncommitted until supervisor review. Stage only its executor,
+live model, snapshot model, focused Playwright test, and handoff paths; do not
+include the parallel F4 repository/import files. After F2 is reviewed and
+checkpointed, wait for a separate supervisor assignment before F4 integration
+or further V2-01 work.
 
 **Predecessor.** V2-00 baseline checkpoint `0e21adb43b400dd90a91a3ba754269e1a061375e`.
 Owner approval is separately required for any real target/live action under

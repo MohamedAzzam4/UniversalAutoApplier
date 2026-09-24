@@ -9,12 +9,29 @@ from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 import pytest
-from playwright.sync_api import BrowserContext
+from playwright.sync_api import BrowserContext, Page
 
 from universal_auto_applier.browser.live_runner import LiveBrowserConfig, LiveBrowserRunner
 from universal_auto_applier.core.identity import compute_application_id
-from universal_auto_applier.core.models import ApplicationJob, ApplicationJobDocuments
+from universal_auto_applier.core.models import (
+    ApplicationJob,
+    ApplicationJobDocuments,
+    CandidateProfile,
+)
+from universal_auto_applier.core.question_models import (
+    AnswerCandidate,
+    AnswerEvidence,
+    ApplicationQuestion,
+    QuestionCategory,
+    QuestionResolution,
+    QuestionRisk,
+)
 from universal_auto_applier.core.statuses import ApplicationStatus, Platform
+from universal_auto_applier.form_engine.live_executor import (
+    execute_live_form,
+    execute_live_form_with_llm,
+)
+from universal_auto_applier.submission.models import build_snapshot_from_report
 
 pytestmark = pytest.mark.playwright
 
@@ -297,3 +314,162 @@ def test_real_card_field_still_blocks_after_cards_fix(
     assert report.stopped_reason == "payment_required"
     assert report.click_path == []
     assert report.submitted is False
+
+
+def test_cleared_required_text_fill_is_intervention_not_verified(
+    page: Page,
+    tmp_path: Path,
+) -> None:
+    page.set_content(
+        """<form>
+          <label for="email">Email address</label>
+          <input id="email" name="email" type="email" required
+                 onblur="this.value = '';">
+        </form>"""
+    )
+    job = _make_job(tmp_path, "http://uaa.test/form", "cleared-readback")
+
+    execution = execute_live_form(
+        page,
+        CandidateProfile(email="applicant@example.com"),
+        job,
+    )
+
+    assert len(execution.fields) == 1
+    field = execution.fields[0]
+    assert field.status == "intervention_needed"
+    assert field.required is True
+    assert field.proposed_answer == "applicant@example.com"
+    assert field.selected_value == ""
+    assert field.filled_value == ""
+    assert execution.required_unresolved == 1
+    assert any("read-back validation failed" in error for error in execution.validation_errors)
+
+    snapshot = build_snapshot_from_report(
+        application_id=job.application_id,
+        application_url=job.url,
+        fields=execution.fields,
+        uploads=execution.uploads,
+        pending_intervention_count=execution.required_unresolved,
+    )
+    assert snapshot.fields[0].required is True
+    assert snapshot.fields[0].status == "intervention_needed"
+    assert snapshot.fields[0].filled_value == ""
+    assert snapshot.unresolved_required_field_count == 1
+
+
+def test_llm_cleared_required_text_fill_remains_unresolved(
+    page: Page,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    page.set_content(
+        """<form>
+          <label for="motivation">Why do you want to work here?</label>
+          <textarea id="motivation" name="motivation" required
+                    onblur="this.value = '';">
+          </textarea>
+        </form>"""
+    )
+    job = _make_job(tmp_path, "http://uaa.test/form", "llm-cleared-readback")
+    proposed_answer = AnswerCandidate(
+        value="I am interested in the role.",
+        confidence=0.9,
+        evidence=[
+            AnswerEvidence(
+                source="cover_letter_markdown",
+                fact="The candidate expressed interest in the role.",
+            )
+        ],
+        source_type="llm_grounded",
+        explanation="Grounded in the candidate's cover letter.",
+    )
+    question = ApplicationQuestion(
+        question_text="Why do you want to work here?",
+        field_selector="#motivation",
+        field_type="textarea",
+        required=True,
+    )
+    resolution = QuestionResolution(
+        question=question,
+        category=QuestionCategory.JOB_SPECIFIC_MOTIVATION,
+        risk_level=QuestionRisk.MEDIUM,
+        proposed_answer=proposed_answer,
+    )
+
+    from universal_auto_applier.llm import question_resolver
+
+    monkeypatch.setattr(
+        question_resolver,
+        "resolve_question",
+        lambda *_args, **_kwargs: resolution,
+    )
+    execution = execute_live_form_with_llm(
+        page,
+        CandidateProfile(),
+        job,
+        qa_service=object(),
+    )
+
+    assert len(execution.fields) == 1
+    field = execution.fields[0]
+    assert field.status == "intervention_needed"
+    assert field.required is True
+    assert field.proposed_answer == proposed_answer.value
+    assert field.selected_value == ""
+    assert field.filled_value == ""
+    assert execution.required_unresolved == 1
+    assert any("read-back validation failed" in error for error in execution.validation_errors)
+
+    snapshot = build_snapshot_from_report(
+        application_id=job.application_id,
+        application_url=job.url,
+        fields=execution.fields,
+        uploads=execution.uploads,
+        pending_intervention_count=execution.required_unresolved,
+    )
+    assert snapshot.fields[0].required is True
+    assert snapshot.fields[0].status == "intervention_needed"
+    assert snapshot.fields[0].filled_value == ""
+    assert snapshot.unresolved_required_field_count == 1
+
+
+def test_compatible_email_normalization_records_dom_readback(
+    page: Page,
+    tmp_path: Path,
+) -> None:
+    page.set_content(
+        """<form>
+          <label for="email">Email address</label>
+          <input id="email" name="email" type="email" required
+                 onblur="this.value = this.value.toLowerCase();">
+        </form>"""
+    )
+    job = _make_job(tmp_path, "http://uaa.test/form", "normalized-readback")
+    actual_email = "applicant@example.com"
+
+    execution = execute_live_form(
+        page,
+        CandidateProfile(email=actual_email.upper()),
+        job,
+    )
+
+    assert len(execution.fields) == 1
+    field = execution.fields[0]
+    assert field.status == "filled"
+    assert field.required is True
+    assert field.selected_value == actual_email
+    assert field.filled_value == actual_email
+    assert page.locator("#email").input_value() == actual_email
+    assert execution.required_unresolved == 0
+
+    snapshot = build_snapshot_from_report(
+        application_id=job.application_id,
+        application_url=job.url,
+        fields=execution.fields,
+        uploads=execution.uploads,
+        pending_intervention_count=execution.required_unresolved,
+    )
+    assert snapshot.fields[0].required is True
+    assert snapshot.fields[0].filled_value == actual_email
+    assert snapshot.fields[0].selected_value == actual_email

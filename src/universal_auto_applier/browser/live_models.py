@@ -44,6 +44,9 @@ class LiveFieldRecord(BaseModel):
     category: str = ""
     risk_level: str = ""
     requires_confirmation: bool = False
+    # Requiredness as observed from the live form control. Older reports and
+    # synthetic callers retain a safe backward-compatible default.
+    required: bool = False
     # For radio/select/checkbox: available option labels.
     options: list[str] = Field(default_factory=list[str])
     # For radio/checkbox/select: value currently selected in the DOM, recorded
