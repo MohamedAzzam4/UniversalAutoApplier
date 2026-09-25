@@ -188,114 +188,98 @@ active below.
 Owner approval is separately required for any real target/live action under
 the existing WQ-8 contract; no code review gate blocks this synthetic work.
 
-### V2-02 — One executor (active; preparation HTTP interlock checkpointed, combined browser gate green; supervisor review pending)
+### V2-02 — One executor (safety/browser checkpoints pushed; classifier integration validated; supervisor review approved)
 
 **Objective.** Route CLI, dashboard worker, supervisor preparation and snapshot
 observation through one multi-step state machine; remove duplicated readiness
-decisions; provide structured errors and progress fingerprints. This first
-bounded slice makes the preparation runner's submit block mandatory and adds
-a conservative, context-scoped HTTP method guard.
+decisions; provide structured errors and progress fingerprints. The completed
+safety slice makes the preparation runner's submit block mandatory and adds a
+conservative, context-scoped HTTP method guard. The classifier follow-up fixes
+false error-page detection caused by inert source markup in static observation.
 
-**Implemented in the current slice.** `hard_submit_block` defaults to true and
-cannot be disabled. The `LiveBrowserRunner.run` and synthetic-mutation paths
-install the submit and request guards before creating their page or navigating.
-Playwright context routes allow `GET`, `HEAD` and `OPTIONS`; all other HTTP
-methods are aborted with sanitized report and CLI evidence. The same route
-applies to popups. Internally created contexts set `service_workers="block"`;
-caller-owned contexts fail closed when pages or active workers are visible,
-deny later service-worker registration, and require page-level service-worker
-bypass to be armed and checked before navigation. No method/URL exceptions are
-enabled. Any future exception needs a qualified flow, evidence, tests and
-review. These claims apply only to those `LiveBrowserRunner` paths.
+**Safety implementation.** `hard_submit_block` defaults to true and cannot be
+disabled. `LiveBrowserRunner.run` and synthetic-mutation paths install submit
+and request guards before creating a page or navigating. Playwright context
+routes allow `GET`, `HEAD` and `OPTIONS`; all other HTTP methods are aborted
+with sanitized report and CLI evidence. Popups are covered. Internally created
+contexts block service workers; caller-owned contexts fail closed when pages
+or active workers are visible, deny later registration, and require page-level
+service-worker bypass before navigation. No method/URL exception is enabled.
+These claims apply only to those `LiveBrowserRunner` paths.
 
-CLI `browser-session --attachable` and `live-dry-run --browser-session-file` /
-`--cdp-endpoint` now fail early with an actionable message before launching or
-connecting. That path previously selected an existing tab, which cannot
-satisfy the fresh-context safety precondition. Safe attached-session resume is
-deferred to V2-04, which must establish verified session/tab ownership and
-safe replay before restoring this capability.
+CLI attached-session options now fail early with an actionable message because
+their existing-page flow cannot satisfy the fresh-context precondition. Safe
+attached-session resume is deferred to V2-04. A failed route continuation or
+abort is reported as an unknown request outcome requiring reconciliation, and
+the pipeline worker stores that state as `NEEDS_USER_INPUT`, which is not
+eligible for automatic retry.
 
-If `route.continue_()` fails, or aborting a blocked request fails, report the HTTP outcome as unknown,
-`needs_user_input`, with `http_request_outcome_unknown_reconciliation_required`.
-The operator must reconcile application state before retrying. The pipeline
-worker stores this as `NEEDS_USER_INPUT` with an intervention; that state is
-not eligible for its automatic queue selection. This avoids presenting an
-uncertain route as either ordinary setup failure or a safe retry.
+**Visible-text classifier.** Static `observe_html()` previously included
+script/style source in text passed to page-state detection; harmless
+`new Error(...)` source could classify an application form as an error page.
+`_DomExtractor` now excludes `script`, `style`, and inert `template`
+subtrees while retaining title, ordinary body text, and clickable labels.
+`noscript` remains included because this static parser cannot know whether
+scripting is disabled. Live Playwright `analyze_page()` is unchanged; this
+was a static parser defect. CSS-hidden body content can still affect static
+classification because the parser has no rendering/layout information.
 
-The WQ-7 production-safety fixture also has a narrow delayed-submit race fix
-ported from the main-workspace browser-gate package: the delayed
-`setTimeout(form.submit())` vector is opt-in and is enabled only in its
-dedicated blocking test. Its assertion remains intact, while unrelated
-safe-Continue tests no longer trigger the delayed vector.
+Regression tests cover harmless source on a form and login page, a visible
+error page, retained `noscript` login text, and CAPTCHA precedence. No live
+page or ATS is used.
 
-**Coverage limits.** `request_interlock_coverage` reports
-`playwright_context_http_routes`. It describes routed HTTP requests, not a
-universal no-side-effect guarantee. WebSocket frames and GET endpoints with
-server-side effects are outside this guard. Caller-owned contexts may contain
-dormant service-worker registrations that Playwright does not expose through
-its active-worker list; the guard cannot prove those background paths absent.
-Preparation must not claim universal network-submission prevention. Flows
-that need blocked POST/PUT/PATCH/DELETE requests remain paused for the owner.
+**Unresolved P1 — shared observation/fill executor.** The API
+`POST /api/submit/{application_id}/observe` and supervisor
+`prepare_application` / `retry_application` use
+`SubmissionExecutionService.observe_and_persist_snapshot()`, which performs observation and fill inline but still installs only the submit
+interlock before `execute_live_form`. That review-only path can still issue POST-based
+autosave or intermediate requests. The ordinary pipeline worker path uses
+`LiveBrowserRunner` and is covered. Do not claim all UAA preparation is
+protected. Address this in the next shared-executor slice; keep controlled
+submission execution separate until that design is reviewed.
 
-**Unresolved P1 — shared observation/fill executor.** The review-only
-`SubmissionExecutionService.observe_and_persist_snapshot()` path is not covered
-by this slice and still installs only the form-submit interlock before
-`execute_live_form`. It is reachable through API `POST
-/api/submit/{application_id}/observe` and supervisor `prepare_application` /
-`retry_application`, so it can issue POST-based autosave or intermediate
-requests. The ordinary pipeline worker's `LiveBrowserRunner.run` path is
-covered. Do not claim all UAA preparation is protected. Address this path in
-the next shared-executor slice; keep controlled-submission execution separate
-until that design is reviewed.
+**Coverage limits.** The request guard covers routed Playwright HTTP methods,
+not universal network side effects. WebSocket frames and GET endpoints with
+server-side effects are outside its coverage. Caller-owned contexts may have
+dormant service-worker registrations that Playwright does not expose; the
+guard cannot prove those background paths absent. Flows requiring blocked
+POST/PUT/PATCH/DELETE requests remain paused. Reports distinguish
+`submitted=false` from `request_outcome_unknown=true`: false means UAA did
+not confirm submission and does not prove remote non-submission when the
+outcome is unknown.
 
-**Focused acceptance.** A loopback fixture exercises a native onchange
-`form.submit()`, fetch POST, `sendBeacon`, safe GET navigation/fill and a
-`target=_blank` popup. It asserts zero server-side POSTs and verifies that
-report/log evidence excludes URL query values and request bodies. A forced
-`route.abort()` failure must produce an unknown-outcome reconciliation
-intervention and keep the job out of automatic retry eligibility. Existing
-WQ-7C and WQ-8 interlock regressions remain required, alongside the full
-non-live/non-Playwright gate and Ruff/Pyright checks. No real ATS target or
-submission is part of this work.
+**Checkpoint lineage.** The safety and V2-01 browser-gate integration is
+checkpointed on `checkpoint/v2-02-safety` at
+`a8c42880449be75a20a7c855e5031468c543bcf0`. The classifier source is
+checkpointed separately on `checkpoint/v2-02-classifier` at
+`98725115569fb15b200bceb91240821d60b108c2`; it has been integrated into
+the safety branch. Supervisor review approved one merge commit and push for
+this four-path integration. The request guard remains its own
+preparation-safety slice and does not cover the API/supervisor observation
+path above.
 
-The synthetic guard outcome is also checked at 1440×900 and 390×844. No
-Playwright MCP is exposed in this environment, so these local browser runs
-provide viewport acceptance. CLI regressions prove both attachable-session
-launch and CDP execution are rejected before Playwright starts; safe same-tab
-resume remains a V2-04 task.
+**Inherited validation.** The safety fixture → WQ-8 → WQ-7C browser selection
+passed **18 tests in 66.54 seconds**; WQ-7C → WQ-8 passed **14 tests in 54.67
+seconds**; the representative plugin-page → safety fixture → WQ-7C → WQ-8
+sequence passed **41 tests in 120.31 seconds**. The broader runner/request-
+interlock/WQ-7/WQ-8 selection passed **106 tests in 118.07 seconds**. After
+the V2-01 browser-gate integration, the conflict-area WQ-7C/WQ-8/final-pipeline
+selection passed **42 tests in 107.96 seconds**, and the browser-inclusive
+non-live gate passed **1,821 tests, 3 deselected in 1,693.04 seconds**.
+Ruff check/format passed (242 files formatted); Pyright reported zero errors,
+warnings, or informations. No real ATS or submission was used.
 
-**Current validation.** The safety fixture → WQ-8 → WQ-7C browser selection
-passed **18 tests in 66.54 seconds**; exact WQ-7C → WQ-8 passed **14 tests in
-54.67 seconds**. The representative plugin-page → safety fixture → WQ-7C →
-WQ-8 sequence passed **41 tests in 120.31 seconds**. The broader runner/request-
-interlock/WQ-7/WQ-8 selection passed **106 tests in 118.07 seconds**. Focused
-unit coverage passed **9 tests in 0.86 seconds**, and the V2-02 source
-non-live/non-Playwright gate passed **1,511 tests, 313 deselected in 795.80
-seconds**. After merging the V2-01 browser-gate package, the conflict-area
-WQ-7C/WQ-8/final-pipeline selection passed **42 tests in 107.96 seconds** and
-the full browser-inclusive non-live gate passed **1,821 tests, 3 deselected in
-1,693.04 seconds (28:13)**. Ruff check and format passed (**242 files already
-formatted**); Pyright reported **0 errors, 0 warnings, 0 informations** (the
-isolated worktree has no local `.venv`, so Pyright used the installed main
-workspace executable); staged and unstaged diff checks pass. No real ATS target
-or submission was used. Supervisor review of the combined staged diff is
-pending before a merge commit.
+**Classifier-source validation.** On its source branch, focused page-observer
+tests passed **33 tests**; the full non-live/non-Playwright gate passed
+**1,516 tests, 313 deselected in 825.01 seconds**. Ruff check/format and
+Pyright passed. On the integrated safety worktree, focused observer-consumer tests passed 214 tests in 12.35 seconds, the request-interlock/WQ-7C/WQ-8/final-pipeline browser selection passed 19 tests in 67.28 seconds, and the full non-live/non-Playwright gate passed 1,516 tests, 313 deselected in 739.04 seconds. Ruff check/format passed (242 files formatted), and Pyright reported zero diagnostics.
 
-**Predecessor.** V2-01 checkpoint `15beda81fd12542808e49a62bb523932b683a0b4`.
+**Next action.** Integrated observer, browser, full non-live and static gates
+are green. Supervisor review approved the four-path integration for one
+merge commit and push on the V2-02 safety branch. After the push, fetch
+origin and verify local/remote branch heads match with the dynamic commands
+in the active handoff. Do not merge to main, start shared-executor work, or run real ATS actions.
 
-**Separate deferred page-observer finding.** During the V2-01 synthetic final-
-pipeline E2E, the static `observe_html` path in
-`navigator/page_observer.py` included inline script source in the text used by
-`_detect_page_state`. Harmless code containing `new Error(...)` therefore
-triggered its error-page state, which static orchestration / `safe_explorer`
-can surface as an error or unknown-page result. This is separate from live
-`analyze_page`, which reads rendered body text. The E2E fixture was made
-neutral so it could exercise upload and approval behavior. In a later
-classifier slice, exclude non-rendered `script` and `style` source from the
-page-state text while preserving visible error, login, CAPTCHA and
-unknown-layout blockers. Add regressions for harmless `new Error(...)` source,
-real visible error pages, and unchanged login/CAPTCHA detection. Do not weaken
-unknown-page or blocker safety, or special-case fixture URLs.
 
 ### V2-07A — Dashboard interaction design (separate follow-up)
 

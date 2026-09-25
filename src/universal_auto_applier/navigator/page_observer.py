@@ -138,6 +138,11 @@ _ERROR_INDICATORS: frozenset[str] = frozenset(
         "fehler",
     }
 )
+# These elements contain source or inert template content rather than text
+# rendered to the user. `noscript` is intentionally not included: this
+# static parser has no scripting-enabled context, and noscript may contain
+# the page's actual fallback content when scripting is unavailable.
+_NON_RENDERED_TEXT_TAGS: frozenset[str] = frozenset({"script", "style", "template"})
 
 
 class _DomExtractor(HTMLParser):
@@ -160,7 +165,8 @@ class _DomExtractor(HTMLParser):
         self.file_inputs: list[FileInputInfo] = []
         self.forms: list[FormInfo] = []
         self._all_text_parts: list[str] = []
-        # Stack of (tag, attrs, text_buffer) for tracking element text.
+        # Stack of element data, including whether its text is inert source
+        # content or a descendant of such content.
         self._element_stack: list[dict[str, Any]] = []
         self._form_counter: int = 0
         self._input_counter: int = 0
@@ -183,8 +189,20 @@ class _DomExtractor(HTMLParser):
                 )
             )
 
-        # Push element onto stack for text tracking.
-        self._element_stack.append({"tag": tag, "attrs": attrs_dict, "text": ""})
+        # Source code, CSS, and inert template descendants are not user-facing
+        # page text. Keep them out of state classification without changing
+        # extraction of ordinary body/title text or visible clickable labels.
+        parent_suppresses_text = bool(
+            self._element_stack and self._element_stack[-1].get("suppress_text", False)
+        )
+        self._element_stack.append(
+            {
+                "tag": tag,
+                "attrs": attrs_dict,
+                "text": "",
+                "suppress_text": parent_suppresses_text or tag in _NON_RENDERED_TEXT_TAGS,
+            }
+        )
 
         # Handle input elements at start tag (they have no closing tag).
         if tag == "input":
@@ -201,7 +219,7 @@ class _DomExtractor(HTMLParser):
             element = self._element_stack.pop()
             element_text = element.get("text", "").strip()
 
-            if element_text:
+            if element_text and not element.get("suppress_text", False):
                 self._all_text_parts.append(element_text)
 
             # If this is a clickable tag, create the Clickable now that we
@@ -212,7 +230,7 @@ class _DomExtractor(HTMLParser):
     def handle_data(self, data: str) -> None:
         if self._in_title:
             self._title_parts.append(data)
-        if self._element_stack:
+        if self._element_stack and not self._element_stack[-1].get("suppress_text", False):
             self._element_stack[-1]["text"] += data
 
     def _finalize_clickable(self, tag: str, attrs: dict[str, str], text: str) -> None:
