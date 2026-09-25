@@ -42,19 +42,15 @@
   <script>
     document.getElementById('apply-form').addEventListener('submit', function(e) {
       e.preventDefault();
-      document.body.dataset.submitted = 'true';
-      document.getElementById('apply-form').style.display = 'none';
-      document.getElementById('confirmation').style.display = 'block';
-      fetch('/click', { method: 'POST' });
-      var cv = document.getElementById('cv_upload');
-      var cl = document.getElementById('cover_letter');
-      fetch('/record-submit-files', {
+      var form = e.currentTarget;
+      fetch('/submit-application', {
         method: 'POST',
-        headers: {'Content-Type': 'application/json'},
-        body: JSON.stringify({
-          cv_filename: cv.files.length > 0 ? cv.files[0].name : '',
-          cover_filename: cl.files.length > 0 ? cl.files[0].name : ''
-        })
+        body: new FormData(form)
+      }).then(function(response) {
+        if (!response.ok) return;
+        document.body.dataset.submitted = 'true';
+        form.style.display = 'none';
+        document.getElementById('confirmation').style.display = 'block';
       });
     });
     document.getElementById('cv_upload').addEventListener('change', function(e) {

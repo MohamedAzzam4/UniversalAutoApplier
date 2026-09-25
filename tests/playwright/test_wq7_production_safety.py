@@ -110,9 +110,11 @@ SUBMIT_VECTORS_FIXTURE = """<!DOCTYPE html>
 
 <!-- Vector 10: Delayed setTimeout submission -->
 <script>
-  setTimeout(function() {
-    try { document.getElementById('test-form').submit(); } catch(e) {}
-  }, 100);
+  if (window.__wq7_enable_delayed_submit) {
+    setTimeout(function() {
+      try { document.getElementById('test-form').submit(); } catch(e) {}
+    }, 100);
+  }
 </script>
 
 <script>
@@ -398,6 +400,7 @@ class TestDelayedSetTimeoutBlocked:
     """Vector 9: Delayed setTimeout submission is blocked."""
 
     def test_settimeout_submit_blocked(self, page: Page, fixture_dir: Path) -> None:
+        page.add_init_script("window.__wq7_enable_delayed_submit = true;")
         install_interlock(page)
         page.goto(f"file://{fixture_dir / 'submit_vectors.html'}")
 

@@ -42,7 +42,7 @@ archived, and no live mutation or real submission occurred. The first real
 form family remains an explicit owner decision until an approved queue target
 is available.
 
-### V2-01 — Immediate correctness blockers (active; F2b upload-evidence integration in review)
+### V2-01 — Immediate correctness blockers (active; F2b checkpointed, browser-gate follow-up awaiting supervisor review)
 
 **Objective.** Correct unsupported fact assertions, missing field read-back,
 destructive re-import of UAA operational state, inconsistent duplicate gates,
@@ -143,8 +143,8 @@ suite is not claimed green. The broad non-Playwright result includes the
 parallel F2b source changes present in the shared working tree; the F4/T06
 focused tests isolate that package. No real target or submission was in scope.
 
-**Current bounded slice — F2b/T04/T19 upload evidence integration
-(implemented; supervisor checkpoint review pending).** Live file execution
+**F2b/T04/T19 upload evidence integration (checkpointed; browser-gate
+follow-up under review).** Live file execution
 preserves per-document selected filenames, observed constraints and evidence
 source/detail. A native `selection_verified` record without an explicit
 native-final-submit flow contract remains visible but unresolved; an explicit
@@ -161,23 +161,68 @@ F2b validation passed: focused API, WQ-8 authorization/coordinator, snapshot
 safety, bundle, live-executor and WQ-8 persistence tests — **133 passed** in
 165.52 seconds; the WQ-7C synthetic-mutation Playwright module passed **9/9**
 in 39.69 seconds; the ordered Playwright lifecycle reproduction passed **3/3**
-in 5.64 seconds; and
-the full non-live/non-Playwright gate passed **1,502 tests, 309 deselected** in
-787.59 seconds. Ruff check and format check passed (**239 files already
-formatted**); Pyright reported **0 errors, 0 warnings, 0 informations**; and
-staged/unstaged `git diff --check` passed. The complete Playwright-inclusive
-suite was not rerun; the Phase 6 dashboard header test update is separate and
-excluded from this package. No new ATS protocol is enabled by default, and no
-real ATS action or submission occurred.
+in 5.64 seconds; and the full non-live/non-Playwright gate passed **1,502
+tests, 309 deselected** in 787.59 seconds. Ruff check and format check passed
+(**239 files already formatted**); Pyright reported **0 errors, 0 warnings, 0
+informations**; and `git diff --check` passed. The later full browser-inclusive
+non-live gate passed **1,808 tests, 3 deselected in 1,616.60 seconds**. Its
+targeted lifecycle checks passed in order after earlier pytest-playwright
+modules: dashboard/WQ-7B/WQ-7C/WQ-8 passed **33 tests**, WQ-7C/WQ-8 passed
+**14**, and dashboard plus WQ-8 heuristic browser tests passed **9**. Ruff,
+format (**239 files already formatted**), Pyright (**0 errors, 0 warnings, 0
+informations**) and `git diff --check` also pass on the final test-only
+follow-up. No new ATS protocol is enabled by default, and no real ATS action
+or submission occurred.
 
-**Next action.** Supervisor checkpoint review of the exact staged F2b source,
-test and handoff paths; commit and push only after that review, verify local
-HEAD equals `origin/checkpoint/v2-01-correctness`, and stop before V2-01's next
-slice.
+The synthetic final-pipeline regression proves actual multipart CV and
+cover-letter bytes reach the local test server under test-owned native-upload
+contracts; it proves no submit request occurs before approval, checks full
+SHA-256 hashes after approval, and confirms the duplicate guard prevents an
+extra request. These test declarations do not enable a production ATS or
+generic upload contract. Browser tests use pytest-playwright-owned contexts;
+the public `LiveBrowserRunner.run()` entry point remains covered from an
+isolated worker thread where the main test thread already owns the plugin's
+synchronous Playwright manager.
+
+**Next action.** Supervisor review of the exact staged browser-gate test,
+harness and handoff paths; commit and push the approved follow-up on
+`checkpoint/v2-01-correctness`, verify local HEAD equals
+`origin/checkpoint/v2-01-correctness`, and stop before V2-01's next slice.
 
 **Predecessor.** V2-00 baseline checkpoint `0e21adb43b400dd90a91a3ba754269e1a061375e`.
 Owner approval is separately required for any real target/live action under
 the existing WQ-8 contract; no code review gate blocks this synthetic work.
+
+### V2-02 — Visible-page classification and script-source false positives (backlog)
+
+**Objective.** Keep benign page scripts from triggering the observer's
+error-page or `unknown_page` classification, while preserving fail-closed
+behavior for actual visible error and blocker pages.
+
+**Observed defect.** During the synthetic final-pipeline E2E, `analyze_page`
+included inline script source in the text used by its static error-page
+classifier. A harmless script containing `new Error(...)` therefore produced
+`unknown_page` with “Error page detected.” The E2E fixture was made neutral so
+the current gate can exercise upload and approval behavior; this backlog item
+tracks the product classifier defect separately.
+
+**Concrete behavior.** Base page classification on rendered, user-visible
+content and explicit browser/page signals. Ignore inert source text in
+`script`, `style`, and other non-visible document nodes. Keep genuine visible
+error content, CAPTCHA/login gates, and unknown layouts blocked as before.
+
+**Required regression tests.** A form page with harmless inline code
+containing `new Error(...)` remains correctly classified; inert script/style
+source cannot trigger an error-page result; a genuinely visible error page is
+still `unknown_page`; existing login/CAPTCHA blocker classifications remain
+unchanged.
+
+**Forbidden shortcuts.** Weakening the actual-error or blocker guards; treating
+unknown pages as forms; making production behavior depend on a fixture URL or
+test-only marker.
+
+**Predecessor.** V2-01 F2b upload-evidence integration; fix the classifier in a
+separate implementation slice with its own targeted and full regression gate.
 
 ### V2-07A — Dashboard interaction design (separate follow-up)
 

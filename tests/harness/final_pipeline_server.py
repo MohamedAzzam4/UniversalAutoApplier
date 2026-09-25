@@ -26,6 +26,8 @@ import json
 import socket
 import sys
 import threading
+from email import policy as email_policy
+from email.parser import BytesParser
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
@@ -39,13 +41,17 @@ def _find_free_port() -> int:
 class _MetricsHandler(SimpleHTTPRequestHandler):
     """HTTP handler that serves fixture HTML and tracks clicks/uploads."""
 
+    MAX_SUBMISSION_BODY_BYTES = 1_048_576
     metrics: dict = {
         "click_count": 0,
+        "submit_request_count": 0,
         "confirmation_count": 0,
         "cv_filename": "",
         "cover_filename": "",
         "uploaded_cv_at_submit": "",
         "uploaded_cover_at_submit": "",
+        "uploaded_cv_sha256_at_submit": "",
+        "uploaded_cover_sha256_at_submit": "",
     }
     upload_log: list[str] = []
     fixture_html: str = ""
@@ -83,6 +89,67 @@ class _MetricsHandler(SimpleHTTPRequestHandler):
     def do_POST(self) -> None:
         if self.path == "/click":
             self.metrics["click_count"] += 1
+            self._send_json({"ok": True})
+        elif self.path == "/submit-application":
+            self.metrics["submit_request_count"] += 1
+            content_type = self.headers.get("Content-Type", "")
+            if not content_type.lower().startswith("multipart/form-data;"):
+                self._send_json({"ok": False, "error": "multipart form data required"}, 415)
+                return
+
+            try:
+                content_length = int(self.headers.get("Content-Length", "0"))
+            except ValueError:
+                self._send_json({"ok": False, "error": "invalid content length"}, 400)
+                return
+            if content_length <= 0 or content_length > self.MAX_SUBMISSION_BODY_BYTES:
+                self._send_json({"ok": False, "error": "submission body size is invalid"}, 413)
+                return
+
+            body = self.rfile.read(content_length)
+            if len(body) != content_length:
+                self._send_json({"ok": False, "error": "incomplete submission body"}, 400)
+                return
+
+            envelope = (
+                f"Content-Type: {content_type}\r\nMIME-Version: 1.0\r\n\r\n".encode("latin-1")
+                + body
+            )
+            message = BytesParser(policy=email_policy.default).parsebytes(envelope)
+            if not message.is_multipart():
+                self._send_json({"ok": False, "error": "invalid multipart submission"}, 400)
+                return
+
+            uploaded_files: dict[str, tuple[str, str]] = {}
+            for part in message.iter_parts():
+                if part.get_content_disposition() != "form-data":
+                    continue
+                field_name = part.get_param("name", header="content-disposition")
+                if field_name not in {"cv_upload", "cover_letter"}:
+                    continue
+                filename = part.get_filename()
+                file_bytes = part.get_payload(decode=True)
+                if not filename or not file_bytes:
+                    continue
+                uploaded_files[field_name] = (
+                    filename,
+                    hashlib.sha256(file_bytes).hexdigest(),
+                )
+
+            if set(uploaded_files) != {"cv_upload", "cover_letter"}:
+                self._send_json(
+                    {"ok": False, "error": "both CV and cover-letter files are required"},
+                    400,
+                )
+                return
+
+            cv_filename, cv_sha256 = uploaded_files["cv_upload"]
+            cover_filename, cover_sha256 = uploaded_files["cover_letter"]
+            self.metrics["click_count"] += 1
+            self.metrics["uploaded_cv_at_submit"] = cv_filename
+            self.metrics["uploaded_cover_at_submit"] = cover_filename
+            self.metrics["uploaded_cv_sha256_at_submit"] = cv_sha256
+            self.metrics["uploaded_cover_sha256_at_submit"] = cover_sha256
             self._send_json({"ok": True})
         elif self.path == "/confirm":
             self.metrics["confirmation_count"] += 1
@@ -135,11 +202,14 @@ def _start_fixture_server(
     )
     _MetricsHandler.metrics = {
         "click_count": 0,
+        "submit_request_count": 0,
         "confirmation_count": 0,
         "cv_filename": "",
         "cover_filename": "",
         "uploaded_cv_at_submit": "",
         "uploaded_cover_at_submit": "",
+        "uploaded_cv_sha256_at_submit": "",
+        "uploaded_cover_sha256_at_submit": "",
     }
     _MetricsHandler.upload_log = []
 
@@ -221,8 +291,10 @@ def main() -> int:
     cover_path.write_bytes(b"%PDF-1.4 test cover " + str(fixture_port).encode())
 
     # Pre-compute SHA-256 hashes for verification.
-    _cv_hash = hashlib.sha256(cv_path.read_bytes()).hexdigest()[:32]
-    _cover_hash = hashlib.sha256(cover_path.read_bytes()).hexdigest()[:32]
+    _cv_sha256 = hashlib.sha256(cv_path.read_bytes()).hexdigest()
+    _cover_sha256 = hashlib.sha256(cover_path.read_bytes()).hexdigest()
+    _cv_hash = _cv_sha256[:32]
+    _cover_hash = _cover_sha256[:32]
 
     # ── Build the UAA app ──────────────────────────────────────────────
     from universal_auto_applier.config import Settings
@@ -327,12 +399,22 @@ def main() -> int:
     # deterministic pass without recursion.
     import universal_auto_applier.form_engine.live_executor as _le_mod
     import universal_auto_applier.submission.execution_service as _es_mod
+    from universal_auto_applier.form_engine.live_executor import NativeFinalSubmitUploadContract
 
     _LLM_QA = _ConditionalMockQA()
+    _FIXTURE_NATIVE_UPLOAD_CONTRACTS = (
+        NativeFinalSubmitUploadContract(file_input_selector="#cv_upload"),
+        NativeFinalSubmitUploadContract(file_input_selector="#cover_letter"),
+    )
 
     def _patched_execute(page, candidate, job):  # type: ignore[no-untyped-def]
         # 1. Deterministic fill (original, no recursion).
-        execution = _le_mod.execute_live_form(page, candidate, job)
+        execution = _le_mod.execute_live_form(
+            page,
+            candidate,
+            job,
+            native_upload_contracts=_FIXTURE_NATIVE_UPLOAD_CONTRACTS,
+        )
 
         # 2. Re-extract live fields for LLM processing.
         targets = _le_mod._extract_live_fields(page)
@@ -477,14 +559,21 @@ def main() -> int:
     def get_harness_metrics() -> dict:
         return {
             "click_count": _MetricsHandler.metrics["click_count"],
+            "submit_request_count": _MetricsHandler.metrics["submit_request_count"],
             "cv_hash": _cv_hash,
             "cover_hash": _cover_hash,
+            "cv_sha256": _cv_sha256,
+            "cover_sha256": _cover_sha256,
             "cv_path": str(cv_path),
             "cover_path": str(cover_path),
             "cv_filename": _MetricsHandler.metrics["cv_filename"],
             "cover_filename": _MetricsHandler.metrics["cover_filename"],
             "uploaded_cv_at_submit": _MetricsHandler.metrics["uploaded_cv_at_submit"],
             "uploaded_cover_at_submit": _MetricsHandler.metrics["uploaded_cover_at_submit"],
+            "uploaded_cv_sha256_at_submit": _MetricsHandler.metrics["uploaded_cv_sha256_at_submit"],
+            "uploaded_cover_sha256_at_submit": _MetricsHandler.metrics[
+                "uploaded_cover_sha256_at_submit"
+            ],
             "upload_log": _MetricsHandler.upload_log,
             "fixture_url": job_url,
         }
