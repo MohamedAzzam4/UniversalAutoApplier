@@ -111,8 +111,8 @@ def test_wq8_phase_a_installs_interlock_before_navigation(
     )
     runner = LiveBrowserRunner(config)
     # The pytest-playwright plugin owns the main thread's Playwright lifecycle.
-    # Run this one public `run()` check on a worker thread to verify its
-    # internally owned browser/context without colliding with that manager.
+    # Preserve public `run()` coverage by checking its internally owned
+    # browser/context on a worker thread, outside the plugin's active manager.
     with ThreadPoolExecutor(max_workers=1) as executor:
         report = executor.submit(runner.run, job, real_candidate).result(timeout=60)
     assert report.submit_interlock is not None
@@ -172,6 +172,8 @@ def test_wq8_phase_a_blocks_form_submit_and_request_submit(
     report = runner.run_in_context(
         context, job, candidate=real_candidate, artifact_dir=tmp_path / "artifacts3"
     )
+
+    # Exercise submit APIs against the page the runner actually interlocked.
     page = context.pages[-1]
     page.evaluate("document.getElementById('real-form').submit()")
     page.evaluate("document.getElementById('real-form').requestSubmit()")

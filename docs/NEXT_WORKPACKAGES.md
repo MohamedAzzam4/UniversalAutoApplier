@@ -42,7 +42,7 @@ archived, and no live mutation or real submission occurred. The first real
 form family remains an explicit owner decision until an approved queue target
 is available.
 
-### V2-01 — Immediate correctness blockers (checkpointed at `8ed966d7`; V2-02 is active)
+### V2-01 — Immediate correctness blockers (checkpointed at `15beda81fd12542808e49a62bb523932b683a0b4`; V2-02 is active)
 
 **Objective.** Correct unsupported fact assertions, missing field read-back,
 destructive re-import of UAA operational state, inconsistent duplicate gates,
@@ -104,8 +104,8 @@ into the submission snapshot. Deterministic and LLM mismatch cases plus a
 compatible email-normalization case passed in the focused 13-test Playwright
 executor module. The full non-Playwright selection passed 1,479 tests; the
 shared working tree also contained the parallel F4 changes now under review.
-Ruff, Pyright and `git diff --check` passed. The combined Playwright-inclusive
-gate remains unverified; upload evidence is deferred to F2b.
+Ruff, Pyright and `git diff --check` passed. The later full browser-inclusive
+gate completed with the F2b browser-gate follow-up; see its results below.
 
 **F4/T10 checkpointed.** Commit `cb0ceba0bf38206ceb4609e13019b5a6660598f9`
 adds the interim re-import metadata allowlist in `persistence/job_repository.py`
@@ -136,15 +136,17 @@ tests**; the API candidate-profile, background-worker and orchestrator
 regressions passed **43 tests** after the pipeline counter fix; Ruff check,
 Ruff format check, Pyright and `git diff --check` passed; and the full default
 non-live/non-Playwright gate passed **1,481 tests** with **303 deselected** in
-832.35 seconds. A bare browser-inclusive `pytest -x -vv` run stopped at the
-separate stale dashboard header assertion (`Documents` expected versus
-`DOCUMENTS` rendered) after **385 passed**; the full Playwright-inclusive
-suite is not claimed green. The broad non-Playwright result includes the
+832.35 seconds. An early browser-inclusive run stopped at the stale dashboard
+header assertion (`Documents` expected versus `DOCUMENTS` rendered) after
+**385 passed**. The assertion was corrected in the V2-01 browser-gate follow-
+up; the completed full browser-inclusive result is recorded below. The broad
+non-Playwright result includes the
 parallel F2b source changes present in the shared working tree; the F4/T06
 focused tests isolate that package. No real target or submission was in scope.
 
-**F2b/T04/T19 upload evidence integration (checkpointed at
-`8ed966d7e9a1c775a268ea2b1f9262d5dda57cd2`).** Live file execution
+**F2b/T04/T19 upload evidence integration (implementation checkpointed at
+`8ed966d7e9a1c775a268ea2b1f9262d5dda57cd2`; browser-gate follow-up
+checkpointed at `15beda81fd12542808e49a62bb523932b683a0b4`).** Live file execution
 preserves per-document selected filenames, observed constraints and evidence
 source/detail. A native `selection_verified` record without an explicit
 native-final-submit flow contract remains visible but unresolved; an explicit
@@ -157,29 +159,36 @@ approval and coordinator gates block every unresolved or legacy-unobserved
 document. WQ-8 review-plan hashing binds status, flow contract and evidence,
 while legacy documents keep their prior plan encoding until re-observed.
 
-F2b validation passed: focused API, WQ-8 authorization/coordinator, snapshot
-safety, bundle, live-executor and WQ-8 persistence tests — **133 passed** in
-165.52 seconds; the WQ-7C synthetic-mutation Playwright module passed **9/9**
-in 39.69 seconds; the ordered Playwright lifecycle reproduction passed **3/3**
-in 5.64 seconds; and
-the full non-live/non-Playwright gate passed **1,502 tests, 309 deselected** in
-787.59 seconds. Ruff check and format check passed (**239 files already
+F2b focused validation passed: live-review API, WQ-8 authorization/coordinator,
+snapshot safety, bundle, live-executor and WQ-8 persistence tests — **133
+passed in 165.52 seconds**; the WQ-7C synthetic-mutation Playwright module
+passed **9/9 in 39.69 seconds**; the ordered Playwright lifecycle reproduction
+passed **3/3 in 5.64 seconds**; and the non-Playwright regression gate passed
+**1,502 tests, 309 deselected in 787.59 seconds**. The browser-gate follow-up
+passed the complete browser-inclusive non-live gate: **1,808 passed, 3
+deselected in 1,616.60 seconds**. Ordered lifecycle checks passed dashboard/
+WQ-7B/WQ-7C/WQ-8 **33 tests**, WQ-7C/WQ-8 **14**, and dashboard plus WQ-8
+form-heuristic tests **9**. Ruff check and format passed (**239 files already
 formatted**); Pyright reported **0 errors, 0 warnings, 0 informations**; and
-staged/unstaged `git diff --check` passed. The complete Playwright-inclusive
-suite was not rerun; the Phase 6 dashboard header test update is separate and
-excluded from this package. No new ATS protocol is enabled by default, and no
-real ATS action or submission occurred.
+`git diff --check` passed. No ATS flow was newly qualified and no real action
+or submission occurred.
 
-**Checkpoint result.** The implementation and handoff were preserved on
-`checkpoint/v2-01-correctness` at the SHA above. V2-01 is complete;
-the full Playwright-inclusive suite and separate dashboard header regression
-remain outside that checkpoint's validation claim.
+The synthetic final-pipeline regression sends actual CV and cover-letter bytes
+to the local test server under test-owned upload contracts. It proves no
+submit request before approval, checks full SHA-256 hashes after approval,
+and verifies the duplicate guard blocks another request. Browser tests use
+pytest-playwright-owned contexts; the public `LiveBrowserRunner.run()` remains
+covered from a worker thread.
+
+**Checkpoint result.** F2b and its browser-gate follow-up are preserved on
+`checkpoint/v2-01-correctness` at the SHA above. V2-01 is complete; V2-02 is
+active below.
 
 **Predecessor.** V2-00 baseline checkpoint `0e21adb43b400dd90a91a3ba754269e1a061375e`.
 Owner approval is separately required for any real target/live action under
 the existing WQ-8 contract; no code review gate blocks this synthetic work.
 
-### V2-02 — One executor (active; preparation HTTP interlock slice in review)
+### V2-02 — One executor (active; preparation HTTP interlock checkpointed, combined browser gate green; supervisor review pending)
 
 **Objective.** Route CLI, dashboard worker, supervisor preparation and snapshot
 observation through one multi-step state machine; remove duplicated readiness
@@ -260,13 +269,33 @@ passed **18 tests in 66.54 seconds**; exact WQ-7C → WQ-8 passed **14 tests in
 54.67 seconds**. The representative plugin-page → safety fixture → WQ-7C →
 WQ-8 sequence passed **41 tests in 120.31 seconds**. The broader runner/request-
 interlock/WQ-7/WQ-8 selection passed **106 tests in 118.07 seconds**. Focused
-unit coverage passed **9 tests in 0.86 seconds**, and the full
+unit coverage passed **9 tests in 0.86 seconds**, and the V2-02 source
 non-live/non-Playwright gate passed **1,511 tests, 313 deselected in 795.80
-seconds**. Ruff check and format passed (**242 files already formatted**);
-Pyright reported **0 errors, 0 warnings, 0 informations**; `git diff --check`
-is run again before review. No real ATS target or submission was used.
+seconds**. After merging the V2-01 browser-gate package, the conflict-area
+WQ-7C/WQ-8/final-pipeline selection passed **42 tests in 107.96 seconds** and
+the full browser-inclusive non-live gate passed **1,821 tests, 3 deselected in
+1,693.04 seconds (28:13)**. Ruff check and format passed (**242 files already
+formatted**); Pyright reported **0 errors, 0 warnings, 0 informations** (the
+isolated worktree has no local `.venv`, so Pyright used the installed main
+workspace executable); staged and unstaged diff checks pass. No real ATS target
+or submission was used. Supervisor review of the combined staged diff is
+pending before a merge commit.
 
-**Predecessor.** V2-01 checkpoint `8ed966d7e9a1c775a268ea2b1f9262d5dda57cd2`.
+**Predecessor.** V2-01 checkpoint `15beda81fd12542808e49a62bb523932b683a0b4`.
+
+**Separate deferred page-observer finding.** During the V2-01 synthetic final-
+pipeline E2E, the static `observe_html` path in
+`navigator/page_observer.py` included inline script source in the text used by
+`_detect_page_state`. Harmless code containing `new Error(...)` therefore
+triggered its error-page state, which static orchestration / `safe_explorer`
+can surface as an error or unknown-page result. This is separate from live
+`analyze_page`, which reads rendered body text. The E2E fixture was made
+neutral so it could exercise upload and approval behavior. In a later
+classifier slice, exclude non-rendered `script` and `style` source from the
+page-state text while preserving visible error, login, CAPTCHA and
+unknown-layout blockers. Add regressions for harmless `new Error(...)` source,
+real visible error pages, and unchanged login/CAPTCHA detection. Do not weaken
+unknown-page or blocker safety, or special-case fixture URLs.
 
 ### V2-07A — Dashboard interaction design (separate follow-up)
 

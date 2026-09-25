@@ -218,6 +218,10 @@ class TestFinalCompletePipeline:
             assert pipe1["jobs_total"] == 1
             assert pipe1["jobs_completed"] == 1
 
+            step2_job_response = client.get(f"/api/queue/{app_id}")
+            assert step2_job_response.status_code == 200
+            assert step2_job_response.json()["status"] == "needs_user_input"
+
             # Intervention created
             resp = client.get(
                 "/api/interventions",
@@ -233,7 +237,9 @@ class TestFinalCompletePipeline:
                 if "linkedin" in q or "linkedin_url" in q:
                     linkedin_int = inv
                     break
-            assert linkedin_int is not None, "LinkedIn URL intervention not found"
+            assert linkedin_int is not None, (
+                f"LinkedIn URL intervention not found: {int_list['interventions']!r}"
+            )
             linkedin_int_id = linkedin_int["intervention_id"]
 
             # Job is NEEDS_USER_INPUT
@@ -250,6 +256,7 @@ class TestFinalCompletePipeline:
             # Fixture click count is zero
             metrics = server.get_metrics()
             assert metrics["click_count"] == 0
+            assert metrics["submit_request_count"] == 0
 
             # ================================================================
             # 3. Resolve intervention through public API
@@ -350,6 +357,7 @@ class TestFinalCompletePipeline:
             # Snapshot is complete
             assert snapshot["is_complete"]
             assert snapshot["pending_intervention_count"] == 0
+            assert snapshot["unresolved_upload_count"] == 0
 
             # Submit control detected
             assert snapshot["submit_control"] is not None
@@ -405,6 +413,9 @@ class TestFinalCompletePipeline:
             assert metrics["click_count"] == 0, (
                 f"click_count must stay 0 before confirm, got {metrics['click_count']}"
             )
+            assert metrics["submit_request_count"] == 0, (
+                "The fixture must receive no final request before approval"
+            )
 
             # ================================================================
             # 7. Document filename and hash verification AND browser file upload proof
@@ -428,6 +439,9 @@ class TestFinalCompletePipeline:
             )
             assert cv_doc["exists"]
             assert cv_doc["readable"]
+            assert cv_doc["status"] == "selection_verified"
+            assert cv_doc["upload_contract"] == "native_final_submit"
+            assert cv_doc["evidence_source"] == "native_selection"
 
             assert cover_doc is not None, "Cover letter not found in snapshot"
             assert cover_doc["filename"] == "cover.pdf", (
@@ -438,6 +452,9 @@ class TestFinalCompletePipeline:
             )
             assert cover_doc["exists"]
             assert cover_doc["readable"]
+            assert cover_doc["status"] == "selection_verified"
+            assert cover_doc["upload_contract"] == "native_final_submit"
+            assert cover_doc["evidence_source"] == "native_selection"
 
             # Browser file input proof: the real browser file inputs received
             # the correct filenames via Playwright's setInputFiles.  The
@@ -535,6 +552,9 @@ class TestFinalCompletePipeline:
             stale_submit = resp.json()
             assert not stale_submit["clicked"]
             assert stale_submit["state"] == "submission_not_allowed"
+            assert server.get_metrics()["submit_request_count"] == 0, (
+                "The fixture must receive no final request for a stale approval"
+            )
 
             # New snapshot needs high-risk confirmation again
             assert new_snapshot["unconfirmed_high_risk_count"] > 0
@@ -594,17 +614,20 @@ class TestFinalCompletePipeline:
             # Fixture received exactly one click
             metrics = server.get_metrics()
             assert metrics["click_count"] == 1
+            assert metrics["submit_request_count"] == 1
 
-            # Submit-time file upload proof: the fixture's submit handler
-            # inspected the real file inputs and reported their filenames.
+            # The final multipart request carried both files; the fixture
+            # hashes the received bytes to verify their exact contents.
             assert metrics.get("uploaded_cv_at_submit") == "cv.pdf", (
                 f"Submit-time CV filename: expected cv.pdf, "
                 f"got {metrics.get('uploaded_cv_at_submit')!r}"
             )
+            assert metrics.get("uploaded_cv_sha256_at_submit") == metrics["cv_sha256"]
             assert metrics.get("uploaded_cover_at_submit") == "cover.pdf", (
                 f"Submit-time cover-letter filename: expected cover.pdf, "
                 f"got {metrics.get('uploaded_cover_at_submit')!r}"
             )
+            assert metrics.get("uploaded_cover_sha256_at_submit") == metrics["cover_sha256"]
             # Document hashes in snapshot still match the actual files.
             assert cv_doc["content_hash"] == metrics["cv_hash"], (
                 f"CV hash mismatch after submit: {cv_doc['content_hash']} vs {metrics['cv_hash']}"
@@ -661,13 +684,12 @@ class TestFinalCompletePipeline:
             assert resp.status_code == 200
             dup = resp.json()
             assert not dup["clicked"], f"Duplicate must be blocked, state: {dup['state']}"
-            assert dup["state"] == "submission_not_allowed", (
-                f"Expected blocked state, got {dup['state']}"
-            )
+            assert dup["state"] == "already_submitted"
 
             # Fixture still has exactly one click
             metrics = server.get_metrics()
             assert metrics["click_count"] == 1
+            assert metrics["submit_request_count"] == 1
 
             # Still only 2 SubmissionResults (stale attempt + success; duplicate did not add one)
             resp = client.get(

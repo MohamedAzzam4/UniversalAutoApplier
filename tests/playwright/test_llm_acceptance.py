@@ -256,12 +256,15 @@ class TestConditionalQuestion:
         failed = [f for f in report.fields if f.status == "failed"]
         assert failed == [], f"No field should be 'failed', got: {failed}"
 
-        # Exact pending count is 1.
+        # The typed Docker question and unqualified native CV selection both
+        # remain unresolved. The Docker intervention is identified by its
+        # stable token, not by relying on a global intervention count.
         pending = [f for f in report.fields if f.status == "intervention_needed"]
-        assert len(pending) == 1, (
-            f"Expected exactly 1 intervention_needed, got {len(pending)}: "
-            f"{[(f.label, f.status) for f in report.fields]}"
-        )
+        resume = next(f for f in pending if f.label == "Resume / CV")
+        assert resume.source == "document_path"
+        pending_by_token = {f.field_token: f for f in pending}
+        assert set(pending_by_token) == {child.field_token, resume.field_token}
+        assert pending_by_token[child.field_token].label == "How many years of Docker experience?"
 
         # Exact final status.
         assert report.status == "needs_user_input"
@@ -368,12 +371,12 @@ class TestMultiStepForm:
 # ---------------------------------------------------------------------------
 
 
-class TestCompleteResume:
-    def test_full_resume_lifecycle(
+class TestResumeUploadReadinessGate:
+    def test_unqualified_cv_stays_pending_after_salary_resolution(
         self, context: BrowserContext, fixture_server: str, tmp_path: Path
     ) -> None:
-        """First run → 1 intervention → approve+remember → retry → review_ready.
-        No duplicate intervention. Submitted=false.
+        """Resolve salary while keeping an unqualified CV upload gated.
+        Retry stays blocked until upload evidence is qualified. Submitted=false.
         """
         from universal_auto_applier.cli import _persist_interventions
         from universal_auto_applier.core.statuses import InterventionStatus
@@ -427,83 +430,88 @@ class TestCompleteResume:
         settings.data_dir.mkdir(parents=True, exist_ok=True)
         apply_migrations(build_engine_url(settings.data_dir / "uaa.sqlite"))
         engine = make_engine(build_engine_url(settings.data_dir / "uaa.sqlite"))
-        sf = make_session_factory(engine)
-        with session_scope(sf) as session:
-            upsert_application_job(session, job_no_salary)
-        engine.dispose()
+        try:
+            sf = make_session_factory(engine)
+            with session_scope(sf) as session:
+                upsert_application_job(session, job_no_salary)
+        finally:
+            engine.dispose()
         _persist_interventions(settings, job_no_salary.application_id, report1)
 
         # Set job to needs_user_input.
         engine_post = make_engine(build_engine_url(settings.data_dir / "uaa.sqlite"))
-        sf_post = make_session_factory(engine_post)
-        with session_scope(sf_post) as session:
-            row = session.get(ApplicationJobRow, job_no_salary.application_id)
-            if row is not None:
-                row.status = str(ApplicationStatus.NEEDS_USER_INPUT)
-                session.commit()
-        engine_post.dispose()
+        try:
+            sf_post = make_session_factory(engine_post)
+            with session_scope(sf_post) as session:
+                row = session.get(ApplicationJobRow, job_no_salary.application_id)
+                if row is not None:
+                    row.status = str(ApplicationStatus.NEEDS_USER_INPUT)
+                    session.commit()
+        finally:
+            engine_post.dispose()
 
-        # Verify exactly 1 intervention.
+        # The salary question and unqualified CV selection both need review.
         engine2 = make_engine(build_engine_url(settings.data_dir / "uaa.sqlite"))
-        sf2 = make_session_factory(engine2)
-        with session_scope(sf2) as session:
-            ivs = list_pending_interventions(session, job_no_salary.application_id)
-        assert len(ivs) == 1
-        assert "salary" in ivs[0].question.lower()
+        try:
+            sf2 = make_session_factory(engine2)
+            with session_scope(sf2) as session:
+                ivs = list_pending_interventions(session, job_no_salary.application_id)
+            assert len(ivs) == 2
+            salary_iv = next(iv for iv in ivs if "salary" in iv.question.lower())
+            resume_iv = next(iv for iv in ivs if iv.question == "Resume / CV")
+            assert salary_iv.intervention_id
+            assert resume_iv.intervention_id
 
-        # Approve + remember.
-        with session_scope(sf2) as session:
-            resolve_intervention(
-                session,
-                ivs[0].intervention_id,
-                resolution=InterventionStatus.APPROVED,
-                answer="50000",
+            # Approve + remember the salary answer only.
+            with session_scope(sf2) as session:
+                resolve_intervention(
+                    session,
+                    salary_iv.intervention_id,
+                    resolution=InterventionStatus.APPROVED,
+                    answer="50000",
+                )
+                store_answer(
+                    session,
+                    question="What is your salary expectation?",
+                    answer="50000",
+                    source="user_confirmed",
+                )
+                session.commit()
+
+            # Answer memory saved.
+            with session_scope(sf2) as session:
+                memory = retrieve_answer(session, "What is your salary expectation?")
+            assert memory is not None
+            assert memory.answer == "50000"
+
+            # Resolving salary leaves the CV upload gate pending.
+            with session_scope(sf2) as session:
+                pending = list_pending_interventions(session, job_no_salary.application_id)
+            assert [iv.question for iv in pending] == ["Resume / CV"]
+
+            # Retry must remain blocked until the upload flow is qualified.
+            app = create_app(settings=settings)
+            with TestClient(app) as client:
+                Base.metadata.create_all(app.state.engine)
+                response = client.post(f"/api/queue/{job_no_salary.application_id}/retry")
+            assert response.status_code == 409
+            assert response.json()["detail"] == (
+                "Cannot retry: 1 pending intervention(s) must be resolved first"
             )
-            store_answer(
-                session,
-                question="What is your salary expectation?",
-                answer="50000",
-                source="user_confirmed",
-            )
-            session.commit()
 
-        # Answer memory saved.
-        with session_scope(sf2) as session:
-            memory = retrieve_answer(session, "What is your salary expectation?")
-        assert memory is not None
-        assert memory.answer == "50000"
-
-        # 0 pending.
-        with session_scope(sf2) as session:
-            pending = list_pending_interventions(session, job_no_salary.application_id)
-        assert len(pending) == 0
-
-        # Retry API succeeds.
-        app = create_app(settings=settings)
-        with TestClient(app) as client:
-            Base.metadata.create_all(app.state.engine)
-            response = client.post(f"/api/queue/{job_no_salary.application_id}/retry")
-            assert response.status_code == 200
-
-        # Second run.
-        report2 = runner.run_in_context(
-            context,
-            job_full,
-            candidate=_make_candidate(),
-            artifact_dir=tmp_path / "run-resume-2",
-        )
-        assert report2.status == "review_ready"
-        assert report2.submitted is False
-
-        # 0 unresolved.
-        unresolved = [f for f in report2.fields if f.status == "intervention_needed"]
-        assert len(unresolved) == 0
-
-        # 1 total intervention (no duplicate).
-        with session_scope(sf2) as session:
-            all_ivs = list_all_interventions(session, job_no_salary.application_id)
-        assert len(all_ivs) == 1
-        engine2.dispose()
+            # The rejected retry leaves the job state and both intervention
+            # records unchanged: salary is approved, CV remains pending.
+            with session_scope(sf2) as session:
+                reloaded = get_application_job(session, job_no_salary.application_id)
+                all_ivs = list_all_interventions(session, job_no_salary.application_id)
+            assert reloaded is not None
+            assert reloaded.status == ApplicationStatus.NEEDS_USER_INPUT
+            assert len(all_ivs) == 2
+            statuses_by_id = {iv.intervention_id: iv.status for iv in all_ivs}
+            assert statuses_by_id[salary_iv.intervention_id] == InterventionStatus.APPROVED
+            assert statuses_by_id[resume_iv.intervention_id] == InterventionStatus.PENDING
+        finally:
+            engine2.dispose()
 
 
 # ---------------------------------------------------------------------------

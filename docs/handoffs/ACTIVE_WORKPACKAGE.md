@@ -2,11 +2,11 @@
 
 - **Repository:** `MohamedAzzam4/UniversalAutoApplier`.
 - **WP ID / objective:** V2-02 safety-first slice — make the preparation runner's submit block mandatory; install a default-deny HTTP method guard before pages or target navigation; preserve the separately authorized controlled-submission service.
-- **Status:** **SUPERVISOR REVIEW APPROVED; CHECKPOINT COMMIT/PUSH NEXT.**
+- **Status:** **V2-02 CHECKPOINT PUSHED; V2-01 BROWSER GATE MERGED LOCALLY; COMBINED VALIDATION GREEN; SUPERVISOR REVIEW PENDING.**
 - **Branch:** `checkpoint/v2-02-safety`.
 - **Base SHA:** `8ed966d7e9a1c775a268ea2b1f9262d5dda57cd2` (V2-01 checkpoint).
-- **Last completed/checkpoint SHA:** `8ed966d7e9a1c775a268ea2b1f9262d5dda57cd2` (last predecessor checkpoint; this workpackage commit SHA must be resolved dynamically after push and is intentionally not embedded here).
-- **Last successful V2-02 checkpoint time:** none yet. Inherited base commit time: `2026-09-24T23:52:00+02:00`.
+- **Last completed/checkpoint SHA:** `6ba4a551f1d22f0f4a656394529d90c095e63a55` (pushed V2-02 safety checkpoint; resolve the current merge head dynamically after review).
+- **Last successful V2-02 checkpoint time:** `2026-09-25T03:06:03+02:00`.
 - **Branch-head verification (required after review and checkpoint push):**
 
   ```text
@@ -15,7 +15,7 @@
   git rev-parse origin/checkpoint/v2-02-safety
   ```
 
-  Before the initial push, the origin ref may not exist; the earlier dry-run verified authentication but did not create it. The staged diff is approved. Commit and push this checkpoint, then verify the two resolved SHAs match. Never embed this file's own commit SHA as current HEAD.
+  The V2-02 checkpoint is already pushed. The V2-01 browser-gate merge passed combined validation in this worktree; keep it uncommitted until the supervisor reviews the staged diff. Never embed this file's own commit SHA as current HEAD.
 
 ## Completed work
 
@@ -30,6 +30,8 @@
 - CLI regressions prove both attachable-session launch and browser-session/CDP execution are rejected before Playwright launches/connects or a browser profile is created; safe resume of the same authenticated tab is a V2-04 follow-up.
 - The WQ-7 production-safety fixture's delayed `setTimeout(form.submit())` vector is now opt-in and enabled only by its dedicated test. This narrow test-only fix was ported from the main-workspace browser-gate package; the delayed-submit assertion remains intact, and unrelated safe-Continue tests no longer race against the timer.
 - WQ-7C and most WQ-8 Phase A fixture tests reuse pytest-playwright's context fixture. One public `LiveBrowserRunner.run` proof runs in a bounded worker thread, avoiding a second sync manager on pytest's event-loop thread while preserving internally owned-context coverage.
+
+- The reviewed V2-01 browser-gate checkpoint `15beda81fd12542808e49a62bb523932b683a0b4` is merged into this uncommitted validation tree. It adds multipart upload evidence and duplicate-submit assertions, answer-memory/retry checks, the case-insensitive dashboard header assertion, and pytest-playwright fixture-lifecycle coverage. The WQ-8 interlock test preserves V2-02's required submit/request guards even when `wq8_phase_a=False`, and exercises `form.submit()` and `requestSubmit()` against the runner-created interlocked page.
 
 ## Explicit unresolved P1 — observation/fill path outside this guard
 
@@ -57,6 +59,12 @@ separate design and review.
 - `tests/playwright/test_wq7_production_safety.py`
 - `tests/playwright/test_wq7c_synthetic_mutation.py`
 - `tests/playwright/test_wq8_phase_a_interlock.py`
+- `tests/fixtures/live_browser/final_pipeline_apply.html`
+- `tests/harness/final_pipeline_server.py`
+- `tests/playwright/test_final_pipeline.py`
+- `tests/playwright/test_llm_acceptance.py`
+- `tests/playwright/test_phase6_dashboard.py`
+- `tests/unit/test_wq8_form_heuristic.py`
 - `tests/unit/test_preparation_request_interlock.py`
 - `tests/unit/test_cli_llm_wiring.py`
 - `tests/unit/test_wq7_live_dry_run_platforms.py`
@@ -72,6 +80,8 @@ separate design and review.
 - `ruff check src tests migrations` passed. `ruff format --check src tests migrations` passed (**242 files already formatted**).
 - `pyright`: **0 errors, 0 warnings, 0 informations**. It noted no `.venv` under the isolated worktree path configured in `pyproject.toml`; it used the main workspace's installed venv executable. The diagnostic did not affect type-check results.
 - `git diff --cached --check` and `git diff --check` both pass for the staged review package. No Playwright-specific MCP is exposed in the enabled tool catalog; local synthetic browser tests verify the request guard at 1440×900 and 390×844. No dashboard UI changed. No live tests, ATS targets, or real submissions have been run.
+- Before reconciliation, the V2-01 source branch passed the full browser-inclusive non-live gate: **1,808 passed, 3 deselected in 1,616.60 seconds**. The combined V2-01 + V2-02 browser-inclusive non-live gate passed: **1,821 passed, 3 deselected in 1,693.04 seconds (28:13)**. The conflict-area WQ-7C/WQ-8/final-pipeline selection passed **42 tests in 107.96 seconds**.
+- On the combined tree, `ruff check src tests migrations` passed; `ruff format --check src tests migrations` passed (**242 files already formatted**); Pyright reported **0 errors, 0 warnings, 0 informations** (with only the existing notice that the isolated worktree has no local `.venv`). `git diff --cached --check` and `git diff --check` pass. No live tests, ATS targets, or real submissions were run.
 
 ## Decisions and limits
 
@@ -81,24 +91,15 @@ separate design and review.
 - Existing `--browser-session-file` / `--cdp-endpoint` preparation is temporarily unavailable. The old CLI selected an existing browser page before entering a caller-owned context, and the safety guard correctly refuses that context. The CLI now fails early with a next action; implement verified same-tab resume and ownership in V2-04 before restoring this capability.
 - Existing WQ-8 authorization/hash/claim gates and `submission/execution_service.py` were not changed. Preparation remains separate from owner-approved controlled submission.
 - Report/UI follow-up: `submitted=false` means UAA did not confirm a submission; when `request_outcome_unknown=true`, remote non-submission is not established. Any dashboard or report consumer must show the unknown/reconciliation state separately, not present `submitted=false` as proof of no remote application.
+- Separate deferred observer finding: the static `observe_html` path in `navigator/page_observer.py` collects inline script/style source in `_DomExtractor._all_text_parts`; `_detect_page_state` can then treat harmless `new Error(...)` source as an error-page signal, which static orchestration / `safe_explorer` may surface as error/unknown-page. This is distinct from live `analyze_page`. The later fix should exclude non-rendered source text while preserving visible error, login and CAPTCHA signals; see `docs/NEXT_WORKPACKAGES.md`.
 
 ## Blockers / risks
 
-- Supervisor approved the staged diff. The immediate action is to commit and push this checkpoint; do not merge it into `main`.
+- The V2-02 checkpoint is pushed. The V2-01 browser-gate merge is uncommitted and all targeted, browser-inclusive, static and diff checks are green. Supervisor review of the staged combined diff remains pending; do not commit before review.
 - The known transport coverage limits above remain. An abort failure is escalated as unknown remote outcome and blocks automatic retry; no live target behavior was tested.
 
 ## Exact next action
 
-Commit and push the approved staged package, then fetch and compare the dynamic local and remote checkpoint SHAs. The exact commands are:
+Review the staged nine-path combined diff and the recorded green results. If approved, create one merge commit on `checkpoint/v2-02-safety`, push it, fetch origin, and verify local `HEAD` equals `origin/checkpoint/v2-02-safety`. Do not merge into `main` or start shared-executor implementation yet; no real ATS action or submission is permitted.
 
-```text
-git commit -m "fix(v2-02): block mutating preparation requests"
-git push -u origin checkpoint/v2-02-safety
-git fetch origin
-git rev-parse HEAD
-git rev-parse origin/checkpoint/v2-02-safety
-```
-
-After the checkpoint is verified on origin, reconcile with the separately reviewed V2-01 browser-gate package on `checkpoint/v2-01-correctness` when the supervisor directs the integration step. Do not merge into `main` or start shared-executor implementation yet.
-
-- **Last updated:** 2026-09-25T01:05:21Z.
+- **Last updated:** 2026-09-25T02:37:22Z.
