@@ -8,6 +8,8 @@ method. Evidence deliberately omits paths, query strings, headers, and bodies.
 from __future__ import annotations
 
 import logging
+import threading
+import time
 from typing import Any, cast
 from urllib.parse import urlsplit
 
@@ -63,6 +65,8 @@ class PreparationRequestInterlock:
         self._service_worker_seen = False
         self._attached_page_ids: set[int] = set()
         self._cdp_sessions: list[CDPSession] = []
+        self._route_handler_condition = threading.Condition()
+        self._active_route_handlers = 0
 
     def install(self) -> None:
         """Install service-worker and network guards before any page is made."""
@@ -160,7 +164,53 @@ class PreparationRequestInterlock:
         self._service_worker_seen = True
         self.setup_error = "unexpected_service_worker"
 
+    def wait_for_routes_to_settle(
+        self, *, timeout_seconds: float = 1.0, quiet_period_seconds: float = 0.05
+    ) -> bool:
+        """Wait until route callbacks finish so late abort failures win classification."""
+        deadline = time.monotonic() + timeout_seconds
+        quiet_since: float | None = None
+        while True:
+            now = time.monotonic()
+            with self._route_handler_condition:
+                active_handlers = self._active_route_handlers
+            if active_handlers == 0:
+                quiet_since = quiet_since or now
+                quiet_remaining = quiet_period_seconds - (now - quiet_since)
+                if quiet_remaining <= 0:
+                    return True
+            else:
+                quiet_since = None
+                quiet_remaining = timeout_seconds
+            remaining = deadline - now
+            if remaining <= 0:
+                self.setup_error = self.setup_error or "request_outcome_unknown"
+                return False
+            pump_seconds = min(0.01, remaining, max(quiet_remaining, 0.001))
+            try:
+                pages = self._context.pages
+                if pages:
+                    # A sync Playwright wait pumps protocol events while the
+                    # route callback completes; blocking on the condition here
+                    # would prevent an in-flight abort from returning.
+                    pages[-1].wait_for_timeout(max(1, int(pump_seconds * 1000)))
+                else:
+                    time.sleep(pump_seconds)
+            except Exception:  # noqa: BLE001
+                time.sleep(pump_seconds)
+
     def _handle_route(self, route: Route) -> None:
+        """Track callback completion around request policy handling."""
+        with self._route_handler_condition:
+            self._active_route_handlers += 1
+        try:
+            self._handle_route_inner(route)
+        finally:
+            with self._route_handler_condition:
+                self._active_route_handlers -= 1
+                self._route_handler_condition.notify_all()
+
+    def _handle_route_inner(self, route: Route) -> None:
         """Continue read-only requests; abort every mutating/unknown request."""
         try:
             request = route.request

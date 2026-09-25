@@ -279,6 +279,8 @@ class TestAllInterventionKinds:
             InterventionKind.MISSING_DOCUMENT,
             InterventionKind.VALIDATION_ERROR,
             InterventionKind.MANUAL_UPLOAD_REQUIRED,
+            InterventionKind.PREPARATION_HTTP_MUTATION_BLOCKED,
+            InterventionKind.HTTP_REQUEST_OUTCOME_UNKNOWN,
         ],
     )
     def test_create_each_kind(self, session_factory, kind: InterventionKind) -> None:

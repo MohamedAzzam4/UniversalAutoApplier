@@ -19,6 +19,8 @@ Call paths:
 from __future__ import annotations
 
 import logging
+import threading
+import uuid
 from pathlib import Path
 from typing import Any, Protocol, cast
 
@@ -28,8 +30,12 @@ from universal_auto_applier.candidate_profile_loader import resolve_candidate_pr
 from universal_auto_applier.config import Settings
 from universal_auto_applier.core.eligibility import repeat_processing_block_reason
 from universal_auto_applier.core.models import ApplicationJob
+from universal_auto_applier.core.statuses import InterventionKind
 from universal_auto_applier.form_engine.live_executor import execute_live_form
-from universal_auto_applier.interventions.store import list_pending_interventions
+from universal_auto_applier.interventions.store import (
+    create_intervention,
+    list_pending_interventions,
+)
 from universal_auto_applier.persistence.db import session_scope
 from universal_auto_applier.persistence.job_repository import get_application_job
 from universal_auto_applier.submission.coordinator import SubmissionCoordinator
@@ -41,9 +47,135 @@ from universal_auto_applier.submission.models import (
 from universal_auto_applier.submission.store import (
     build_snapshot,
     get_active_approval,
+    revoke_approval,
 )
 
 logger = logging.getLogger("universal_auto_applier.submission.execution_service")
+
+REQUEST_OUTCOME_UNKNOWN_ERROR_CODE = "http_request_outcome_unknown_reconciliation_required"
+PREPARATION_HTTP_MUTATION_BLOCKED_ERROR_CODE = "preparation_http_mutation_blocked"
+PREPARATION_INTERLOCK_PERSISTENCE_FAILED_ERROR_CODE = "preparation_interlock_persistence_failed"
+_UNCERTAIN_REQUEST_INTERLOCK_ERRORS = frozenset({"request_abort_failed", "request_outcome_unknown"})
+_REQUEST_INTERLOCK_LATCH_LOCK = threading.Lock()
+_REQUEST_INTERLOCK_LATCH: dict[str, tuple[str, bool]] = {}
+
+
+class PreparationHttpMutationBlockedError(RuntimeError):
+    """A preparation mutation was blocked, so the snapshot needs review."""
+
+    error_code = PREPARATION_HTTP_MUTATION_BLOCKED_ERROR_CODE
+
+    def __init__(self) -> None:
+        super().__init__(
+            f"{self.error_code}: a preparation HTTP mutation was blocked; review the request "
+            "evidence and resolve the blocker before retrying preparation"
+        )
+
+
+class PreparationRequestOutcomeUnknownError(RuntimeError):
+    """A preparation request may have reached the remote application."""
+
+    error_code = REQUEST_OUTCOME_UNKNOWN_ERROR_CODE
+
+    def __init__(self, interlock_failure: str) -> None:
+        self.interlock_failure = interlock_failure
+        super().__init__(
+            f"{self.error_code}: remote application state is unknown after a preparation "
+            f"HTTP request ({interlock_failure}); reconcile with the owner before any retry"
+        )
+
+
+class PreparationInterlockPersistenceError(RuntimeError):
+    """The request blocker was detected but durable recording was incomplete."""
+
+    error_code = PREPARATION_INTERLOCK_PERSISTENCE_FAILED_ERROR_CODE
+
+    def __init__(
+        self,
+        blocker_error_code: str,
+        *,
+        stage: str,
+        blocker_persisted: bool,
+    ) -> None:
+        self.blocker_error_code = blocker_error_code
+        self.stage = stage
+        self.blocker_persisted = blocker_persisted
+        recovery = (
+            "a durable blocker is recorded, but the prior approval may still be active"
+            if blocker_persisted
+            else "no durable blocker could be recorded; this process is latched fail-closed"
+        )
+        super().__init__(
+            f"{self.error_code}: request blocker {blocker_error_code} could not be fully "
+            f"persisted at {stage}; {recovery}. Restore storage, reconcile remote state, "
+            "and do not retry preparation or submission."
+        )
+
+
+def _set_request_interlock_latch(
+    application_id: str, blocker_error_code: str, *, persistence_failed: bool
+) -> None:
+    with _REQUEST_INTERLOCK_LATCH_LOCK:
+        _REQUEST_INTERLOCK_LATCH[application_id] = (blocker_error_code, persistence_failed)
+
+
+def _clear_request_interlock_latch(application_id: str) -> None:
+    with _REQUEST_INTERLOCK_LATCH_LOCK:
+        _REQUEST_INTERLOCK_LATCH.pop(application_id, None)
+
+
+def _get_request_interlock_latch(application_id: str) -> tuple[str, bool] | None:
+    with _REQUEST_INTERLOCK_LATCH_LOCK:
+        return _REQUEST_INTERLOCK_LATCH.get(application_id)
+
+
+def preparation_interlock_latch_error_code(application_id: str) -> str | None:
+    """Return the fail-closed persistence error latched for this process, if any."""
+    latch = _get_request_interlock_latch(application_id)
+    if latch is None or not latch[1]:
+        return None
+    return PREPARATION_INTERLOCK_PERSISTENCE_FAILED_ERROR_CODE
+
+
+def raise_for_request_interlock_latch(application_id: str) -> None:
+    latch = _get_request_interlock_latch(application_id)
+    if latch is None or not latch[1]:
+        return
+    blocker_error_code, _persistence_failed = latch
+    raise PreparationInterlockPersistenceError(
+        blocker_error_code,
+        stage="blocker_write",
+        blocker_persisted=False,
+    )
+
+
+def pending_preparation_http_interlock_kind(
+    session: Any, application_id: str
+) -> InterventionKind | None:
+    pending_kinds = {
+        intervention.kind for intervention in list_pending_interventions(session, application_id)
+    }
+    # Uncertain delivery always takes precedence over a safely aborted mutation.
+    if InterventionKind.HTTP_REQUEST_OUTCOME_UNKNOWN in pending_kinds:
+        return InterventionKind.HTTP_REQUEST_OUTCOME_UNKNOWN
+    if InterventionKind.PREPARATION_HTTP_MUTATION_BLOCKED in pending_kinds:
+        return InterventionKind.PREPARATION_HTTP_MUTATION_BLOCKED
+    return None
+
+
+def _raise_if_request_interlock_needs_human(interlock: Any) -> None:
+    if interlock.setup_error in _UNCERTAIN_REQUEST_INTERLOCK_ERRORS:
+        raise PreparationRequestOutcomeUnknownError(interlock.setup_error)
+    if interlock.blocked_request_count > 0:
+        raise PreparationHttpMutationBlockedError()
+
+
+def _settle_request_interlock_routes(interlock: Any | None) -> None:
+    if interlock is None:
+        return
+    settle = getattr(interlock, "wait_for_routes_to_settle", None)
+    if callable(settle):
+        settle()
 
 
 # ---------------------------------------------------------------------------
@@ -221,11 +353,19 @@ class SubmissionExecutionService:
         by following safe Apply/Continue actions. ``job.url`` is never
         mutated; ``application_id`` is never mutated.
         """
+        raise_for_request_interlock_latch(application_id)
         with session_scope(self._session_factory) as session:
             job = get_application_job(session, application_id)
+            pending_http_interlock_kind = pending_preparation_http_interlock_kind(
+                session, application_id
+            )
         if job is None:
             logger.warning("[%s] job not found for snapshot observation", application_id[:12])
             return None
+        if pending_http_interlock_kind == InterventionKind.HTTP_REQUEST_OUTCOME_UNKNOWN:
+            raise PreparationRequestOutcomeUnknownError("reconciliation_intervention_pending")
+        if pending_http_interlock_kind == InterventionKind.PREPARATION_HTTP_MUTATION_BLOCKED:
+            raise PreparationHttpMutationBlockedError()
         repeat_block = repeat_processing_block_reason(job)
         if repeat_block is not None:
             logger.info("[%s] snapshot observation blocked: %s", application_id[:12], repeat_block)
@@ -236,31 +376,50 @@ class SubmissionExecutionService:
             logger.error("[%s] no browser context factory configured", application_id[:12])
             return None
 
-        # WQ-8 Phase A: install the established submit interlock BEFORE any
-        # navigation. Observation is a review-mode action — it must never be
-        # able to submit, even if the live page fires ``form.submit()`` /
-        # ``requestSubmit()`` / a dispatched SubmitEvent, or navigates as a
-        # side effect of filling. The interlock stays armed (no one-shot
-        # authorized-submit allowance is ever armed during observation), so
-        # every submit signal is blocked and recorded.
-        #
-        # This reuses the SAME ``install_interlock`` implementation as the
-        # WQ-7 live dry-run (``live_runner.py``) and the WQ-8 controlled
-        # submit path (``_execute_in_browser`` below). No second interlock.
-        from universal_auto_applier.browser.submit_interlock import install_interlock
-
-        install_interlock(context)
-        logger.info(
-            "[%s] observe: submit interlock installed before navigation", application_id[:12]
-        )
-
+        request_interlock: Any | None = None
         try:
-            page = context.pages[0] if context.pages else context.new_page()
+            # Both context-level guards must be installed before any page is
+            # created. PreparationRequestInterlock intentionally rejects a
+            # context with any pre-existing page, including about:blank.
+            from universal_auto_applier.browser.request_interlock import (
+                PreparationRequestInterlock,
+            )
+            from universal_auto_applier.browser.submit_interlock import (
+                install_interlock,
+                is_interlock_installed,
+            )
+
+            request_interlock = PreparationRequestInterlock(
+                context,
+                application_id=application_id,
+            )
+            request_interlock.install()
+            install_interlock(context)
+            logger.info(
+                "[%s] observe: submit and HTTP request interlocks installed before page creation",
+                application_id[:12],
+            )
+
+            page = context.new_page()
+            request_interlock.attach_page(page)
+            request_interlock.verify_page(page)
+            page.goto("about:blank", wait_until="domcontentloaded")
+            _raise_if_request_interlock_needs_human(request_interlock)
+            request_interlock.verify_page(page)
+            request_interlock.verify_service_worker_registration_guard(page)
+            if not is_interlock_installed(page):
+                raise RuntimeError("submit interlock did not execute before target navigation")
+            request_interlock.verify_page(page)
+
             # Initial navigation is to job.url (the canonical source/detail URL).
             page.goto(
                 job.url, wait_until="domcontentloaded", timeout=self._settings.browser_timeout_ms
             )
+            _raise_if_request_interlock_needs_human(request_interlock)
+            request_interlock.verify_page(page)
             page.wait_for_timeout(1_000)  # Let JS settle.
+            _raise_if_request_interlock_needs_human(request_interlock)
+            request_interlock.verify_page(page)
 
             # Cookie/CMP preflight after initial navigation (detail page).
             # A blocking Usercentrics/Cookiebot overlay must be resolved
@@ -270,6 +429,8 @@ class SubmissionExecutionService:
 
                 policy = getattr(self._settings, "cookie_consent_policy", "necessary_only")
                 _cmp_result = handle_consent_banner(page, policy=policy, timeout_ms=4000)  # type: ignore[arg-type]
+                _raise_if_request_interlock_needs_human(request_interlock)
+                request_interlock.verify_page(page)
                 if _cmp_result.result in ("blocked", "human_required"):
                     logger.warning(
                         "[%s] observe: cookie consent blocked (cmp=%s policy=%s result=%s)",
@@ -306,6 +467,8 @@ class SubmissionExecutionService:
             seen_actions: set[tuple[str, str, str]] = set()
             form_reached = False
             for _step in range(max_nav_steps):
+                _raise_if_request_interlock_needs_human(request_interlock)
+                request_interlock.verify_page(page)
                 analysis = analyze_page(page)
                 logger.info(
                     "[%s] observe nav url=%s form=%s blocker=%s controls=%d files=%d",
@@ -377,6 +540,8 @@ class SubmissionExecutionService:
                     action,
                     timeout_ms=self._settings.browser_timeout_ms,
                 )
+                _raise_if_request_interlock_needs_human(request_interlock)
+                request_interlock.verify_page(page)
             else:
                 # Loop exhausted without break — max steps reached.
                 logger.warning(
@@ -396,6 +561,8 @@ class SubmissionExecutionService:
 
                 form_policy = getattr(self._settings, "cookie_consent_policy", "necessary_only")
                 _cmp_form = handle_consent_banner(page, policy=form_policy, timeout_ms=4000)  # type: ignore[arg-type]
+                _raise_if_request_interlock_needs_human(request_interlock)
+                request_interlock.verify_page(page)
                 if _cmp_form.result in ("blocked", "human_required"):
                     logger.warning(
                         "[%s] observe: cookie consent blocked on form (cmp=%s result=%s)",
@@ -419,6 +586,8 @@ class SubmissionExecutionService:
             actual_form_url = page.url
             candidate = resolve_candidate_profile(job.metadata)
             execution = execute_live_form(page, candidate, job)
+            _raise_if_request_interlock_needs_human(request_interlock)
+            request_interlock.verify_page(page)
 
             # Build the snapshot from the execution results.
             with session_scope(self._session_factory) as session:
@@ -472,12 +641,143 @@ class SubmissionExecutionService:
                 actual_form_url != job.url,
             )
             return snapshot
+        except (PreparationHttpMutationBlockedError, PreparationRequestOutcomeUnknownError) as exc:
+            _settle_request_interlock_routes(request_interlock)
+            effective_error = exc
+            if (
+                request_interlock is not None
+                and request_interlock.setup_error in _UNCERTAIN_REQUEST_INTERLOCK_ERRORS
+                and not isinstance(exc, PreparationRequestOutcomeUnknownError)
+            ):
+                effective_error = PreparationRequestOutcomeUnknownError(
+                    request_interlock.setup_error
+                )
+            has_new_interlock_evidence = request_interlock is not None and (
+                request_interlock.setup_error in _UNCERTAIN_REQUEST_INTERLOCK_ERRORS
+                or request_interlock.blocked_request_count > 0
+            )
+            if has_new_interlock_evidence:
+                self._record_preparation_http_interlock_blocker(
+                    application_id=application_id,
+                    interlock=request_interlock,
+                    error=effective_error,
+                )
+            if effective_error is not exc:
+                raise effective_error from exc
+            raise
         except Exception as exc:
+            if (
+                request_interlock is not None
+                and request_interlock.setup_error in _UNCERTAIN_REQUEST_INTERLOCK_ERRORS
+            ):
+                unknown = PreparationRequestOutcomeUnknownError(request_interlock.setup_error)
+                self._record_preparation_http_interlock_blocker(
+                    application_id=application_id,
+                    interlock=request_interlock,
+                    error=unknown,
+                )
+                raise unknown from exc
+            if request_interlock is not None and request_interlock.blocked_request_count > 0:
+                blocked = PreparationHttpMutationBlockedError()
+                self._record_preparation_http_interlock_blocker(
+                    application_id=application_id,
+                    interlock=request_interlock,
+                    error=blocked,
+                )
+                raise blocked from exc
             logger.exception("[%s] snapshot observation failed: %s", application_id[:12], exc)
             return None
         finally:
             if self._context_factory:
                 self._context_factory.close()
+
+    def _record_preparation_http_interlock_blocker(
+        self,
+        *,
+        application_id: str,
+        interlock: Any | None,
+        error: PreparationHttpMutationBlockedError | PreparationRequestOutcomeUnknownError,
+    ) -> None:
+        """Persist sanitized request evidence and revoke any now-stale approval."""
+        _settle_request_interlock_routes(interlock)
+        effective_error: PreparationHttpMutationBlockedError | PreparationRequestOutcomeUnknownError
+        interlock_failure = getattr(interlock, "setup_error", None)
+        if interlock_failure in _UNCERTAIN_REQUEST_INTERLOCK_ERRORS:
+            effective_error = PreparationRequestOutcomeUnknownError(interlock_failure)
+        else:
+            effective_error = error
+        uncertain = isinstance(effective_error, PreparationRequestOutcomeUnknownError)
+        kind = (
+            InterventionKind.HTTP_REQUEST_OUTCOME_UNKNOWN
+            if uncertain
+            else InterventionKind.PREPARATION_HTTP_MUTATION_BLOCKED
+        )
+        blocked_requests = list(getattr(interlock, "blocked_requests", []))[:20]
+        sanitized_requests = [
+            {
+                "method": request.method,
+                "resource_type": request.resource_type,
+                "destination_origin": request.destination_origin,
+                "reason": request.reason,
+            }
+            for request in blocked_requests
+        ]
+        blocked_request_count = int(getattr(interlock, "blocked_request_count", 0))
+
+        try:
+            # Commit the human blocker first. If approval revocation fails in its
+            # separate transaction, the durable pending intervention still gates
+            # preparation, approval, and controlled submission.
+            with session_scope(self._session_factory) as session:
+                create_intervention(
+                    session,
+                    application_id=application_id,
+                    kind=kind,
+                    question=(
+                        "A preparation HTTP request may have reached the application. Reconcile "
+                        "the target state with the owner before any retry."
+                        if uncertain
+                        else "Preparation blocked an application HTTP mutation. Review the "
+                        "sanitized request evidence before continuing."
+                    ),
+                    field_selector=f"preparation-request-outcome:{uuid.uuid4().hex}",
+                    llm_metadata={
+                        "error_code": effective_error.error_code,
+                        "interlock_failure": (
+                            effective_error.interlock_failure
+                            if uncertain
+                            else "mutating_request_blocked"
+                        ),
+                        "blocked_request_count": blocked_request_count,
+                        "blocked_requests": sanitized_requests,
+                    },
+                )
+        except Exception as exc:  # noqa: BLE001 — latch before surfacing storage failure
+            _set_request_interlock_latch(
+                application_id,
+                effective_error.error_code,
+                persistence_failed=True,
+            )
+            raise PreparationInterlockPersistenceError(
+                effective_error.error_code,
+                stage="blocker_write",
+                blocker_persisted=False,
+            ) from exc
+
+        try:
+            # The pending intervention has committed. Revoke any old approval
+            # in a new transaction so failure cannot erase the primary blocker.
+            with session_scope(self._session_factory) as session:
+                approval = get_active_approval(session, application_id)
+                if approval is not None:
+                    revoke_approval(session, approval.approval_id)
+        except Exception as exc:  # noqa: BLE001 — the durable blocker remains authoritative
+            raise PreparationInterlockPersistenceError(
+                effective_error.error_code,
+                stage="approval_revocation",
+                blocker_persisted=True,
+            ) from exc
+        _clear_request_interlock_latch(application_id)
 
     def _persist_live_snapshot(self, application_id: str, snapshot: SubmissionSnapshot) -> None:
         """Persist the live snapshot so the dashboard can display and
@@ -492,6 +792,13 @@ class SubmissionExecutionService:
         from universal_auto_applier.submission.store import create_approval
 
         with session_scope(self._session_factory) as session:
+            pending_http_interlock_kind = pending_preparation_http_interlock_kind(
+                session, application_id
+            )
+            if pending_http_interlock_kind == InterventionKind.HTTP_REQUEST_OUTCOME_UNKNOWN:
+                raise PreparationRequestOutcomeUnknownError("reconciliation_intervention_pending")
+            if pending_http_interlock_kind == InterventionKind.PREPARATION_HTTP_MUTATION_BLOCKED:
+                raise PreparationHttpMutationBlockedError()
             create_approval(
                 session,
                 application_id=application_id,
@@ -518,6 +825,18 @@ class SubmissionExecutionService:
         """
         import threading
 
+        try:
+            raise_for_request_interlock_latch(application_id)
+        except PreparationInterlockPersistenceError as exc:
+            return SubmissionResult(
+                application_id=application_id,
+                approval_id=approval_id,
+                snapshot_hash_at_submit="",
+                state=SubmissionResultState.SUBMISSION_NOT_ALLOWED,
+                clicked=False,
+                error_message=str(exc),
+            )
+
         # Gate 1: feature disabled.
         if not self._settings.enable_real_submission:
             result = SubmissionResult(
@@ -537,6 +856,9 @@ class SubmissionExecutionService:
         # Get the job.
         with session_scope(self._session_factory) as session:
             job = get_application_job(session, application_id)
+            pending_http_interlock_kind = pending_preparation_http_interlock_kind(
+                session, application_id
+            )
         if job is None:
             result = SubmissionResult(
                 application_id=application_id,
@@ -545,6 +867,29 @@ class SubmissionExecutionService:
                 state=SubmissionResultState.SUBMISSION_NOT_ALLOWED,
                 clicked=False,
                 error_message="application not found",
+            )
+            with session_scope(self._session_factory) as session:
+                from universal_auto_applier.submission.store import record_result
+
+                record_result(session, result)
+            return result
+
+        if pending_http_interlock_kind is not None:
+            error_code = (
+                REQUEST_OUTCOME_UNKNOWN_ERROR_CODE
+                if pending_http_interlock_kind == InterventionKind.HTTP_REQUEST_OUTCOME_UNKNOWN
+                else PREPARATION_HTTP_MUTATION_BLOCKED_ERROR_CODE
+            )
+            result = SubmissionResult(
+                application_id=application_id,
+                approval_id=approval_id,
+                snapshot_hash_at_submit="",
+                state=SubmissionResultState.SUBMISSION_NOT_ALLOWED,
+                clicked=False,
+                error_message=(
+                    f"{error_code}: resolve the preparation HTTP request intervention before "
+                    "any controlled submission attempt"
+                ),
             )
             with session_scope(self._session_factory) as session:
                 from universal_auto_applier.submission.store import record_result
@@ -570,8 +915,33 @@ class SubmissionExecutionService:
 
         # Get the approved snapshot hash and acquire claim BEFORE starting browser.
         with session_scope(self._session_factory) as session:
-            # Re-read at the claim boundary so a dashboard marker/status change
-            # after the initial lookup cannot acquire a submission claim.
+            pending_http_interlock_kind = pending_preparation_http_interlock_kind(
+                session, application_id
+            )
+            if pending_http_interlock_kind is not None:
+                error_code = (
+                    REQUEST_OUTCOME_UNKNOWN_ERROR_CODE
+                    if pending_http_interlock_kind == InterventionKind.HTTP_REQUEST_OUTCOME_UNKNOWN
+                    else PREPARATION_HTTP_MUTATION_BLOCKED_ERROR_CODE
+                )
+                result = SubmissionResult(
+                    application_id=application_id,
+                    approval_id=approval_id,
+                    snapshot_hash_at_submit="",
+                    state=SubmissionResultState.SUBMISSION_NOT_ALLOWED,
+                    clicked=False,
+                    error_message=(
+                        f"{error_code}: resolve the preparation HTTP request intervention before "
+                        "any controlled submission attempt"
+                    ),
+                )
+                from universal_auto_applier.submission.store import record_result
+
+                record_result(session, result)
+                return result
+
+            # Re-read at the claim boundary so a dashboard marker/status
+            # change or a preparation HTTP blocker cannot acquire a claim.
             current_job = get_application_job(session, application_id)
             repeat_block = (
                 repeat_processing_block_reason(current_job) if current_job is not None else None
@@ -936,5 +1306,9 @@ __all__ = [
     "BrowserContextFactory",
     "FixtureContextFactory",
     "PlaywrightContextFactory",
+    "PreparationHttpMutationBlockedError",
+    "PreparationInterlockPersistenceError",
+    "PreparationRequestOutcomeUnknownError",
     "SubmissionExecutionService",
+    "preparation_interlock_latch_error_code",
 ]

@@ -5,6 +5,23 @@ forbidden shortcuts, acceptance criteria, required tests, and predecessor.
 Items are not started until they are pulled into an active workpackage in
 `docs/handoffs/ACTIVE_WORKPACKAGE.md`.
 
+## V2 progress ledger
+
+Approximate overall progress is **20-25%** across the ten V2 workpackages; this is a directional estimate, not a size-weighted schedule. V2-00 and V2-01 are complete. V2-02 implementation and all required non-live gates, including browser tests, are complete for the current slice. Source, tests and handoff are staged for supervisor review; they are not committed or pushed. V2-03 through V2-08 are not complete. V2-07A and V2-07B are tracked as separate workpackages; 07A has not been implemented and remains a read-only design audit.
+
+| Workpackage | Status |
+|---|---|
+| V2-00 | Complete; baseline checkpointed, with its browser-gate caveat documented |
+| V2-01 | Complete |
+| V2-02 | In progress; request-guard slice staged locally, review pending |
+| V2-03 | Not complete |
+| V2-04 | Not complete |
+| V2-05 | Not complete |
+| V2-06 | Not complete |
+| V2-07A | Not implemented; read-only design audit remains |
+| V2-07B | Not complete |
+| V2-08 | Not complete |
+
 ## V2 roadmap — current delivery order
 
 The V2 plan and critique are now in [`docs/v2/`](v2/UAA_V2_REVIEW_AND_PLAN.md).
@@ -188,7 +205,7 @@ active below.
 Owner approval is separately required for any real target/live action under
 the existing WQ-8 contract; no code review gate blocks this synthetic work.
 
-### V2-02 — One executor (active; preparation HTTP interlock checkpointed, combined browser gate green; supervisor review pending)
+### V2-02 — One executor (active; shared observation/fill HTTP guard implemented; staged review pending)
 
 **Objective.** Route CLI, dashboard worker, supervisor preparation and snapshot
 observation through one multi-step state machine; remove duplicated readiness
@@ -237,16 +254,35 @@ its active-worker list; the guard cannot prove those background paths absent.
 Preparation must not claim universal network-submission prevention. Flows
 that need blocked POST/PUT/PATCH/DELETE requests remain paused for the owner.
 
-**Unresolved P1 — shared observation/fill executor.** The review-only
-`SubmissionExecutionService.observe_and_persist_snapshot()` path is not covered
-by this slice and still installs only the form-submit interlock before
-`execute_live_form`. It is reachable through API `POST
-/api/submit/{application_id}/observe` and supervisor `prepare_application` /
-`retry_application`, so it can issue POST-based autosave or intermediate
-requests. The ordinary pipeline worker's `LiveBrowserRunner.run` path is
-covered. Do not claim all UAA preparation is protected. Address this path in
-the next shared-executor slice; keep controlled-submission execution separate
-until that design is reviewed.
+**Shared observation/fill request guard (active V2-02 slice).** The review-only
+`SubmissionExecutionService.observe_and_persist_snapshot()` path now installs
+the submit interlock and default-deny HTTP request guard before creating a
+page. It refuses contexts with any pre-existing page or active service worker.
+Blocked POST/PUT/PATCH/DELETE and other non-read methods stop observation
+before a review snapshot can be persisted. UAA stores only sanitized request
+evidence (method, resource type, origin and reason), commits a pending
+intervention first, then revokes an existing approval in a separate
+transaction. The pending blocker gates further API/supervisor preparation,
+approval, direct coordinator/CLI preparation, and controlled-submit claims.
+
+If a request abort or allowed-request continuation fails, the outcome is
+uncertain and takes precedence over an earlier ordinary blocked-mutation
+signal, including while route callbacks are completing. UAA records a distinct
+`HTTP_REQUEST_OUTCOME_UNKNOWN` intervention, returns reconciliation-required
+state, and the supervisor produces a terminal human handoff without retry.
+Persistence failure returns a typed 503 and latches the application closed for
+the lifetime of the process. If the first blocker write itself cannot commit,
+there is no durable evidence that can survive process loss; restore storage,
+reconcile with the target owner, and do not restart or retry until that is
+resolved. A blocker that did commit remains authoritative even if separate
+approval revocation fails.
+
+This request guard applies to the shared observation/fill API and supervisor
+path as well as the previously guarded `LiveBrowserRunner` paths. The manually
+approved WQ-8 controlled final-submit path remains a separate, explicitly
+authorized route; a pending preparation blocker prevents it from claiming or
+clicking. This slice does not complete the broader V2-02 single-executor
+state-machine work.
 
 **Focused acceptance.** A loopback fixture exercises a native onchange
 `form.submit()`, fetch POST, `sendBeacon`, safe GET navigation/fill and a
@@ -264,22 +300,24 @@ provide viewport acceptance. CLI regressions prove both attachable-session
 launch and CDP execution are rejected before Playwright starts; safe same-tab
 resume remains a V2-04 task.
 
-**Current validation.** The safety fixture → WQ-8 → WQ-7C browser selection
-passed **18 tests in 66.54 seconds**; exact WQ-7C → WQ-8 passed **14 tests in
-54.67 seconds**. The representative plugin-page → safety fixture → WQ-7C →
-WQ-8 sequence passed **41 tests in 120.31 seconds**. The broader runner/request-
-interlock/WQ-7/WQ-8 selection passed **106 tests in 118.07 seconds**. Focused
-unit coverage passed **9 tests in 0.86 seconds**, and the V2-02 source
-non-live/non-Playwright gate passed **1,511 tests, 313 deselected in 795.80
-seconds**. After merging the V2-01 browser-gate package, the conflict-area
-WQ-7C/WQ-8/final-pipeline selection passed **42 tests in 107.96 seconds** and
-the full browser-inclusive non-live gate passed **1,821 tests, 3 deselected in
-1,693.04 seconds (28:13)**. Ruff check and format passed (**242 files already
-formatted**); Pyright reported **0 errors, 0 warnings, 0 informations** (the
-isolated worktree has no local `.venv`, so Pyright used the installed main
-workspace executable); staged and unstaged diff checks pass. No real ATS target
-or submission was used. Supervisor review of the combined staged diff is
-pending before a merge commit.
+**Current validation.** Focused snapshot-persistence, supervisor,
+intervention-store and request-interlock tests passed **86 tests in 99.36
+seconds**. The affected WQ-8 and default-no-submit Playwright selection passed
+**17 tests in 28.24 seconds**. The full non-live/non-Playwright gate passed
+**1,521 tests with 313 deselected (1,834 collected) in 896.69 seconds**. The
+complete browser-inclusive `pytest -m "not live"` gate passed **1,831 tests,
+3 deselected (1,834 collected) in 1,808.33 seconds**. `ruff check src tests
+migrations` and `ruff format --check src tests migrations` passed (**242 files
+already formatted**); Pyright reported **0 errors, 0 warnings, 0 informations**;
+`git diff --check` passed. No live tests, ATS targets or real submissions were
+used.
+
+The staged source/test changes belong to local branch
+`checkpoint/v2-02-request-guard` and have not been committed or pushed. The
+classifier integration was pushed separately on
+`checkpoint/v2-02-safety`; resolve that shared checkpoint dynamically in the
+active handoff before branch reconciliation. Supervisor review of this staged
+slice is pending.
 
 **Predecessor.** V2-01 checkpoint `15beda81fd12542808e49a62bb523932b683a0b4`.
 
