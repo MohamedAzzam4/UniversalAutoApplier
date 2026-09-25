@@ -179,7 +179,7 @@ remain outside that checkpoint's validation claim.
 Owner approval is separately required for any real target/live action under
 the existing WQ-8 contract; no code review gate blocks this synthetic work.
 
-### V2-02 — One executor (active; preparation HTTP interlock slice in review)
+### V2-02 — One executor (active; HTTP interlock checkpointed, visible-text classifier in review)
 
 **Objective.** Route CLI, dashboard worker, supervisor preparation and snapshot
 observation through one multi-step state machine; remove duplicated readiness
@@ -228,6 +228,30 @@ its active-worker list; the guard cannot prove those background paths absent.
 Preparation must not claim universal network-submission prevention. Flows
 that need blocked POST/PUT/PATCH/DELETE requests remain paused for the owner.
 
+**Visible-text classifier follow-up (implementation in review).** The static
+`observe_html()` extractor previously included script and style source in the
+text passed to page-state detection, so inert `new Error(...)` diagnostics could
+override an application form as `PageState.ERROR`. `_DomExtractor` now excludes
+text in `script`, `style`, and inert `template` subtrees while preserving page
+title, ordinary body text, and clickable labels. `noscript` remains included:
+its visibility depends on scripting state, which this static HTML parser does
+not know, and it can contain the page's real fallback content. The live
+Playwright `analyze_page()` path is unchanged and continues to use rendered
+`body.inner_text()`; this defect was in the static `observe_html()` parser, not
+that live analyzer. The static parser still cannot determine CSS visibility,
+so this change does not claim full browser rendering semantics.
+
+This is an independent `checkpoint/v2-02-classifier` slice based on pushed
+safety checkpoint `6ba4a551f1d22f0f4a656394529d90c095e63a55`. The later V2-01
+browser-gate integration is on the separate `checkpoint/v2-02-safety` branch
+and is not included here pending supervisor-directed reconciliation.
+
+Focused observer regressions cover inert script/style/template source on a form,
+a genuinely visible error page, script-source errors on a login gate, retained
+`noscript` fallback login text, and the existing CAPTCHA-over-error/login state
+priority. Existing login and CAPTCHA fixture cases remain required. No live
+page or ATS is used.
+
 **Unresolved P1 — shared observation/fill executor.** The review-only
 `SubmissionExecutionService.observe_and_persist_snapshot()` path is not covered
 by this slice and still installs only the form-submit interlock before
@@ -255,7 +279,7 @@ provide viewport acceptance. CLI regressions prove both attachable-session
 launch and CDP execution are rejected before Playwright starts; safe same-tab
 resume remains a V2-04 task.
 
-**Current validation.** The safety fixture → WQ-8 → WQ-7C browser selection
+**Safety-checkpoint validation.** The safety fixture → WQ-8 → WQ-7C browser selection
 passed **18 tests in 66.54 seconds**; exact WQ-7C → WQ-8 passed **14 tests in
 54.67 seconds**. The representative plugin-page → safety fixture → WQ-7C →
 WQ-8 sequence passed **41 tests in 120.31 seconds**. The broader runner/request-
@@ -263,8 +287,15 @@ interlock/WQ-7/WQ-8 selection passed **106 tests in 118.07 seconds**. Focused
 unit coverage passed **9 tests in 0.86 seconds**, and the full
 non-live/non-Playwright gate passed **1,511 tests, 313 deselected in 795.80
 seconds**. Ruff check and format passed (**242 files already formatted**);
-Pyright reported **0 errors, 0 warnings, 0 informations**; `git diff --check`
-is run again before review. No real ATS target or submission was used.
+Pyright reported **0 errors, 0 warnings, 0 informations**. No real ATS target
+or submission was used.
+
+**Classifier follow-up validation.** The focused page-observer selection passed
+**33 tests**; Ruff check and format check passed (**242 files already
+formatted**), and Pyright reported **0 errors, 0 warnings, 0 informations**. The
+full `pytest -m "not live and not playwright" -q` gate passed **1,516 tests,
+313 deselected in 825.01 seconds**. `git diff --check` passed; no real target or
+submission was used.
 
 **Predecessor.** V2-01 checkpoint `8ed966d7e9a1c775a268ea2b1f9262d5dda57cd2`.
 

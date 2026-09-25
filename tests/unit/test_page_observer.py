@@ -183,6 +183,93 @@ class TestUnknownPage:
         assert len(obs.clickables) == 0
 
 
+class TestVisibleTextClassification:
+    def test_inert_script_style_and_template_text_do_not_hide_a_form(self) -> None:
+        html = """
+        <html>
+          <head>
+            <title>Application form</title>
+            <style>.error { color: red; } /* server error */</style>
+            <template><p>Error: this template is not rendered.</p></template>
+          </head>
+          <body>
+            <form action="/apply" method="post">
+              <label for="first">First name</label>
+              <input id="first" name="first_name" />
+              <label for="email">Email address</label>
+              <input id="email" name="email" type="email" />
+              <button type="button">Continue</button>
+            </form>
+            <script>
+              const diagnostic = new Error("harmless diagnostic text");
+            </script>
+          </body>
+        </html>
+        """
+
+        observation = observe_html(html)
+
+        assert observation.page_state == PageState.FORM
+        assert observation.title == "Application form"
+        assert {item.name for item in observation.inputs} == {"first_name", "email"}
+        assert any(item.text == "Continue" for item in observation.clickables)
+
+    def test_visible_error_page_remains_an_error(self) -> None:
+        html = """
+        <html><body>
+          <main role="alert">
+            <h1>Something went wrong</h1>
+            <p>Please try again later.</p>
+          </main>
+        </body></html>
+        """
+
+        observation = observe_html(html)
+
+        assert observation.page_state == PageState.ERROR
+
+    def test_inert_error_source_does_not_override_visible_login_gate(self) -> None:
+        html = """
+        <html><body>
+          <h1>Sign in</h1>
+          <label for="password">Password</label>
+          <input id="password" name="password" type="password" />
+          <script>throw new Error("diagnostic only");</script>
+        </body></html>
+        """
+
+        observation = observe_html(html)
+
+        assert observation.page_state == PageState.LOGIN
+        assert "login required" in observation.warnings
+
+    def test_noscript_fallback_login_text_remains_classifiable(self) -> None:
+        html = """
+        <html><body>
+          <noscript>
+            <h1>Sign in to continue</h1>
+            <p>Password required to access this application.</p>
+          </noscript>
+        </body></html>
+        """
+
+        observation = observe_html(html)
+
+        assert observation.page_state == PageState.LOGIN
+
+    def test_visible_captcha_keeps_its_existing_precedence(self) -> None:
+        html = """
+        <html><body>
+          <h1>Sign in</h1>
+          <p>Something went wrong. Verify you are human to continue.</p>
+        </body></html>
+        """
+
+        observation = observe_html(html)
+
+        assert observation.page_state == PageState.CAPTCHA
+
+
 class TestDisabledElements:
     def test_disabled_button_is_unknown(self) -> None:
         html = "<html><body><button disabled>Apply now</button></body></html>"

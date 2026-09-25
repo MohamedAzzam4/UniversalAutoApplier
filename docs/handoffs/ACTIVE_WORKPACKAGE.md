@@ -1,21 +1,21 @@
-# Active Workpackage — V2-02 Preparation HTTP Interlock
+# Active Workpackage — V2-02 Visible-Text Classifier
 
 - **Repository:** `MohamedAzzam4/UniversalAutoApplier`.
-- **WP ID / objective:** V2-02 safety-first slice — make the preparation runner's submit block mandatory; install a default-deny HTTP method guard before pages or target navigation; preserve the separately authorized controlled-submission service.
-- **Status:** **SUPERVISOR REVIEW APPROVED; CHECKPOINT COMMIT/PUSH NEXT.**
-- **Branch:** `checkpoint/v2-02-safety`.
-- **Base SHA:** `8ed966d7e9a1c775a268ea2b1f9262d5dda57cd2` (V2-01 checkpoint).
-- **Last completed/checkpoint SHA:** `8ed966d7e9a1c775a268ea2b1f9262d5dda57cd2` (last predecessor checkpoint; this workpackage commit SHA must be resolved dynamically after push and is intentionally not embedded here).
-- **Last successful V2-02 checkpoint time:** none yet. Inherited base commit time: `2026-09-24T23:52:00+02:00`.
-- **Branch-head verification (required after review and checkpoint push):**
+- **WP ID / objective:** V2-02 classifier follow-up — keep inert script/style/template source out of static page-state classification while preserving visible error, login, CAPTCHA, title and clickable-label behavior.
+- **Status:** **IMPLEMENTATION COMPLETE; FULL NON-LIVE GATE AND STATIC CHECKS GREEN; READY FOR SUPERVISOR REVIEW.**
+- **Branch:** `checkpoint/v2-02-classifier`.
+- **Base SHA:** `6ba4a551f1d22f0f4a656394529d90c095e63a55` (pushed V2-02 HTTP interlock checkpoint).
+- **Last completed/checkpoint SHA:** `6ba4a551f1d22f0f4a656394529d90c095e63a55` (inherited base checkpoint; classifier changes are not committed and their SHA must be resolved dynamically after approval/push).
+- **Last successful classifier checkpoint time:** none yet. Inherited safety checkpoint time: `2026-09-25T03:06:03+02:00`.
+- **Branch-head verification (required after checkpoint push):**
 
   ```text
   git fetch origin
   git rev-parse HEAD
-  git rev-parse origin/checkpoint/v2-02-safety
+  git rev-parse origin/checkpoint/v2-02-classifier
   ```
 
-  Before the initial push, the origin ref may not exist; the earlier dry-run verified authentication but did not create it. The staged diff is approved. Commit and push this checkpoint, then verify the two resolved SHAs match. Never embed this file's own commit SHA as current HEAD.
+  Push authentication was verified with `git push --dry-run origin checkpoint/v2-02-classifier`; that did not create the remote ref. Commit and push only after supervisor review, then verify the two resolved SHAs match. Never embed this file's own commit SHA as current HEAD.
 
 ## Completed work
 
@@ -30,6 +30,9 @@
 - CLI regressions prove both attachable-session launch and browser-session/CDP execution are rejected before Playwright launches/connects or a browser profile is created; safe resume of the same authenticated tab is a V2-04 follow-up.
 - The WQ-7 production-safety fixture's delayed `setTimeout(form.submit())` vector is now opt-in and enabled only by its dedicated test. This narrow test-only fix was ported from the main-workspace browser-gate package; the delayed-submit assertion remains intact, and unrelated safe-Continue tests no longer race against the timer.
 - WQ-7C and most WQ-8 Phase A fixture tests reuse pytest-playwright's context fixture. One public `LiveBrowserRunner.run` proof runs in a bounded worker thread, avoiding a second sync manager on pytest's event-loop thread while preserving internally owned-context coverage.
+- This classifier slice excludes `script`, `style`, and inert `template` subtree data from `_DomExtractor` page-state text. It preserves ordinary visible body/title text and clickable labels. `noscript` remains included because its rendering depends on script availability, which static HTML parsing cannot know.
+- Inspection corrected the defect location: live `navigator.apply_path_finder.analyze_page()` already reads rendered `body.inner_text()` and is unchanged. The false positive was in static `navigator.page_observer.observe_html()` / `_DomExtractor`.
+- Added synthetic regressions for `new Error(...)` and style/template source on an application form, a visible error page, harmless source text on a login page, a `noscript` fallback login signal, and CAPTCHA's existing precedence over visible error/login signals.
 
 ## Explicit unresolved P1 — observation/fill path outside this guard
 
@@ -45,25 +48,14 @@ protected. Address this P1 in the next V2-02 shared-executor slice; do not
 silently merge the guard into controlled submission execution without a
 separate design and review.
 
-## Current package files
+## Changed files in this classifier slice
 
-- `src/universal_auto_applier/browser/live_models.py`
-- `src/universal_auto_applier/browser/live_runner.py`
-- `src/universal_auto_applier/browser/request_interlock.py`
-- `src/universal_auto_applier/browser/submit_interlock.py`
-- `src/universal_auto_applier/cli.py`
-- `src/universal_auto_applier/services/pipeline_worker_runner.py`
-- `tests/playwright/test_preparation_request_interlock.py`
-- `tests/playwright/test_wq7_production_safety.py`
-- `tests/playwright/test_wq7c_synthetic_mutation.py`
-- `tests/playwright/test_wq8_phase_a_interlock.py`
-- `tests/unit/test_preparation_request_interlock.py`
-- `tests/unit/test_cli_llm_wiring.py`
-- `tests/unit/test_wq7_live_dry_run_platforms.py`
-- `docs/NEXT_WORKPACKAGES.md`, `docs/v2/UAA_V2_REVIEW_AND_PLAN.md`, and this handoff
-- `docs/generalization/LIVE_BROWSER_DRY_RUN.md`
+- `src/universal_auto_applier/navigator/page_observer.py`
+- `tests/unit/test_page_observer.py`
+- `docs/NEXT_WORKPACKAGES.md`
+- `docs/handoffs/ACTIVE_WORKPACKAGE.md`
 
-## Validation results
+## Inherited V2-02 HTTP-interlock validation
 
 - Focused request-interlock and CLI attachment unit selection: **9 passed in 0.86 seconds**.
 - Browser order `test_preparation_request_interlock.py` → `test_wq8_phase_a_interlock.py` → `test_wq7c_synthetic_mutation.py`: **18 passed in 66.54 seconds**. The exact WQ-7C → WQ-8 pair passed **14 tests in 54.67 seconds**. The broader lifecycle regression, with a pytest-playwright page fixture first, then safety fixture → WQ-7C → WQ-8, passed **41 tests in 120.31 seconds**. This verifies both ordering and the shared Playwright-manager lifecycle.
@@ -73,32 +65,39 @@ separate design and review.
 - `pyright`: **0 errors, 0 warnings, 0 informations**. It noted no `.venv` under the isolated worktree path configured in `pyproject.toml`; it used the main workspace's installed venv executable. The diagnostic did not affect type-check results.
 - `git diff --cached --check` and `git diff --check` both pass for the staged review package. No Playwright-specific MCP is exposed in the enabled tool catalog; local synthetic browser tests verify the request guard at 1440×900 and 390×844. No dashboard UI changed. No live tests, ATS targets, or real submissions have been run.
 
-## Decisions and limits
+## Classifier-slice validation
 
-- This is a preparation HTTP request guard, not universal network-submission prevention. It blocks non-read-only HTTP methods observed by Playwright context routing; `GET` endpoints with server-side effects and WebSocket frames are outside coverage. Reports state these limits.
-- Playwright exposes active service workers, not every dormant registration in a caller-owned context. Such contexts may have background-worker activity that this guard cannot enumerate. Internally created UAA contexts block service workers. Caller-owned contexts fail closed when an existing page or active worker is visible and must pass the registration-guard and per-page bypass checks; the report does not claim those checks prove dormant registrations absent.
-- The blanket method policy may pause legitimate uploads, autosave and intermediate steps that use POST/PUT/PATCH/DELETE. That is intentional for this slice. No exception is enabled; a future exception requires a qualified flow plus dedicated evidence, tests and review.
-- Existing `--browser-session-file` / `--cdp-endpoint` preparation is temporarily unavailable. The old CLI selected an existing browser page before entering a caller-owned context, and the safety guard correctly refuses that context. The CLI now fails early with a next action; implement verified same-tab resume and ownership in V2-04 before restoring this capability.
-- Existing WQ-8 authorization/hash/claim gates and `submission/execution_service.py` were not changed. Preparation remains separate from owner-approved controlled submission.
-- Report/UI follow-up: `submitted=false` means UAA did not confirm a submission; when `request_outcome_unknown=true`, remote non-submission is not established. Any dashboard or report consumer must show the unknown/reconciliation state separately, not present `submitted=false` as proof of no remote application.
+- Focused observer tests: `python -m pytest tests/unit/test_page_observer.py -q` — **33 passed in 0.28s** (run with the repository venv from the isolated worktree).
+- Full non-live/non-Playwright suite: `python -m pytest -m "not live and not playwright" -q` — **1,516 passed, 313 deselected in 825.01s**.
+- Ruff check passed; Ruff format check passed (**242 files already formatted**); Pyright reported **0 errors, 0 warnings, 0 informations**. Pyright noted that the isolated worktree has no local `.venv` and used the configured main-workspace environment.
+- Final diff checks: `git diff --check` passed; staging is pending supervisor review.
+- No Playwright browser tests are directly affected: static `observe_html()` parsing changed; live Playwright `analyze_page()` is unchanged. No live ATS pages or submissions were used.
+
+## Classifier decisions and limits
+
+- The parser now omits data from `script`, `style`, and `template` subtrees. It leaves `noscript` content included because `noscript` may render when scripting is disabled and this static parser has no scripting-mode input.
+- `observe_html()` parses markup without browser layout/computed-style information. CSS-hidden body text can still affect its state classification; this bounded change only removes inherently inert source/template text. Live `analyze_page()` remains on Playwright `body.inner_text()` and is not modified.
+- Existing visible error, login, CAPTCHA detections and their priority remain unchanged. Unknown page layouts remain unknown and safely blocked by the existing exploration path.
+- The inherited HTTP interlock only covers `LiveBrowserRunner` paths; API/supervisor observation/fill still has the separate unresolved P1 recorded below. This classifier change does not affect or claim to fix that guard coverage.
+- This branch starts at `6ba4a551f1d22f0f4a656394529d90c095e63a55`. The later V2-01 browser-gate integration is separate on `checkpoint/v2-02-safety`; this classifier branch has not merged it.
 
 ## Blockers / risks
 
-- Supervisor approved the staged diff. The immediate action is to commit and push this checkpoint; do not merge it into `main`.
-- The known transport coverage limits above remain. An abort failure is escalated as unknown remote outcome and blocks automatic retry; no live target behavior was tested.
+- No implementation blocker. The parent safety branch has a separate browser-gate integration; await supervisor direction before reconciling it into this classifier checkpoint.
+- `noscript` and CSS-hidden content have the documented static-parser limitations above. No browser behavior or user-facing UI changed.
 
 ## Exact next action
 
-Commit and push the approved staged package, then fetch and compare the dynamic local and remote checkpoint SHAs. The exact commands are:
+Stage only the four classifier-slice paths, run `git diff --cached --check`, and send the staged diff/status plus exact gate results to the supervisor. Do not commit or push before review. After approval, commit and push `checkpoint/v2-02-classifier`, then fetch and compare the dynamic local and remote checkpoint SHAs:
 
 ```text
-git commit -m "fix(v2-02): block mutating preparation requests"
-git push -u origin checkpoint/v2-02-safety
+git commit -m "fix(v2-02): ignore inert markup in page classification"
+git push -u origin checkpoint/v2-02-classifier
 git fetch origin
 git rev-parse HEAD
-git rev-parse origin/checkpoint/v2-02-safety
+git rev-parse origin/checkpoint/v2-02-classifier
 ```
 
-After the checkpoint is verified on origin, reconcile with the separately reviewed V2-01 browser-gate package on `checkpoint/v2-01-correctness` when the supervisor directs the integration step. Do not merge into `main` or start shared-executor implementation yet.
+Do not merge into `main` or start the shared-executor implementation until the supervisor directs the next step.
 
-- **Last updated:** 2026-09-25T01:05:21Z.
+- **Last updated:** 2026-09-25T02:52:58Z.
