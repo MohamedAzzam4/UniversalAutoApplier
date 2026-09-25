@@ -57,6 +57,12 @@ CLI_COMMANDS: frozenset[str] = frozenset(
     }
 )
 
+_ATTACHED_PREPARATION_UNAVAILABLE = (
+    "attached browser preparation is temporarily unavailable because safety requires a fresh "
+    "UAA-owned browser context with no existing pages. Use the standard UAA-launched browser; "
+    "verified attached-session resume is planned for V2-04."
+)
+
 
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="python -m universal_auto_applier")
@@ -548,6 +554,12 @@ def _live_dry_run(settings: Settings, args: argparse.Namespace) -> int:
             file=sys.stderr,
         )
         return 2
+    if cdp_endpoint is not None:
+        print(
+            f"error: {_ATTACHED_PREPARATION_UNAVAILABLE}",
+            file=sys.stderr,
+        )
+        return 2
 
     headless = settings.browser_headless if args.headless is None else bool(args.headless)
     profile_dir: Path | None
@@ -582,6 +594,7 @@ def _live_dry_run(settings: Settings, args: argparse.Namespace) -> int:
         channel=args.channel or settings.browser_channel,
         timeout_ms=args.timeout_ms or settings.browser_timeout_ms,
         max_steps=args.max_steps or settings.browser_max_steps,
+        hard_submit_block=True,
         wq8_phase_a=wq8_phase_a,
         cookie_consent_policy=settings.cookie_consent_policy,  # type: ignore[arg-type]
     )
@@ -666,6 +679,13 @@ def _live_dry_run(settings: Settings, args: argparse.Namespace) -> int:
     print(f"fields: {len(report.fields)}")
     print(f"uploads: {len(report.uploads)}")
     print(f"submitted: {report.submitted}")
+    print("request_interlock_scope: LiveBrowserRunner.run")
+    print(f"request_interlock_installed: {report.request_interlock_installed}")
+    print(f"request_interlock_coverage: {report.request_interlock_coverage}")
+    print(f"request_interlock_limits: {'; '.join(report.request_interlock_limitations)}")
+    print(f"blocked_http_requests: {report.blocked_http_request_count}")
+    print(f"request_interlock_failure: {report.request_interlock_failure or 'none'}")
+    print(f"request_outcome_unknown: {report.request_outcome_unknown}")
     print(f"report: {report.report_path}")
     if report.status == "review_ready":
         return 0
@@ -792,6 +812,10 @@ def _persist_interventions(settings: Settings, application_id: str, report: Live
 
 
 def _browser_session(settings: Settings, args: argparse.Namespace) -> int:
+    if bool(getattr(args, "attachable", False)):
+        print(f"error: {_ATTACHED_PREPARATION_UNAVAILABLE}", file=sys.stderr)
+        return 2
+
     import json
     import os
     import socket
@@ -1312,6 +1336,13 @@ def _live_synthetic_mutation(settings: Settings, args: argparse.Namespace) -> in
     print(f"clicks: {len(report.click_path)}")
     print(f"fields: {len(report.fields)}")
     print(f"uploads: {len(report.uploads)}")
+    print("request_interlock_scope: LiveBrowserRunner.run_synthetic_mutation")
+    print(f"request_interlock_installed: {report.request_interlock_installed}")
+    print(f"request_interlock_coverage: {report.request_interlock_coverage}")
+    print(f"request_interlock_limits: {'; '.join(report.request_interlock_limitations)}")
+    print(f"blocked_http_requests: {report.blocked_http_request_count}")
+    print(f"request_interlock_failure: {report.request_interlock_failure or 'none'}")
+    print(f"request_outcome_unknown: {report.request_outcome_unknown}")
     print(f"plan_hash: {report.plan_hash}")
     print(f"plan_path: {report.mutation_plan_path}")
     print(f"plan_chain_hashes: {len(report.plan_chain_hashes)}")

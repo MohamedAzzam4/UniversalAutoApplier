@@ -168,6 +168,15 @@ class SubmitInterlockCounters(BaseModel):
     network_submission_detector: str = "not_instrumented"
 
 
+class BlockedHttpRequest(BaseModel):
+    """Sanitized evidence that preparation blocked a routed HTTP request."""
+
+    method: str
+    resource_type: str = "unknown"
+    destination_origin: str = "unknown-origin"
+    reason: str
+
+
 class LiveRunReport(BaseModel):
     """Complete machine-readable report for one live browser dry-run."""
 
@@ -186,6 +195,9 @@ class LiveRunReport(BaseModel):
     dom_snapshot_path: str | None = None
     report_path: str | None = None
     errors: list[str] = Field(default_factory=list[str])
+    # True only when this run confirmed a submission. False means UAA did not
+    # confirm one; when request_outcome_unknown is true, it does not prove the
+    # remote site did not receive an application.
     submitted: bool = False
     recon_observation: LiveFormObservation | None = None
     # WQ-7C synthetic mutation evidence.
@@ -203,6 +215,25 @@ class LiveRunReport(BaseModel):
     mutation_plan_chain_paths: list[str] = Field(default_factory=list[str])
     # Structured zero-tolerant submit evidence (WQ-7C closure item 2).
     submit_interlock: SubmitInterlockCounters | None = None
+    # LiveBrowserRunner context-route coverage is limited to HTTP requests
+    # observed by Playwright. It does not cover WebSocket frames or
+    # server-side effects of GET requests. Request paths, queries, headers,
+    # and bodies are excluded. Other browser preparation paths may not install
+    # this guard and must not inherit a coverage claim from this report.
+    request_interlock_installed: bool = False
+    request_interlock_coverage: Literal["none", "playwright_context_http_routes"] = "none"
+    request_interlock_limitations: list[str] = Field(
+        default_factory=lambda: [
+            "WebSocket frames and GET endpoints with side effects are outside HTTP-route coverage.",
+            "Dormant service workers in caller-owned contexts cannot be enumerated.",
+        ]
+    )
+    request_interlock_failure: str | None = None
+    request_outcome_unknown: bool = False
+    blocked_http_request_count: int = 0
+    blocked_http_requests: list[BlockedHttpRequest] = Field(
+        default_factory=list[BlockedHttpRequest]
+    )
 
 
 __all__ = [
@@ -215,5 +246,6 @@ __all__ = [
     "LiveUploadEvidenceSource",
     "LiveUploadContract",
     "LiveUploadStatus",
+    "BlockedHttpRequest",
     "SubmitInterlockCounters",
 ]

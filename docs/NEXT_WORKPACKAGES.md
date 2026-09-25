@@ -42,7 +42,7 @@ archived, and no live mutation or real submission occurred. The first real
 form family remains an explicit owner decision until an approved queue target
 is available.
 
-### V2-01 — Immediate correctness blockers (active; F2b upload-evidence integration in review)
+### V2-01 — Immediate correctness blockers (checkpointed at `8ed966d7`; V2-02 is active)
 
 **Objective.** Correct unsupported fact assertions, missing field read-back,
 destructive re-import of UAA operational state, inconsistent duplicate gates,
@@ -143,8 +143,8 @@ suite is not claimed green. The broad non-Playwright result includes the
 parallel F2b source changes present in the shared working tree; the F4/T06
 focused tests isolate that package. No real target or submission was in scope.
 
-**Current bounded slice — F2b/T04/T19 upload evidence integration
-(implemented; supervisor checkpoint review pending).** Live file execution
+**F2b/T04/T19 upload evidence integration (checkpointed at
+`8ed966d7e9a1c775a268ea2b1f9262d5dda57cd2`).** Live file execution
 preserves per-document selected filenames, observed constraints and evidence
 source/detail. A native `selection_verified` record without an explicit
 native-final-submit flow contract remains visible but unresolved; an explicit
@@ -170,14 +170,103 @@ suite was not rerun; the Phase 6 dashboard header test update is separate and
 excluded from this package. No new ATS protocol is enabled by default, and no
 real ATS action or submission occurred.
 
-**Next action.** Supervisor checkpoint review of the exact staged F2b source,
-test and handoff paths; commit and push only after that review, verify local
-HEAD equals `origin/checkpoint/v2-01-correctness`, and stop before V2-01's next
-slice.
+**Checkpoint result.** The implementation and handoff were preserved on
+`checkpoint/v2-01-correctness` at the SHA above. V2-01 is complete;
+the full Playwright-inclusive suite and separate dashboard header regression
+remain outside that checkpoint's validation claim.
 
 **Predecessor.** V2-00 baseline checkpoint `0e21adb43b400dd90a91a3ba754269e1a061375e`.
 Owner approval is separately required for any real target/live action under
 the existing WQ-8 contract; no code review gate blocks this synthetic work.
+
+### V2-02 — One executor (active; preparation HTTP interlock slice in review)
+
+**Objective.** Route CLI, dashboard worker, supervisor preparation and snapshot
+observation through one multi-step state machine; remove duplicated readiness
+decisions; provide structured errors and progress fingerprints. This first
+bounded slice makes the preparation runner's submit block mandatory and adds
+a conservative, context-scoped HTTP method guard.
+
+**Implemented in the current slice.** `hard_submit_block` defaults to true and
+cannot be disabled. The `LiveBrowserRunner.run` and synthetic-mutation paths
+install the submit and request guards before creating their page or navigating.
+Playwright context routes allow `GET`, `HEAD` and `OPTIONS`; all other HTTP
+methods are aborted with sanitized report and CLI evidence. The same route
+applies to popups. Internally created contexts set `service_workers="block"`;
+caller-owned contexts fail closed when pages or active workers are visible,
+deny later service-worker registration, and require page-level service-worker
+bypass to be armed and checked before navigation. No method/URL exceptions are
+enabled. Any future exception needs a qualified flow, evidence, tests and
+review. These claims apply only to those `LiveBrowserRunner` paths.
+
+CLI `browser-session --attachable` and `live-dry-run --browser-session-file` /
+`--cdp-endpoint` now fail early with an actionable message before launching or
+connecting. That path previously selected an existing tab, which cannot
+satisfy the fresh-context safety precondition. Safe attached-session resume is
+deferred to V2-04, which must establish verified session/tab ownership and
+safe replay before restoring this capability.
+
+If `route.continue_()` fails, or aborting a blocked request fails, report the HTTP outcome as unknown,
+`needs_user_input`, with `http_request_outcome_unknown_reconciliation_required`.
+The operator must reconcile application state before retrying. The pipeline
+worker stores this as `NEEDS_USER_INPUT` with an intervention; that state is
+not eligible for its automatic queue selection. This avoids presenting an
+uncertain route as either ordinary setup failure or a safe retry.
+
+The WQ-7 production-safety fixture also has a narrow delayed-submit race fix
+ported from the main-workspace browser-gate package: the delayed
+`setTimeout(form.submit())` vector is opt-in and is enabled only in its
+dedicated blocking test. Its assertion remains intact, while unrelated
+safe-Continue tests no longer trigger the delayed vector.
+
+**Coverage limits.** `request_interlock_coverage` reports
+`playwright_context_http_routes`. It describes routed HTTP requests, not a
+universal no-side-effect guarantee. WebSocket frames and GET endpoints with
+server-side effects are outside this guard. Caller-owned contexts may contain
+dormant service-worker registrations that Playwright does not expose through
+its active-worker list; the guard cannot prove those background paths absent.
+Preparation must not claim universal network-submission prevention. Flows
+that need blocked POST/PUT/PATCH/DELETE requests remain paused for the owner.
+
+**Unresolved P1 — shared observation/fill executor.** The review-only
+`SubmissionExecutionService.observe_and_persist_snapshot()` path is not covered
+by this slice and still installs only the form-submit interlock before
+`execute_live_form`. It is reachable through API `POST
+/api/submit/{application_id}/observe` and supervisor `prepare_application` /
+`retry_application`, so it can issue POST-based autosave or intermediate
+requests. The ordinary pipeline worker's `LiveBrowserRunner.run` path is
+covered. Do not claim all UAA preparation is protected. Address this path in
+the next shared-executor slice; keep controlled-submission execution separate
+until that design is reviewed.
+
+**Focused acceptance.** A loopback fixture exercises a native onchange
+`form.submit()`, fetch POST, `sendBeacon`, safe GET navigation/fill and a
+`target=_blank` popup. It asserts zero server-side POSTs and verifies that
+report/log evidence excludes URL query values and request bodies. A forced
+`route.abort()` failure must produce an unknown-outcome reconciliation
+intervention and keep the job out of automatic retry eligibility. Existing
+WQ-7C and WQ-8 interlock regressions remain required, alongside the full
+non-live/non-Playwright gate and Ruff/Pyright checks. No real ATS target or
+submission is part of this work.
+
+The synthetic guard outcome is also checked at 1440×900 and 390×844. No
+Playwright MCP is exposed in this environment, so these local browser runs
+provide viewport acceptance. CLI regressions prove both attachable-session
+launch and CDP execution are rejected before Playwright starts; safe same-tab
+resume remains a V2-04 task.
+
+**Current validation.** The safety fixture → WQ-8 → WQ-7C browser selection
+passed **18 tests in 66.54 seconds**; exact WQ-7C → WQ-8 passed **14 tests in
+54.67 seconds**. The representative plugin-page → safety fixture → WQ-7C →
+WQ-8 sequence passed **41 tests in 120.31 seconds**. The broader runner/request-
+interlock/WQ-7/WQ-8 selection passed **106 tests in 118.07 seconds**. Focused
+unit coverage passed **9 tests in 0.86 seconds**, and the full
+non-live/non-Playwright gate passed **1,511 tests, 313 deselected in 795.80
+seconds**. Ruff check and format passed (**242 files already formatted**);
+Pyright reported **0 errors, 0 warnings, 0 informations**; `git diff --check`
+is run again before review. No real ATS target or submission was used.
+
+**Predecessor.** V2-01 checkpoint `8ed966d7e9a1c775a268ea2b1f9262d5dda57cd2`.
 
 ### V2-07A — Dashboard interaction design (separate follow-up)
 

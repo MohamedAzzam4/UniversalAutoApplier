@@ -77,6 +77,27 @@ Fix: separate proposed, written and read-back values; verify after blur/stabilit
 
 Fix: central action authorization; capability-specific request monitoring/blocking for known ATS submit endpoints; browser request evidence; fail closed on unverified mutation flows. Distinguish document upload, autosave and next-step requests from final application creation. A blanket block of POST requests would break legitimate forms, and generic endpoint classification cannot offer an absolute guarantee. Document supported guarantees honestly.
 
+Interim V2-02 safety slice: `LiveBrowserRunner.run` and its synthetic-mutation
+path block every routed HTTP method except GET, HEAD and OPTIONS before
+navigation. This intentionally pauses flows that need POST/PUT/PATCH/DELETE
+for uploads, autosave or intermediate steps; no flow-specific exception is
+enabled in this slice. The report labels coverage as Playwright context HTTP
+routes. WebSocket frames, GET endpoints with server-side effects, and dormant
+service-worker registrations in caller-owned contexts remain outside what this
+guard can prove. The review-only `SubmissionExecutionService` observation/fill
+path is reachable through the API observe endpoint and supervisor
+prepare/retry actions, and is not covered yet; it remains a P1 for the next
+shared-executor slice. The ordinary pipeline worker's `LiveBrowserRunner` path
+is covered. This slice narrows the known page-request gap but does not complete
+the capability-specific or universal no-side-effect contract above.
+
+If Playwright cannot continue an allowed request or abort a denied request,
+the remote outcome is uncertain.
+The run reports `needs_user_input` with
+`http_request_outcome_unknown_reconciliation_required` and requires an
+operator reconciliation before retry. The pipeline stores the job as
+`NEEDS_USER_INPUT` with an intervention, outside automatic queue eligibility.
+
 ### F4 — P1: manual submission markers are not checked consistently [reproduced]
 
 `persistence/job_repository.py:227–260` stores `dashboard_submitted` separately from canonical status. Pipeline selection checks it; `submission/coordinator.py:150–319` does not. With a synthetic review-ready job, valid snapshot approval, and manual marker set true, `check_gates` returned `GateResult(allowed=True)`. This was a gate-only check; no submit browser execution occurred. Supervisor code also lacks the marker check.
@@ -111,7 +132,7 @@ Fix: a UAA-owned, versioned candidate record plus per-job overrides, with explic
 
 ### F9 — P2: authentication handoff is a partial feature [source-inspected]
 
-Attachable browser support exists, but the CLI selects an existing page and then calls a runner that creates a new page and navigates from `job.url` (`cli.py:618–642`, `browser/live_runner.py:230–233`). It can reuse session cookies; it does not actually resume that exact partially completed tab. A DATEV-specific warning also remains in generic CLI code.
+Attachable browser support was partial: the CLI selected an existing page, but the runner's fresh-context request guard refuses contexts that already have pages. V2-02 now rejects `browser-session --attachable` and `live-dry-run --browser-session-file` / `--cdp-endpoint` before launching or connecting and directs the owner to the standard UAA-launched browser. This is an intentional temporary compatibility break so the guard is not silently weakened. The attached mode stays unavailable until V2-04 can verify session/tab identity, ownership and safe replay. A DATEV-specific warning also remains in generic CLI code.
 
 Fix: session identity, tab/frame binding, application identity checks, explicit pause/resume and ownership. Reuse an authenticated context and the correct verified tab when available. After browser loss, replay only safe, verified steps; do not silently clear/restart a draft or replay final submit.
 

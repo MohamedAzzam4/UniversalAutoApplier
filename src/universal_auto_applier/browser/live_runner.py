@@ -28,6 +28,10 @@ from universal_auto_applier.browser.live_models import (
     LiveRunReport,
     SubmitInterlockCounters,
 )
+from universal_auto_applier.browser.request_interlock import (
+    PreparationRequestInterlock,
+    RequestInterlockSetupError,
+)
 from universal_auto_applier.browser.submit_interlock import (
     install_interlock,
     is_interlock_installed,
@@ -62,10 +66,10 @@ class LiveBrowserConfig:
     timeout_ms: int = 30_000
     max_steps: int = 20
     capture_trace: bool = True
-    # WQ-7: When True, the runner is in hard-submit-blocked mode. Even a
-    # direct call to ``attempt_submit`` returns "blocked" without clicking.
-    # This is the lowest-layer guarantee that no final submission occurs.
-    hard_submit_block: bool = False
+    # Preparation always runs with a hard submit block. Keep this explicit
+    # for report/config compatibility, but reject False so callers cannot
+    # accidentally weaken the preparation runner.
+    hard_submit_block: bool = True
     # WQ-8 Phase A: real-data preparation with hard interlock. When True,
     # the runner installs the WQ-7 browser-side submit interlock BEFORE
     # navigation (real candidate allowed, real CV upload allowed, final
@@ -81,6 +85,8 @@ class LiveBrowserConfig:
     cookie_consent_policy: str = "necessary_only"
 
     def __post_init__(self) -> None:
+        if not self.hard_submit_block:
+            raise ValueError("hard_submit_block cannot be disabled for preparation runs")
         if self.timeout_ms < 1_000:
             raise ValueError("timeout_ms must be at least 1000")
         if self.max_steps < 1 or self.max_steps > 100:
@@ -131,13 +137,17 @@ class LiveBrowserRunner:
                         headless=self._config.headless,
                         channel=self._config.channel,
                         accept_downloads=False,
+                        service_workers="block",
                     )
                 else:
                     browser = playwright.chromium.launch(
                         headless=self._config.headless,
                         channel=self._config.channel,
                     )
-                    context = browser.new_context(accept_downloads=False)
+                    context = browser.new_context(
+                        accept_downloads=False,
+                        service_workers="block",
+                    )
                 return self.run_in_context(
                     context,
                     job,
@@ -212,12 +222,10 @@ class LiveBrowserRunner:
         # WQ-8 Phase A reuses the WQ-7 interlock implementation (no second
         # interlock) — real data + real CV allowed, but submission impossible,
         # no one-shot allowance armed, no authorization row required.
-        if self._config.hard_submit_block or self._config.wq8_phase_a:
-            install_interlock(context)
-            tag = "WQ-8 Phase A" if self._config.wq8_phase_a else "WQ-7"
-            logger.info(
-                "[%s] %s submit interlock installed on context", job.application_id[:12], tag
-            )
+        request_interlock = PreparationRequestInterlock(
+            context,
+            application_id=job.application_id,
+        )
 
         if self._config.capture_trace:
             try:
@@ -227,9 +235,38 @@ class LiveBrowserRunner:
                 report.errors.append(f"trace_start_failed: {exc}")
 
         try:
+            # Both guards are armed on the context before a page exists. The
+            # request guard allows read-only HTTP navigation while blocking
+            # fetch/XHR/form mutations. A failed install fails this run closed.
+            request_interlock.install()
+            report.request_interlock_installed = request_interlock.installed
+            if request_interlock.installed:
+                report.request_interlock_coverage = "playwright_context_http_routes"
+            try:
+                install_interlock(context)
+            except Exception as exc:  # noqa: BLE001
+                raise RequestInterlockSetupError(
+                    "failed to install submit interlock before navigation"
+                ) from exc
+            tag = "WQ-8 Phase A" if self._config.wq8_phase_a else "WQ-7"
+            logger.info(
+                "[%s] %s submit and network interlocks installed before navigation",
+                job.application_id[:12],
+                tag,
+            )
             page = context.new_page()
+            request_interlock.attach_page(page)
+            request_interlock.verify_page(page)
+            page.goto("about:blank", wait_until="domcontentloaded")
+            request_interlock.verify_service_worker_registration_guard(page)
+            if not is_interlock_installed(page):
+                raise RequestInterlockSetupError(
+                    "submit interlock did not execute before target navigation"
+                )
+            request_interlock.verify_page(page)
             logger.info("[%s] navigate opening %s", job.application_id[:12], job.url)
             page.goto(job.url, wait_until="domcontentloaded", timeout=self._config.timeout_ms)
+            request_interlock.verify_page(page)
             self._wait_for_stable_page(page)
 
             for step_number in range(1, self._config.max_steps + 1):
@@ -378,6 +415,7 @@ class LiveBrowserRunner:
                     report.stopped_reason = "click_failed"
                     report.errors.append(f"click_failed: {exc}")
                     break
+                request_interlock.verify_page(page)
                 report.click_path.append(
                     LiveClickRecord(
                         step_number=step_number,
@@ -394,6 +432,10 @@ class LiveBrowserRunner:
                 report.status = "needs_user_input"
                 report.stopped_reason = "max_steps_reached"
 
+        except RequestInterlockSetupError as exc:
+            report.status = "failed"
+            report.stopped_reason = "preparation_safety_setup_failed"
+            report.errors.append(str(exc))
         except PlaywrightTimeoutError as exc:
             report.status = "needs_user_input"
             report.stopped_reason = "navigation_timeout"
@@ -450,6 +492,8 @@ class LiveBrowserRunner:
                     counters["blocked_submissions"],
                 )
 
+            self._record_request_interlock(report, request_interlock)
+
             if page is not None and not page.is_closed():
                 report.final_url = page.url
                 self._screenshot(page, run_dir, "final.png", report)
@@ -462,14 +506,10 @@ class LiveBrowserRunner:
                 except PlaywrightError as exc:
                     report.errors.append(f"trace_stop_failed: {exc}")
             report.finished_at = datetime.now(UTC)
-            # WQ-7: report.submitted reflects what actually happened.
-            # The interlock blocks all submit events, so submitted should
-            # always be False. But we don't force it — we read the truth
-            # from the interlock counters. If the interlock was not installed
-            # (non-WQ-7 mode), submitted remains False because the runner
-            # never calls submit.
-            if not self._config.hard_submit_block:
-                report.submitted = False
+            # Preparation never calls submit, and the interlock is a required
+            # invariant. The counters provide independent evidence that the
+            # browser guard was armed.
+            report.submitted = False
             self._write_report(report, run_dir)
 
         return report
@@ -634,13 +674,17 @@ class LiveBrowserRunner:
                         headless=self._config.headless,
                         channel=self._config.channel,
                         accept_downloads=False,
+                        service_workers="block",
                     )
                 else:
                     browser = playwright.chromium.launch(
                         headless=self._config.headless,
                         channel=self._config.channel,
                     )
-                    context = browser.new_context(accept_downloads=False)
+                    context = browser.new_context(
+                        accept_downloads=False,
+                        service_workers="block",
+                    )
                 return self.run_in_context_synthetic(
                     context,
                     job,
@@ -704,11 +748,9 @@ class LiveBrowserRunner:
         page: Page | None = None
         trace_started = False
         seen_actions: set[tuple[str, str, str]] = set()
-
-        install_interlock(context)
-        logger.info(
-            "[%s] WQ-7C submit interlock armed before mutation",
-            job.application_id[:12],
+        request_interlock = PreparationRequestInterlock(
+            context,
+            application_id=job.application_id,
         )
 
         if self._config.capture_trace:
@@ -719,9 +761,33 @@ class LiveBrowserRunner:
                 report.errors.append(f"trace_start_failed: {exc}")
 
         try:
+            request_interlock.install()
+            report.request_interlock_installed = request_interlock.installed
+            if request_interlock.installed:
+                report.request_interlock_coverage = "playwright_context_http_routes"
+            try:
+                install_interlock(context)
+            except Exception as exc:  # noqa: BLE001
+                raise RequestInterlockSetupError(
+                    "failed to install submit interlock before navigation"
+                ) from exc
+            logger.info(
+                "[%s] WQ-7C submit and network interlocks armed before mutation",
+                job.application_id[:12],
+            )
             page = context.new_page()
+            request_interlock.attach_page(page)
+            request_interlock.verify_page(page)
+            page.goto("about:blank", wait_until="domcontentloaded")
+            request_interlock.verify_service_worker_registration_guard(page)
+            if not is_interlock_installed(page):
+                raise RequestInterlockSetupError(
+                    "submit interlock did not execute before target navigation"
+                )
+            request_interlock.verify_page(page)
             logger.info("[%s] wq7c navigate opening %s", job.application_id[:12], job.url)
             page.goto(job.url, wait_until="domcontentloaded", timeout=self._config.timeout_ms)
+            request_interlock.verify_page(page)
             self._wait_for_stable_page(page)
 
             for step_number in range(1, self._config.max_steps + 1):
@@ -870,6 +936,7 @@ class LiveBrowserRunner:
                     report.stopped_reason = "click_failed"
                     report.errors.append(f"click_failed: {exc}")
                     break
+                request_interlock.verify_page(page)
                 report.click_path.append(
                     LiveClickRecord(
                         step_number=step_number,
@@ -885,6 +952,10 @@ class LiveBrowserRunner:
                 report.status = "needs_user_input"
                 report.stopped_reason = "max_steps_reached"
 
+        except RequestInterlockSetupError as exc:
+            report.status = "failed"
+            report.stopped_reason = "preparation_safety_setup_failed"
+            report.errors.append(str(exc))
         except PlaywrightTimeoutError as exc:
             report.status = "needs_user_input"
             report.stopped_reason = "navigation_timeout"
@@ -938,6 +1009,8 @@ class LiveBrowserRunner:
                     f"dispatch={counters['dispatch_submit_events']}"
                 )
 
+            self._record_request_interlock(report, request_interlock)
+
             if page is not None and not page.is_closed():
                 report.final_url = page.url
                 self._screenshot(page, run_dir, "final.png", report)
@@ -955,6 +1028,42 @@ class LiveBrowserRunner:
 
         return report
 
+    @staticmethod
+    def _record_request_interlock(
+        report: LiveRunReport,
+        request_interlock: PreparationRequestInterlock,
+    ) -> None:
+        """Copy sanitized network-guard evidence and prevent false readiness."""
+        report.request_interlock_installed = request_interlock.installed
+        report.request_interlock_coverage = (
+            "playwright_context_http_routes" if request_interlock.installed else "none"
+        )
+        report.blocked_http_request_count = request_interlock.blocked_request_count
+        report.blocked_http_requests = list(request_interlock.blocked_requests)
+        if request_interlock.setup_error in {"request_abort_failed", "request_outcome_unknown"}:
+            report.request_interlock_failure = request_interlock.setup_error
+            report.request_outcome_unknown = True
+            report.status = "needs_user_input"
+            report.stopped_reason = "http_request_outcome_unknown_reconciliation_required"
+            report.errors.append(
+                "HTTP request handling failed; the remote side effect is unknown. "
+                "Reconcile the application state before retrying."
+            )
+        elif request_interlock.setup_error is not None:
+            report.status = "failed"
+            report.stopped_reason = "preparation_safety_setup_failed"
+            if "preparation network safety guard failed" not in report.errors:
+                report.errors.append("preparation network safety guard failed")
+        elif request_interlock.blocked_request_count:
+            if report.status != "failed":
+                report.status = "needs_user_input"
+                report.stopped_reason = "mutating_request_blocked"
+            report.errors.append(
+                "http_request_interlock: blocked "
+                f"{request_interlock.blocked_request_count} non-read-only HTTP request(s); "
+                "inspect sanitized network evidence before continuing"
+            )
+
     def attempt_submit(
         self,
         page: Page,
@@ -964,38 +1073,18 @@ class LiveBrowserRunner:
     ) -> str:
         """Attempt to click a submit control.
 
-        In normal mode (``hard_submit_block=False``), this method would click
-        the submit button. However, the runner **never** calls this method
-        during a dry run — it stops at ``final_submit_detected`` before any
-        click.
-
-        In WQ-7 mode (``hard_submit_block=True``), this method **always
-        returns "blocked"** without clicking, regardless of the selector
-        or page state. This is the lowest-layer guarantee: even if a bug or
-        future code change tried to call submit directly, the hard block
-        prevents the click.
+        Preparation has no normal-submit mode. This method always returns
+        ``"blocked"`` without clicking, regardless of the selector or page
+        state. Controlled submission goes through the separately authorized
+        submission service.
 
         Returns:
-            "clicked" if the submit was clicked (only in non-blocked mode),
-            "blocked" if the hard submit block is active,
+            "blocked" for preparation runs,
             "not_found" if the selector was not found on the page.
         """
         self._uaa_submit_clicks += 1
-        if self._config.hard_submit_block:
-            logger.warning(
-                "[wq7] attempt_submit blocked by hard_submit_block — "
-                "no click performed (selector=%s)",
-                submit_selector,
-            )
-            return "blocked"
-
-        # In non-blocked mode, we still do NOT click during a dry run.
-        # The runner's safety logic (choose_safe_action never returns
-        # dangerous_submit) prevents this path from being reached.
-        # This method exists solely to prove the hard block works.
         logger.warning(
-            "[wq7] attempt_submit called in non-blocked mode — "
-            "dry-run safety prevents clicking (selector=%s)",
+            "[wq7] attempt_submit blocked for preparation — no click performed (selector=%s)",
             submit_selector,
         )
         return "blocked"

@@ -11,17 +11,18 @@ reviewer gate:
 * submit events are blocked
 * UAA final submit clicks remain zero
 * no authorized-submit one-shot is armed during Phase A
-* legacy modes (hard_submit_block=False, wq8_phase_a=False) remain unchanged
+* preparation keeps the submit interlock armed without the WQ-8 label
 
 Deterministic — uses a minimal fixture form, no network, no real ATS.
 """
 
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import pytest
-from playwright.sync_api import Page
+from playwright.sync_api import BrowserContext, Page
 
 from universal_auto_applier.browser.live_runner import LiveBrowserConfig, LiveBrowserRunner
 from universal_auto_applier.browser.submit_interlock import read_counters
@@ -109,7 +110,11 @@ def test_wq8_phase_a_installs_interlock_before_navigation(
         wq8_phase_a=True,
     )
     runner = LiveBrowserRunner(config)
-    report = runner.run(job, real_candidate)
+    # The pytest-playwright plugin owns the main thread's Playwright lifecycle.
+    # Run this one public `run()` check on a worker thread to verify its
+    # internally owned browser/context without colliding with that manager.
+    with ThreadPoolExecutor(max_workers=1) as executor:
+        report = executor.submit(runner.run, job, real_candidate).result(timeout=60)
     assert report.submit_interlock is not None
     assert report.submit_interlock.installed is True
     assert report.submitted is False
@@ -122,7 +127,10 @@ def test_wq8_phase_a_installs_interlock_before_navigation(
 
 
 def test_wq8_phase_a_fills_real_fields_while_interlocked(
-    tmp_path: Path, wq8_real_job: ApplicationJob, real_candidate: CandidateProfile
+    context: BrowserContext,
+    tmp_path: Path,
+    wq8_real_job: ApplicationJob,
+    real_candidate: CandidateProfile,
 ) -> None:
     fixture = tmp_path / "phase_a2.html"
     fixture.write_text(_FIXTURE_REAL, encoding="utf-8")
@@ -135,7 +143,9 @@ def test_wq8_phase_a_fills_real_fields_while_interlocked(
         wq8_phase_a=True,
     )
     runner = LiveBrowserRunner(config)
-    report = runner.run(job, real_candidate)
+    report = runner.run_in_context(
+        context, job, candidate=real_candidate, artifact_dir=tmp_path / "artifacts2"
+    )
     assert report.submit_interlock.installed is True
     filled = [f for f in report.fields if f.status == "filled"]
     assert len(filled) >= 1
@@ -143,7 +153,10 @@ def test_wq8_phase_a_fills_real_fields_while_interlocked(
 
 
 def test_wq8_phase_a_blocks_form_submit_and_request_submit(
-    tmp_path: Path, wq8_real_job: ApplicationJob, real_candidate: CandidateProfile
+    context: BrowserContext,
+    tmp_path: Path,
+    wq8_real_job: ApplicationJob,
+    real_candidate: CandidateProfile,
 ) -> None:
     fixture = tmp_path / "phase_a3.html"
     fixture.write_text(_FIXTURE_REAL, encoding="utf-8")
@@ -156,26 +169,18 @@ def test_wq8_phase_a_blocks_form_submit_and_request_submit(
         wq8_phase_a=True,
     )
     runner = LiveBrowserRunner(config)
-    report = runner.run(job, real_candidate)
-
-    from playwright.sync_api import sync_playwright
-
-    with sync_playwright() as pw:
-        ctx = pw.chromium.launch(headless=True).new_context()
-        from universal_auto_applier.browser.submit_interlock import install_interlock
-
-        install_interlock(ctx)
-        page = ctx.new_page()
-        page.goto(f"file://{fixture}")
-        page.evaluate("document.getElementById('real-form').submit()")
-        page.evaluate("document.getElementById('real-form').requestSubmit()")
-        assert _fixture_runs(page) == 0
-        counters = read_counters(page)
-        assert counters["form_submit_calls"] >= 1
-        assert counters["request_submit_calls"] >= 1
-        assert counters["blocked_submissions"] >= 2
-        assert counters["authorized_submits"] == 0
-        ctx.close()
+    report = runner.run_in_context(
+        context, job, candidate=real_candidate, artifact_dir=tmp_path / "artifacts3"
+    )
+    page = context.pages[-1]
+    page.evaluate("document.getElementById('real-form').submit()")
+    page.evaluate("document.getElementById('real-form').requestSubmit()")
+    assert _fixture_runs(page) == 0
+    counters = read_counters(page)
+    assert counters["form_submit_calls"] >= 1
+    assert counters["request_submit_calls"] >= 1
+    assert counters["blocked_submissions"] >= 2
+    assert counters["authorized_submits"] == 0
     assert report.submit_interlock.blocked_submissions >= 0
     assert (
         report.submit_interlock.authorized_submits == 0
@@ -185,7 +190,10 @@ def test_wq8_phase_a_blocks_form_submit_and_request_submit(
 
 
 def test_wq8_phase_a_no_authorized_one_shot_armed(
-    tmp_path: Path, wq8_real_job: ApplicationJob, real_candidate: CandidateProfile
+    context: BrowserContext,
+    tmp_path: Path,
+    wq8_real_job: ApplicationJob,
+    real_candidate: CandidateProfile,
 ) -> None:
     fixture = tmp_path / "phase_a4.html"
     fixture.write_text(_FIXTURE_REAL, encoding="utf-8")
@@ -198,14 +206,19 @@ def test_wq8_phase_a_no_authorized_one_shot_armed(
         wq8_phase_a=True,
     )
     runner = LiveBrowserRunner(config)
-    report = runner.run(job, real_candidate)
+    report = runner.run_in_context(
+        context, job, candidate=real_candidate, artifact_dir=tmp_path / "artifacts4"
+    )
     counters = report.submit_interlock
     assert counters.authorized_submits == 0 if hasattr(counters, "authorized_submits") else True
     assert counters.uaa_submit_clicks == 0
 
 
-def test_legacy_mode_unchanged_without_wq8_flag(
-    tmp_path: Path, wq8_real_job: ApplicationJob, real_candidate: CandidateProfile
+def test_preparation_interlock_is_armed_without_wq8_flag(
+    context: BrowserContext,
+    tmp_path: Path,
+    wq8_real_job: ApplicationJob,
+    real_candidate: CandidateProfile,
 ) -> None:
     fixture = tmp_path / "legacy.html"
     fixture.write_text(_FIXTURE_REAL, encoding="utf-8")
@@ -215,9 +228,12 @@ def test_legacy_mode_unchanged_without_wq8_flag(
         headless=True,
         timeout_ms=5000,
         max_steps=5,
-        hard_submit_block=False,
         wq8_phase_a=False,
     )
     runner = LiveBrowserRunner(config)
-    report = runner.run(job, real_candidate)
-    assert report.submit_interlock.installed is False
+    report = runner.run_in_context(
+        context, job, candidate=real_candidate, artifact_dir=tmp_path / "artifacts_legacy"
+    )
+    assert report.submit_interlock.installed is True
+    assert report.request_interlock_installed is True
+    assert report.submitted is False

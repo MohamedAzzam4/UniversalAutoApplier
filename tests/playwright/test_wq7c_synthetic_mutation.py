@@ -394,13 +394,9 @@ class TestSyntheticMutationGuard:
         with pytest.raises(ValueError, match="not a WQ-7C synthetic identity"):
             runner.run_synthetic_mutation(job, plain, frozenset(), 5)  # type: ignore[arg-type]
 
-    def test_refuses_when_interlock_not_armed(self, tmp_path: Path) -> None:
-        runner = LiveBrowserRunner(
+    def test_preparation_config_cannot_disable_hard_submit_block(self, tmp_path: Path) -> None:
+        with pytest.raises(ValueError, match="hard_submit_block cannot be disabled"):
             LiveBrowserConfig(
                 artifacts_root=tmp_path / "live-runs",
                 hard_submit_block=False,
             )
-        )
-        job = _make_job("https://example.test/apply", tmp_path)
-        with pytest.raises(ValueError, match="hard_submit_block"):
-            runner.run_synthetic_mutation(job, PROFILE, frozenset(), 5)

@@ -83,13 +83,13 @@ class TestHardSubmitBlock:
         # Verify no click was performed on the page.
         mock_page.click.assert_not_called()
 
-    def test_attempt_submit_blocked_in_normal_mode_too(self, tmp_path: Path) -> None:
-        """Even in non-blocked mode, attempt_submit does not click (dry-run safety)."""
+    def test_attempt_submit_blocked_with_default_config(self, tmp_path: Path) -> None:
+        """The preparation runner always blocks direct submit calls."""
         config = LiveBrowserConfig(
             artifacts_root=tmp_path / "artifacts",
             headless=True,
-            hard_submit_block=False,
         )
+        assert config.hard_submit_block is True
         runner = LiveBrowserRunner(config)
         mock_page = MagicMock()
         result = runner.attempt_submit(mock_page, "button[type='submit']")
@@ -104,11 +104,8 @@ class TestHardSubmitBlock:
         )
         assert config_blocked.hard_submit_block is True
 
-        config_normal = LiveBrowserConfig(
-            artifacts_root=tmp_path,
-            hard_submit_block=False,
-        )
-        assert config_normal.hard_submit_block is False
+        with pytest.raises(ValueError, match="cannot be disabled"):
+            LiveBrowserConfig(artifacts_root=tmp_path, hard_submit_block=False)
 
     def test_report_submitted_always_false(self, tmp_path: Path) -> None:
         """The LiveRunReport.submitted field is always False in WQ-7."""

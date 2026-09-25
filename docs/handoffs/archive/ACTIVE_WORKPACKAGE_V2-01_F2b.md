@@ -1,0 +1,79 @@
+# Active Workpackage — V2-01 F2b/T04/T19 Upload-Evidence Integration
+
+- **Repository:** `MohamedAzzam4/UniversalAutoApplier`.
+- **WP ID / objective:** V2-01 F2b/T04/T19 — preserve truthful file-selection evidence, require an explicit flow contract before upload readiness, propagate evidence through the review API, and bind it into WQ-8 review-plan authorization.
+- **Status:** **IMPLEMENTATION COMPLETE; SUPERVISOR CHECKPOINT REVIEW REQUIRED BEFORE COMMIT/PUSH.**
+- **Branch:** `checkpoint/v2-01-correctness`.
+- **Base SHA:** `8cdb3925142f406a94228992ff42c72c21acd187` (pushed F4/T06 eligibility checkpoint from which F2b started).
+- **Last completed/checkpoint SHA:** `8cdb3925142f406a94228992ff42c72c21acd187`.
+- **Branch-head verification (required before handoff/review):**
+
+  ```text
+  git fetch origin
+  git rev-parse HEAD
+  git rev-parse origin/checkpoint/v2-01-correctness
+  ```
+
+  The two resolved values must match before checkpoint handoff. Do not embed the commit that contains this handoff as a “current HEAD” value.
+
+## Completed work
+
+- **V2-00 baseline:** checkpointed at `0e21adb43b400dd90a91a3ba754269e1a061375e`; selected branch lineage descends from WQ-8, then the supervisor and dashboard-history commits. Migration head and baseline test state are recorded in `docs/NEXT_WORKPACKAGES.md`.
+- **F1/T01–T02:** skill evidence abstains on absent, negated and contradictory statements, including German negative CV text; visa possession is not inferred from `requires_sponsorship`.
+- **Consent lifecycle repair:** pytest-playwright's managed page fixture replaces nested sync Playwright managers. Ordered dashboard-plus-consent reproduction passed 8/8; standalone consent module passed 7/7.
+- **F2/T03:** checkpointed at `706831cf86f5d28ab7cd862de098b72f643a0112`. Text fills require stable compatible DOM read-back; incompatible rewrites remain interventions. Live requiredness reaches the snapshot.
+- **F4/T10 and F4/T06:** re-import protects UAA-owned operational keys under an interim allowlist; shared eligibility blocks duplicate preparation/submission and preserves WQ-8 authorization and unknown-outcome gates. Last combined branch checkpoint is `8cdb3925142f406a94228992ff42c72c21acd187`.
+- **F2b/T04/T19 implemented:** native selection stays visible as `selection_verified`, but it is unresolved unless a typed `NativeFinalSubmitUploadContract` explicitly qualifies the matching input. No generic or ATS native flow is qualified by default. Declared async acceptance/rejection requires a valid, unique post-selection signal in the target form/frame; attribution remains unknown for multi-input forms and multi-file bundles without an explicit correlation/aggregate contract. Malformed evidence is unresolved; a local accept-hint mismatch is `unknown`, not a site rejection. Per-document filenames, evidence source/detail, constraints, and contract reach the review API. Approval/readiness/coordinator gates block unresolved uploads. WQ-8 plan hashing binds upload status, contract and evidence, while legacy document plan encodings remain backward-compatible until fresh evidence exists.
+- **F2b fallback gate:** the no-browser-context submit route loads the active persisted approval snapshot, validates approval identity and snapshot hashes, and checks current readiness. It never reports `ready_to_submit` when no context can execute a final submit; it returns `submission_not_allowed` with `clicked=false`.
+- **WQ-8 interlock test lifecycle:** the interlock regression now uses pytest-playwright's `browser` fixture and closes its context and database engine in `finally`, avoiding nested synchronous Playwright managers in combined runs.
+
+## Current package files
+
+- `src/universal_auto_applier/api/models/submission.py`
+- `src/universal_auto_applier/api/routes/submit.py`
+- `src/universal_auto_applier/browser/live_models.py`
+- `src/universal_auto_applier/form_engine/live_executor.py`
+- `src/universal_auto_applier/submission/authorization.py`
+- `src/universal_auto_applier/submission/coordinator.py`
+- `src/universal_auto_applier/submission/models.py`
+- `tests/integration/test_live_review_api.py`
+- `tests/integration/test_wq8_document_bundle_execution.py`
+- `tests/integration/test_wq8_snapshot_persistence.py`
+- `tests/playwright/test_live_browser_executor.py`
+- `tests/playwright/test_wq7c_synthetic_mutation.py`
+- `tests/unit/test_llm_integration_fixes.py`
+- `tests/unit/test_submission_safety_consistency.py`
+- `tests/unit/test_wq8_authorization.py`
+- `docs/NEXT_WORKPACKAGES.md`, this handoff, and the archived prior F4/T06 handoff
+
+## Validation results
+
+- Focused F2b selection (live-review API, WQ-8 auth/coordinator, snapshot safety, bundle, live executor, and WQ-8 persistence): **133 passed in 165.52s**.
+- Focused WQ-7C synthetic-mutation Playwright module: **9 passed in 39.69s**.
+- Ordered Playwright lifecycle reproducer (async upload test, WQ-8 interlock regression, and WQ-8 authorization-store case): **3 passed in 5.64s** with no resource warning.
+- Focused rerun of the two broad-gate assertion updates: **2 passed in 5.93s**.
+- Full non-live/non-Playwright gate, `pytest -m "not live and not playwright" -q`: **1,502 passed, 309 deselected in 787.59s**.
+- Ruff check passed; Ruff format check passed (**239 files already formatted**); Pyright reported **0 errors, 0 warnings, 0 informations**; staged and unstaged `git diff --check` passed.
+- The scoped upload and WQ-8 Playwright modules passed. The full Playwright-inclusive suite was not rerun; the separate Phase 6 dashboard header test change is outside this package.
+- No live tests, real ATS actions, or real submissions were run.
+
+## Decisions
+
+- Native file selection is evidence of the browser input state, not proof that an arbitrary final form request sends the file. The typed native-final-submit declaration must be explicitly supplied per qualified selector. Without it, selected names stay visible and the file blocks review readiness.
+- No ATS async protocol or native final-submit capability is enabled by default. Async terminal states require a declared and validated protocol; non-terminal/ambiguous state remains unresolved.
+- Async status cannot be assigned to one selection when a target form has multiple file inputs or one input carries a multi-file bundle without a per-file/aggregate correlation declaration; those records remain unknown.
+- WQ-8 Phase A now requires an explicit qualifying upload contract and a fresh observation before reaching review-ready. This readiness change does not authorize a final submit.
+- Snapshot/API completeness and approval use derived unresolved-upload state as well as field state. Legacy documents without upload status remain readable but require re-observation before a new approval.
+- The frozen review plan includes upload evidence where present; legacy documents without evidence retain their old canonical plan representation. Authorization remains single-use and existing consumption ordering is unchanged.
+
+## Blockers / risks
+
+- No live flow currently supplies `NativeFinalSubmitUploadContract`; native selections therefore remain unresolved until a specifically qualified flow passes the declaration. This is intentional and prevents arbitrary ATS/generic readiness claims.
+- The full Playwright-inclusive suite was not run to completion; the Phase 6 dashboard header test update is a separate change and is excluded from this package.
+- No real target choice, live action, or submission is authorized or needed for this milestone.
+
+## Exact next action
+
+Review the exact staged F2b implementation, test and handoff paths. After supervisor approval, commit and push this checkpoint, verify local `HEAD` equals `origin/checkpoint/v2-01-correctness`, and stop before the next V2-01 slice.
+
+- **Last updated:** 2026-09-24T21:50:26Z.

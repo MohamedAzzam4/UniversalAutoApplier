@@ -108,6 +108,7 @@ class TestCLIWiring:
         def mock_run(self, job, candidate, qa_service=None):
             captured_args["qa_service"] = qa_service
             captured_args["job"] = job
+            captured_args["hard_submit_block"] = self._config.hard_submit_block
             from datetime import datetime
 
             return LiveRunReport(
@@ -143,6 +144,7 @@ class TestCLIWiring:
         assert exit_code == 0
         # The qa_service was passed to the runner.
         assert captured_args["qa_service"] is mock_service
+        assert captured_args["hard_submit_block"] is True
 
     def test_cli_passes_none_when_unconfigured(self, settings, tmp_path: Path) -> None:
         """When LLM is not configured, qa_service=None is passed (deterministic-only)."""
@@ -202,6 +204,49 @@ class TestCLIWiring:
 
         # When unconfigured, qa_service should be None.
         assert captured_args["qa_service"] is None
+
+    def test_attached_browser_mode_is_rejected_before_connecting(self, settings, capsys) -> None:
+        """Attached CDP contexts cannot meet the fresh-context safety contract yet."""
+        from universal_auto_applier.cli import _live_dry_run
+
+        args = MagicMock()
+        args.application_id = "synthetic-app"
+        args.start_url = None
+        args.ephemeral_profile = False
+        args.browser_session_file = None
+        args.cdp_endpoint = "http://127.0.0.1:9222"
+
+        with patch("universal_auto_applier.cli._find_job", return_value=MagicMock()):
+            with patch(
+                "universal_auto_applier.cli._resolve_cdp_endpoint",
+                return_value="http://127.0.0.1:9222",
+            ):
+                with patch("playwright.sync_api.sync_playwright") as sync_playwright:
+                    exit_code = _live_dry_run(settings, args)
+
+        captured = capsys.readouterr()
+        assert exit_code == 2
+        assert "attached browser preparation is temporarily unavailable" in captured.err
+        assert "standard UAA-launched browser" in captured.err
+        sync_playwright.assert_not_called()
+
+    def test_attachable_session_launcher_is_rejected_before_launching(
+        self, settings, tmp_path: Path, capsys
+    ) -> None:
+        """Do not start a browser session whose attached preparation path is disabled."""
+        from universal_auto_applier.cli import _browser_session
+
+        profile_dir = tmp_path / "unused-profile"
+        args = MagicMock(attachable=True, profile_dir=profile_dir)
+
+        with patch("universal_auto_applier.cli.sync_playwright") as sync_playwright:
+            exit_code = _browser_session(settings, args)
+
+        captured = capsys.readouterr()
+        assert exit_code == 2
+        assert "verified attached-session resume is planned for V2-04" in captured.err
+        assert not profile_dir.exists()
+        sync_playwright.assert_not_called()
 
 
 # ---------------------------------------------------------------------------

@@ -249,16 +249,18 @@ def install_interlock(page: BrowserContext | Page) -> None:
             the script is added to that page. If a BrowserContext is
             passed, the script is added to all pages in the context.
     """
+    # BrowserContext.add_init_script is preferred — it applies to all pages
+    # in the context, including new tabs/popups. A failed registration must
+    # stop preparation before navigation; silently continuing would make the
+    # submit-blocking claim false.
+    if not hasattr(page, "add_init_script"):
+        raise RuntimeError("submit interlock cannot be installed on this browser object")
     try:
-        # BrowserContext.add_init_script is preferred — it applies to
-        # all pages in the context, including new tabs/popups.
-        if hasattr(page, "add_init_script"):
-            page.add_init_script(INTERLOCK_SCRIPT)
-            logger.info("[wq7-interlock] Submit interlock installed")
-        else:
-            logger.warning("[wq7-interlock] Object does not support add_init_script")
+        page.add_init_script(INTERLOCK_SCRIPT)
     except Exception as exc:  # noqa: BLE001
-        logger.warning("[wq7-interlock] Failed to install interlock: %s", exc)
+        logger.exception("[wq7-interlock] Submit interlock installation failed")
+        raise RuntimeError("submit interlock installation failed; stop before navigation") from exc
+    logger.info("[wq7-interlock] Submit interlock installed")
 
 
 def read_counters(page: Page) -> dict[str, int]:

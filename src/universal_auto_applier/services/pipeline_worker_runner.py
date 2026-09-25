@@ -90,6 +90,7 @@ def _build_live_config(settings: Settings) -> LiveBrowserConfig:
         timeout_ms=settings.browser_timeout_ms,
         max_steps=settings.browser_max_steps,
         capture_trace=True,
+        hard_submit_block=True,
     )
 
 
