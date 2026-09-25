@@ -20,6 +20,7 @@ no real ATS, no real candidate data, no owner PII.
 
 from __future__ import annotations
 
+import json
 import socket
 import threading
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
@@ -80,6 +81,30 @@ _FIXTURE_HTML = """<!DOCTYPE html>
 </html>
 """
 
+_AUTOSAVE_POST_HTML = """<!DOCTYPE html>
+<html>
+<head><title>WQ8 Observe Autosave Fixture</title></head>
+<body>
+<form id="app-form" method="post" action="/submit">
+  <label for="name">Full Name</label>
+  <input type="text" id="name" name="name" required>
+  <label for="email">Email</label>
+  <input type="email" id="email" name="email" required>
+  <label for="resume">Resume</label>
+  <input type="file" id="resume" name="resume" required>
+  <button type="submit" id="submit-btn">Submit Application</button>
+</form>
+<script>
+fetch('/autosave?secret-path-sentinel', {
+  method: 'POST',
+  headers: {'X-Secret-Sentinel': 'secret-header-sentinel'},
+  body: 'secret-body-sentinel'
+}).catch(() => {});
+</script>
+</body>
+</html>
+"""
+
 
 def _find_free_port() -> int:
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
@@ -96,6 +121,8 @@ class _FixtureHTTPServer:
 
     def __init__(self, html: str) -> None:
         self._html = html
+        self._post_count = 0
+        self._post_count_lock = threading.Lock()
         self._port = _find_free_port()
         self._server: ThreadingHTTPServer | None = None
         self._thread: threading.Thread | None = None
@@ -106,15 +133,30 @@ class _FixtureHTTPServer:
             {
                 "log_message": lambda self, _fmt, *args: None,
                 "do_GET": lambda s: self._serve(s),
+                "do_POST": lambda s: self._record_post(s),
             },
         )
         self._handler_cls = handler
+
+    @property
+    def post_count(self) -> int:
+        with self._post_count_lock:
+            return self._post_count
+
+    def set_html(self, html: str) -> None:
+        self._html = html
 
     def _serve(self, handler: SimpleHTTPRequestHandler) -> None:
         handler.send_response(200)
         handler.send_header("Content-Type", "text/html; charset=utf-8")
         handler.end_headers()
         handler.wfile.write(self._html.encode("utf-8"))
+
+    def _record_post(self, handler: SimpleHTTPRequestHandler) -> None:
+        with self._post_count_lock:
+            self._post_count += 1
+        handler.send_response(200)
+        handler.end_headers()
 
     @property
     def url(self) -> str:
@@ -250,17 +292,31 @@ class _OrderRecordingContext:
     def __init__(self, order_log: list[str]) -> None:
         self._order_log = order_log
         self.pages: list[Any] = []
+        self.service_workers: list[Any] = []
+        self._handlers: dict[str, Any] = {}
         self._fake_page = _OrderRecordingPage(order_log)
 
     def add_init_script(self, script: str) -> None:
-        # This is what install_interlock calls.
-        self._order_log.append("interlock_installed")
-        # Hand the page its init script so it knows the interlock ran.
-        self._fake_page._interlock_installed = True
+        if "__wq7_counters" in script:
+            self._order_log.append("submit_interlock_installed")
+            self._fake_page._submit_interlock_installed = True
+        else:
+            self._order_log.append("service_worker_guard_installed")
+
+    def on(self, event: str, handler: Any) -> None:
+        self._handlers[event] = handler
+
+    def route(self, _pattern: str, _handler: Any) -> None:
+        self._order_log.append("request_routes_installed")
+
+    def new_cdp_session(self, _page: Any) -> Any:
+        self._order_log.append("service_worker_bypass_armed")
+        return _OrderRecordingCDPSession()
 
     def new_page(self) -> Any:
         self._order_log.append("new_page")
         self.pages.append(self._fake_page)
+        self._handlers["page"](self._fake_page)
         return self._fake_page
 
     def close(self) -> None:
@@ -272,18 +328,23 @@ class _OrderRecordingPage:
 
     def __init__(self, order_log: list[str]) -> None:
         self._order_log = order_log
-        self._interlock_installed = False
+        self._submit_interlock_installed = False
+        self.url = "about:blank"
 
     def goto(self, url: str, **kwargs: Any) -> None:
-        if self._interlock_installed:
-            self._order_log.append("goto_after_interlock")
-        else:
-            self._order_log.append("goto_BEFORE_interlock")
+        self._order_log.append(f"goto:{url}")
+        self.url = url
+        if url != "about:blank":
+            raise RuntimeError("synthetic stop after target navigation order is recorded")
 
     def wait_for_timeout(self, ms: int) -> None:
         pass
 
     def evaluate(self, script: str) -> Any:
+        if script == "window.__uaa_service_worker_guard":
+            return "installed"
+        if "typeof window.__wq7_counters" in script:
+            return self._submit_interlock_installed
         # Return a counters dict matching read_counters' default shape.
         return {
             "submit_events": 0,
@@ -294,6 +355,11 @@ class _OrderRecordingPage:
             "navigation_attempts": 0,
             "authorized_submits": 0,
         }
+
+
+class _OrderRecordingCDPSession:
+    def send(self, _method: str, _params: dict[str, Any]) -> None:
+        pass
 
 
 class _OrderRecordingFactory:
@@ -322,8 +388,8 @@ class TestEventOrderInterlockBeforeNavigation:
 
         We use a stub factory whose context records the call order. The
         observe path must produce:
-            context_created -> interlock_installed -> new_page -> goto_after_interlock
-        and must NEVER produce ``goto_BEFORE_interlock``.
+            context_created -> both interlocks -> new_page -> about:blank
+            verification -> target navigation
         """
         settings = _make_settings(tmp_path)
         job = _make_job(tmp_path, fixture_server.url)
@@ -342,20 +408,16 @@ class TestEventOrderInterlockBeforeNavigation:
         # the ORDER is what we assert.
         order = stub_factory.order_log
         assert "context_created" in order, "context was never created"
-        assert "interlock_installed" in order, "interlock was never installed"
-        assert "goto_BEFORE_interlock" not in order, (
-            "navigation happened BEFORE the interlock was installed — "
-            "this is the exact defect the workpackage forbids"
-        )
-        # The interlock must be installed before any goto.
-        interlock_idx = order.index("interlock_installed")
-        # Find the first goto (either variant).
-        goto_idx = next((i for i, e in enumerate(order) if e.startswith("goto_")), None)
-        assert goto_idx is not None, "navigation never happened"
-        assert interlock_idx < goto_idx, (
-            f"interlock installed at index {interlock_idx} but navigation at "
-            f"{goto_idx}; interlock must come first. Order: {order}"
-        )
+        assert "request_routes_installed" in order
+        assert "submit_interlock_installed" in order
+        assert "service_worker_guard_installed" in order
+        page_idx = order.index("new_page")
+        assert order.index("request_routes_installed") < page_idx
+        assert order.index("submit_interlock_installed") < page_idx
+        assert order.index("goto:about:blank") > page_idx
+        assert "goto:" + job.url in order
+        target_idx = order.index("goto:" + job.url)
+        assert page_idx < order.index("goto:about:blank") < target_idx
         engine.dispose()
 
     def test_observe_never_navigates_before_interlock_even_on_failure(self, tmp_path: Path) -> None:
@@ -377,13 +439,13 @@ class TestEventOrderInterlockBeforeNavigation:
 
         order = stub_factory.order_log
         assert "context_created" in order
-        assert "interlock_installed" in order
-        assert "goto_BEFORE_interlock" not in order
-        # Interlock must come before any goto attempt.
-        if any(e.startswith("goto_") for e in order):
-            interlock_idx = order.index("interlock_installed")
-            goto_idx = next(i for i, e in enumerate(order) if e.startswith("goto_"))
-            assert interlock_idx < goto_idx
+        assert "request_routes_installed" in order
+        assert "submit_interlock_installed" in order
+        page_idx = order.index("new_page")
+        assert order.index("request_routes_installed") < page_idx
+        assert order.index("submit_interlock_installed") < page_idx
+        assert "goto:about:blank" in order
+        assert page_idx < order.index("goto:about:blank")
         engine.dispose()
 
 
@@ -430,6 +492,428 @@ class TestProductionAppObserveRegression:
             assert resp.status_code == 200, (
                 f"observe returned unexpected status {resp.status_code}; body: {resp.text}"
             )
+
+    def test_observe_blocks_mutating_autosave_and_revokes_old_approval(
+        self, wq8_obs_app, fixture_server: _FixtureHTTPServer
+    ) -> None:
+        """A successfully aborted autosave makes preparation not review-ready."""
+        from universal_auto_applier.core.statuses import InterventionKind
+        from universal_auto_applier.interventions.store import list_pending_interventions
+        from universal_auto_applier.submission.models import (
+            SubmissionSnapshot,
+            SubmissionSnapshotField,
+            SubmissionSnapshotSubmitControl,
+        )
+        from universal_auto_applier.submission.store import create_approval
+
+        app, job, engine, sf, settings, tmp_path = wq8_obs_app
+        fixture_server.set_html(_AUTOSAVE_POST_HTML)
+        seed_snapshot = SubmissionSnapshot(
+            application_id=job.application_id,
+            application_url=job.url,
+            fields=[
+                SubmissionSnapshotField(
+                    field_token="lf-name",
+                    label="Full Name",
+                    field_type="text",
+                    status="filled",
+                    filled_value="Test Candidate",
+                )
+            ],
+            submit_control=SubmissionSnapshotSubmitControl(
+                text="Submit Application", selector="#submit-btn"
+            ),
+        ).with_hashes()
+        with session_scope(sf) as session:
+            create_approval(session, application_id=job.application_id, snapshot=seed_snapshot)
+
+        with TestClient(app) as client:
+            response = client.post(f"/api/submit/{job.application_id}/observe")
+            status = client.get(f"/api/submit/{job.application_id}/status")
+
+        assert response.status_code == 409
+        assert "preparation_http_mutation_blocked" in response.json()["detail"]
+        assert fixture_server.post_count == 0
+        status_data = status.json()["snapshot"]
+        assert status_data["active_approval_id"] is None
+        assert status_data["can_approve"] is False
+        with session_scope(sf) as session:
+            assert get_active_approval(session, job.application_id) is None
+            pending = list_pending_interventions(session, job.application_id)
+        blockers = [
+            intervention
+            for intervention in pending
+            if intervention.kind == InterventionKind.PREPARATION_HTTP_MUTATION_BLOCKED
+        ]
+        assert len(blockers) == 1
+        evidence = json.dumps(blockers[0].llm_metadata or {}, sort_keys=True)
+        assert "http://127.0.0.1" in evidence
+        assert "secret-path-sentinel" not in evidence
+        assert "secret-header-sentinel" not in evidence
+        assert "secret-body-sentinel" not in evidence
+
+    @pytest.mark.parametrize("uncertain_failure", ["abort", "continue"])
+    def test_route_failure_is_reconciliation_only_and_blocks_retry_and_submit(
+        self,
+        wq8_obs_app,
+        fixture_server: _FixtureHTTPServer,
+        monkeypatch: pytest.MonkeyPatch,
+        uncertain_failure: str,
+    ) -> None:
+        """An uncertain abort is persisted and stops observe/submit before another browser."""
+        from playwright.sync_api import Route
+
+        from universal_auto_applier.browser.request_interlock import PreparationRequestInterlock
+        from universal_auto_applier.core.statuses import InterventionKind
+        from universal_auto_applier.interventions.store import list_pending_interventions
+        from universal_auto_applier.submission.execution_service import (
+            FixtureContextFactory,
+        )
+        from universal_auto_applier.submission.models import (
+            SubmissionSnapshot,
+            SubmissionSnapshotField,
+            SubmissionSnapshotSubmitControl,
+        )
+        from universal_auto_applier.submission.store import create_approval
+
+        app, job, engine, sf, settings, tmp_path = wq8_obs_app
+        fixture_server.set_html(_AUTOSAVE_POST_HTML)
+        seed_snapshot = SubmissionSnapshot(
+            application_id=job.application_id,
+            application_url=job.url,
+            fields=[
+                SubmissionSnapshotField(
+                    field_token="lf-name",
+                    label="Full Name",
+                    field_type="text",
+                    status="filled",
+                    filled_value="Test Candidate",
+                )
+            ],
+            submit_control=SubmissionSnapshotSubmitControl(
+                text="Submit Application", selector="#submit-btn"
+            ),
+        ).with_hashes()
+        with session_scope(sf) as session:
+            seed_approval = create_approval(
+                session, application_id=job.application_id, snapshot=seed_snapshot
+            )
+            approval_id = seed_approval.approval_id
+
+        class _CountingFactory:
+            def __init__(self) -> None:
+                self.calls = 0
+                self._inner = FixtureContextFactory(headless=True)
+
+            def create_context(self):
+                self.calls += 1
+                return self._inner.create_context()
+
+            def close(self) -> None:
+                self._inner.close()
+
+        counting_factory = _CountingFactory()
+        app.state.submission_context_factory = counting_factory
+        if uncertain_failure == "abort":
+            original_abort = PreparationRequestInterlock._abort_route
+
+            def mark_abort_outcome_unknown(interlock, route) -> None:
+                original_abort(interlock, route)
+                interlock.setup_error = "request_abort_failed"
+
+            monkeypatch.setattr(
+                PreparationRequestInterlock,
+                "_abort_route",
+                mark_abort_outcome_unknown,
+            )
+        else:
+
+            def fail_safe_continuation(_route: Route, **_kwargs: Any) -> None:
+                raise RuntimeError("synthetic route continuation failure")
+
+            monkeypatch.setattr(Route, "continue_", fail_safe_continuation)
+
+        with TestClient(app) as client:
+            first = client.post(f"/api/submit/{job.application_id}/observe")
+            retry = client.post(f"/api/submit/{job.application_id}/observe")
+
+        assert first.status_code == 409
+        assert "http_request_outcome_unknown_reconciliation_required" in first.json()["detail"]
+        assert retry.status_code == 409
+        assert "reconciliation_intervention_pending" in retry.json()["detail"]
+        assert fixture_server.post_count == 0
+        assert counting_factory.calls == 1
+        with session_scope(sf) as session:
+            assert get_active_approval(session, job.application_id) is None
+            pending = list_pending_interventions(session, job.application_id)
+        blockers = [
+            intervention
+            for intervention in pending
+            if intervention.kind == InterventionKind.HTTP_REQUEST_OUTCOME_UNKNOWN
+        ]
+        assert len(blockers) == 1
+        evidence = json.dumps(blockers[0].llm_metadata or {}, sort_keys=True)
+        expected_interlock_failure = (
+            "request_abort_failed" if uncertain_failure == "abort" else "request_outcome_unknown"
+        )
+        assert f'"interlock_failure": "{expected_interlock_failure}"' in evidence
+        assert "secret-path-sentinel" not in evidence
+        assert "secret-header-sentinel" not in evidence
+        assert "secret-body-sentinel" not in evidence
+
+        # Even if a final-submit caller supplies the now-revoked approval ID,
+        # the durable uncertainty gate returns before creating another browser.
+        enabled_settings = settings.model_copy(update={"enable_real_submission": True})
+        service = SubmissionExecutionService(enabled_settings, sf, counting_factory)
+        result = service.execute_controlled_submission(
+            application_id=job.application_id,
+            approval_id=approval_id,
+        )
+        assert result.clicked is False
+        assert result.state.value == "submission_not_allowed"
+        assert "http_request_outcome_unknown_reconciliation_required" in (
+            result.error_message or ""
+        )
+        assert counting_factory.calls == 1
+
+    def test_intervention_commit_precedes_revoke_failure_and_blocks_review_and_submit(
+        self,
+        wq8_obs_app,
+        fixture_server: _FixtureHTTPServer,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """A durable blocker survives a separate approval-revocation failure."""
+        from universal_auto_applier.core.statuses import InterventionKind
+        from universal_auto_applier.interventions.store import list_pending_interventions
+        from universal_auto_applier.submission import execution_service
+        from universal_auto_applier.submission.execution_service import FixtureContextFactory
+        from universal_auto_applier.submission.models import (
+            SubmissionSnapshot,
+            SubmissionSnapshotField,
+            SubmissionSnapshotSubmitControl,
+        )
+        from universal_auto_applier.submission.store import create_approval
+
+        app, job, engine, sf, settings, _tmp_path = wq8_obs_app
+        fixture_server.set_html(_AUTOSAVE_POST_HTML)
+        seed_snapshot = SubmissionSnapshot(
+            application_id=job.application_id,
+            application_url=job.url,
+            fields=[
+                SubmissionSnapshotField(
+                    field_token="lf-name",
+                    label="Full Name",
+                    field_type="text",
+                    status="filled",
+                    filled_value="Test Candidate",
+                )
+            ],
+            submit_control=SubmissionSnapshotSubmitControl(
+                text="Submit Application", selector="#submit-btn"
+            ),
+        ).with_hashes()
+        with session_scope(sf) as session:
+            approval = create_approval(
+                session, application_id=job.application_id, snapshot=seed_snapshot
+            )
+            approval_id = approval.approval_id
+
+        def fail_revoke(_session, _approval_id: str) -> bool:
+            raise RuntimeError("synthetic approval revocation storage failure")
+
+        monkeypatch.setattr(execution_service, "revoke_approval", fail_revoke)
+        with TestClient(app) as client:
+            response = client.post(f"/api/submit/{job.application_id}/observe")
+            status = client.get(f"/api/submit/{job.application_id}/status")
+            approve = client.post(
+                f"/api/submit/{job.application_id}/approve",
+                json={"snapshot_hash": seed_snapshot.snapshot_hash, "confirm": True},
+            )
+
+        assert response.status_code == 503
+        assert "preparation_interlock_persistence_failed" in response.json()["detail"]
+        assert "approval_revocation" in response.json()["detail"]
+        assert status.status_code == 200
+        assert status.json()["snapshot"]["can_approve"] is False
+        assert "preparation blocked" in status.json()["snapshot"]["approve_blocking_reason"]
+        assert approve.status_code == 409
+        assert "preparation_http_mutation_blocked" in approve.json()["detail"]
+        assert fixture_server.post_count == 0
+        with session_scope(sf) as session:
+            active_approval = get_active_approval(session, job.application_id)
+            pending = list_pending_interventions(session, job.application_id)
+        assert active_approval is not None
+        assert active_approval.approval_id == approval_id
+        blockers = [
+            intervention
+            for intervention in pending
+            if intervention.kind == InterventionKind.PREPARATION_HTTP_MUTATION_BLOCKED
+        ]
+        assert len(blockers) == 1
+
+        # The active approval row remains, but both the shared coordinator
+        # and controlled-submit service stop before acquiring a claim.
+        from sqlalchemy import select
+
+        from universal_auto_applier.submission.coordinator import SubmissionCoordinator
+
+        enabled_settings = settings.model_copy(update={"enable_real_submission": True})
+        gate = SubmissionCoordinator(enabled_settings, sf).check_gates(
+            application_id=job.application_id,
+            current_snapshot=seed_snapshot,
+        )
+        assert gate.allowed is False
+        assert "pending interventions" in gate.reason
+        with session_scope(sf) as session:
+            claims = (
+                session.execute(
+                    select(SubmissionClaimRow).where(
+                        SubmissionClaimRow.application_id == job.application_id
+                    )
+                )
+                .scalars()
+                .all()
+            )
+        assert claims == []
+
+        class _CountingFactory:
+            def __init__(self) -> None:
+                self.calls = 0
+                self._inner = FixtureContextFactory(headless=True)
+
+            def create_context(self):
+                self.calls += 1
+                return self._inner.create_context()
+
+            def close(self) -> None:
+                self._inner.close()
+
+        counting_factory = _CountingFactory()
+        service = SubmissionExecutionService(enabled_settings, sf, counting_factory)
+        result = service.execute_controlled_submission(
+            application_id=job.application_id,
+            approval_id=approval_id,
+        )
+        assert result.clicked is False
+        assert result.state.value == "submission_not_allowed"
+        assert "preparation_http_mutation_blocked" in (result.error_message or "")
+        assert counting_factory.calls == 0
+        counting_factory.close()
+
+    def test_blocker_persistence_failure_latches_process_and_returns_503(
+        self,
+        wq8_obs_app,
+        fixture_server: _FixtureHTTPServer,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """When storage cannot commit a blocker, this process fails closed."""
+        from universal_auto_applier.submission import execution_service
+        from universal_auto_applier.submission.execution_service import FixtureContextFactory
+        from universal_auto_applier.submission.models import (
+            SubmissionSnapshot,
+            SubmissionSnapshotField,
+            SubmissionSnapshotSubmitControl,
+        )
+        from universal_auto_applier.submission.store import create_approval
+
+        app, job, engine, sf, settings, _tmp_path = wq8_obs_app
+        fixture_server.set_html(_AUTOSAVE_POST_HTML)
+        seed_snapshot = SubmissionSnapshot(
+            application_id=job.application_id,
+            application_url=job.url,
+            fields=[
+                SubmissionSnapshotField(
+                    field_token="lf-name",
+                    label="Full Name",
+                    field_type="text",
+                    status="filled",
+                    filled_value="Test Candidate",
+                )
+            ],
+            submit_control=SubmissionSnapshotSubmitControl(
+                text="Submit Application", selector="#submit-btn"
+            ),
+        ).with_hashes()
+        with session_scope(sf) as session:
+            approval = create_approval(
+                session, application_id=job.application_id, snapshot=seed_snapshot
+            )
+            approval_id = approval.approval_id
+
+        class _CountingFactory:
+            def __init__(self) -> None:
+                self.calls = 0
+                self._inner = FixtureContextFactory(headless=True)
+
+            def create_context(self):
+                self.calls += 1
+                return self._inner.create_context()
+
+            def close(self) -> None:
+                self._inner.close()
+
+        counting_factory = _CountingFactory()
+        app.state.submission_context_factory = counting_factory
+
+        def fail_intervention_write(*_args, **_kwargs):
+            raise RuntimeError("synthetic intervention storage failure")
+
+        monkeypatch.setattr(execution_service, "create_intervention", fail_intervention_write)
+        try:
+            with TestClient(app) as client:
+                first = client.post(f"/api/submit/{job.application_id}/observe")
+                status = client.get(f"/api/submit/{job.application_id}/status")
+                approve = client.post(
+                    f"/api/submit/{job.application_id}/approve",
+                    json={"snapshot_hash": seed_snapshot.snapshot_hash, "confirm": True},
+                )
+                retry = client.post(f"/api/submit/{job.application_id}/observe")
+                app.state.submission_context_factory = None
+                submit_without_factory = client.post(
+                    f"/api/submit/{job.application_id}/submit",
+                    json={"approval_id": approval_id, "confirm": True},
+                )
+
+            assert submit_without_factory.status_code == 503
+            assert (
+                "preparation_interlock_persistence_failed"
+                in (submit_without_factory.json()["detail"])
+            )
+            assert first.status_code == 503
+            assert "preparation_interlock_persistence_failed" in first.json()["detail"]
+            assert "blocker_write" in first.json()["detail"]
+            assert status.json()["snapshot"]["can_approve"] is False
+            assert "persistence failed" in status.json()["snapshot"]["approve_blocking_reason"]
+            assert approve.status_code == 503
+            assert "preparation_interlock_persistence_failed" in approve.json()["detail"]
+            from universal_auto_applier.submission.coordinator import SubmissionCoordinator
+
+            gate = SubmissionCoordinator(
+                settings.model_copy(update={"enable_real_submission": True}), sf
+            ).check_gates(application_id=job.application_id, current_snapshot=seed_snapshot)
+            assert gate.allowed is False
+            assert "preparation_interlock_persistence_failed" in gate.reason
+            assert retry.status_code == 503
+            assert counting_factory.calls == 1
+            assert fixture_server.post_count == 0
+            with session_scope(sf) as session:
+                assert get_active_approval(session, job.application_id) is not None
+
+            service = SubmissionExecutionService(
+                settings.model_copy(update={"enable_real_submission": True}),
+                sf,
+                counting_factory,
+            )
+            result = service.execute_controlled_submission(
+                application_id=job.application_id,
+                approval_id=approval_id,
+            )
+            assert result.clicked is False
+            assert "preparation_interlock_persistence_failed" in (result.error_message or "")
+            assert counting_factory.calls == 1
+        finally:
+            execution_service._clear_request_interlock_latch(job.application_id)
+            counting_factory.close()
 
     def test_observe_persists_non_empty_snapshot_with_fields(self, wq8_obs_app) -> None:
         """The observe flow must persist a non-empty snapshot with actual fields.

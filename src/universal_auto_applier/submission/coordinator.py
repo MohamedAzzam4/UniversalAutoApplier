@@ -177,6 +177,24 @@ class SubmissionCoordinator:
 
         Returns a :class:`GateResult`.
         """
+        # A failed preparation-blocker write is held in a per-process
+        # secondary latch. Check it here too so CLI/coordinator callers cannot
+        # bypass the API or service-level preflight.
+        from universal_auto_applier.submission.execution_service import (
+            PREPARATION_INTERLOCK_PERSISTENCE_FAILED_ERROR_CODE,
+            preparation_interlock_latch_error_code,
+        )
+
+        if preparation_interlock_latch_error_code(application_id) is not None:
+            return GateResult(
+                allowed=False,
+                reason=(
+                    f"{PREPARATION_INTERLOCK_PERSISTENCE_FAILED_ERROR_CODE}: restore storage and "
+                    "reconcile the remote application state before submission"
+                ),
+                state=SubmissionResultState.SUBMISSION_NOT_ALLOWED,
+            )
+
         # Gate 1: feature disabled.
         if not self._settings.enable_real_submission:
             return GateResult(
@@ -599,7 +617,22 @@ class SubmissionCoordinator:
 
         Returns the approval_id.
         """
+        from universal_auto_applier.core.statuses import InterventionKind
+        from universal_auto_applier.submission.execution_service import (
+            PreparationHttpMutationBlockedError,
+            PreparationRequestOutcomeUnknownError,
+            pending_preparation_http_interlock_kind,
+            raise_for_request_interlock_latch,
+        )
+
+        raise_for_request_interlock_latch(application_id)
+
         with session_scope(self._session_factory) as session:
+            pending_kind = pending_preparation_http_interlock_kind(session, application_id)
+            if pending_kind == InterventionKind.HTTP_REQUEST_OUTCOME_UNKNOWN:
+                raise PreparationRequestOutcomeUnknownError("reconciliation_intervention_pending")
+            if pending_kind == InterventionKind.PREPARATION_HTTP_MUTATION_BLOCKED:
+                raise PreparationHttpMutationBlockedError()
             row = create_approval(
                 session,
                 application_id=application_id,

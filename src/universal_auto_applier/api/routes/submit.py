@@ -73,6 +73,7 @@ def _build_snapshot_response(
     approval: SubmissionApprovalRow | None = None,
     latest_result: SubmissionResultRow | None = None,
     job: Any = None,
+    preparation_interlock_error_code: str | None = None,
 ) -> LiveReviewSnapshotResponse:
     """Build the complete typed snapshot response from persisted data."""
     # Get job info if available.
@@ -208,10 +209,25 @@ def _build_snapshot_response(
     # Consistency check: detect stale aggregates that contradict field data.
     consistency_error = check_snapshot_consistency(snapshot, confirmed_tokens)
 
-    # Determine can_approve.
+    # A preparation HTTP blocker takes precedence over snapshot completeness.
     can_approve = True
     approve_blocking_reason = ""
-    if consistency_error:
+    if preparation_interlock_error_code == "http_request_outcome_unknown_reconciliation_required":
+        can_approve = False
+        approve_blocking_reason = (
+            "preparation HTTP request outcome is unknown; reconcile with the owner before approval"
+        )
+    elif preparation_interlock_error_code == "preparation_http_mutation_blocked":
+        can_approve = False
+        approve_blocking_reason = (
+            "preparation blocked an HTTP mutation; review and resolve the blocker before approval"
+        )
+    elif preparation_interlock_error_code == "preparation_interlock_persistence_failed":
+        can_approve = False
+        approve_blocking_reason = (
+            "preparation blocker persistence failed; restore storage and reconcile before approval"
+        )
+    elif consistency_error:
         can_approve = False
         approve_blocking_reason = consistency_error
     elif derived_unresolved_uploads > 0:
@@ -284,6 +300,24 @@ def _build_snapshot_response(
     )
 
 
+def _preparation_http_interlock_error_code(session: Any, application_id: str) -> str | None:
+    """Return the durable or process-latched preparation blocker, if present."""
+    from universal_auto_applier.core.statuses import InterventionKind
+    from universal_auto_applier.submission.execution_service import (
+        PREPARATION_HTTP_MUTATION_BLOCKED_ERROR_CODE,
+        REQUEST_OUTCOME_UNKNOWN_ERROR_CODE,
+        pending_preparation_http_interlock_kind,
+        preparation_interlock_latch_error_code,
+    )
+
+    pending_kind = pending_preparation_http_interlock_kind(session, application_id)
+    if pending_kind == InterventionKind.HTTP_REQUEST_OUTCOME_UNKNOWN:
+        return REQUEST_OUTCOME_UNKNOWN_ERROR_CODE
+    if pending_kind == InterventionKind.PREPARATION_HTTP_MUTATION_BLOCKED:
+        return PREPARATION_HTTP_MUTATION_BLOCKED_ERROR_CODE
+    return preparation_interlock_latch_error_code(application_id)
+
+
 def _load_snapshot_from_approval(approval: SubmissionApprovalRow) -> SubmissionSnapshot | None:
     """Load the snapshot from the approval's snapshot_json column."""
     raw = approval.snapshot_json
@@ -335,11 +369,19 @@ def observe_snapshot_endpoint(
         )
 
     from universal_auto_applier.submission.execution_service import (
+        PreparationHttpMutationBlockedError,
+        PreparationInterlockPersistenceError,
+        PreparationRequestOutcomeUnknownError,
         SubmissionExecutionService,
     )
 
     service = SubmissionExecutionService(settings, session_factory, context_factory)
-    snapshot = service.observe_and_persist_snapshot(application_id=application_id)
+    try:
+        snapshot = service.observe_and_persist_snapshot(application_id=application_id)
+    except PreparationInterlockPersistenceError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    except (PreparationHttpMutationBlockedError, PreparationRequestOutcomeUnknownError) as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
 
     if snapshot is None:
         with session_scope(session_factory) as session:
@@ -357,8 +399,19 @@ def observe_snapshot_endpoint(
         approval = get_active_approval(session, application_id)
         latest = get_latest_result(session, application_id)
         job = get_application_job(session, application_id)
+        preparation_interlock_error_code = _preparation_http_interlock_error_code(
+            session, application_id
+        )
 
-    resp = _build_snapshot_response(settings, application_id, snapshot, approval, latest, job)
+    resp = _build_snapshot_response(
+        settings,
+        application_id,
+        snapshot,
+        approval,
+        latest,
+        job,
+        preparation_interlock_error_code,
+    )
     return LiveReviewObserveResponse(snapshot=resp)
 
 
@@ -379,6 +432,9 @@ def get_submission_status(request: Request, application_id: str) -> LiveReviewSt
         approval = get_active_approval(session, application_id)
         latest = get_latest_result(session, application_id)
         job = get_application_job(session, application_id)
+        preparation_interlock_error_code = _preparation_http_interlock_error_code(
+            session, application_id
+        )
         if latest is not None:
             latest_approval_id = latest.approval_id
             latest_snapshot_hash = latest.snapshot_hash_at_submit
@@ -388,7 +444,15 @@ def get_submission_status(request: Request, application_id: str) -> LiveReviewSt
     if approval is not None:
         snapshot = _load_snapshot_from_approval(approval)
 
-    resp = _build_snapshot_response(settings, application_id, snapshot, approval, latest, job)
+    resp = _build_snapshot_response(
+        settings,
+        application_id,
+        snapshot,
+        approval,
+        latest,
+        job,
+        preparation_interlock_error_code,
+    )
     # Override the latest result fields with values extracted inside the session.
     resp.latest_submission_approval_id = latest_approval_id
     resp.latest_submission_snapshot_hash = latest_snapshot_hash
@@ -422,6 +486,9 @@ def confirm_high_risk_endpoint(
     session_factory = app.state.session_factory
 
     with session_scope(session_factory) as session:
+        preparation_interlock_error_code = _preparation_http_interlock_error_code(
+            session, application_id
+        )
         approval = get_active_approval(session, application_id)
         if approval is None:
             raise HTTPException(
@@ -473,7 +540,15 @@ def confirm_high_risk_endpoint(
         job = get_application_job(session, application_id)
 
     snapshot = _load_snapshot_from_approval(approval) if approval else None
-    resp = _build_snapshot_response(settings, application_id, snapshot, approval, latest, job)
+    resp = _build_snapshot_response(
+        settings,
+        application_id,
+        snapshot,
+        approval,
+        latest,
+        job,
+        preparation_interlock_error_code,
+    )
     return LiveReviewConfirmHighRiskResponse(
         snapshot=resp,
         confirmed_tokens=body.field_tokens,
@@ -504,7 +579,32 @@ def approve_snapshot_endpoint(
     app = request.app
     session_factory = app.state.session_factory
 
+    from universal_auto_applier.submission.execution_service import (
+        PREPARATION_INTERLOCK_PERSISTENCE_FAILED_ERROR_CODE,
+        preparation_interlock_latch_error_code,
+    )
+
+    if preparation_interlock_latch_error_code(application_id) is not None:
+        raise HTTPException(
+            status_code=503,
+            detail=(
+                f"{PREPARATION_INTERLOCK_PERSISTENCE_FAILED_ERROR_CODE}: restore storage and "
+                "reconcile the remote application state before approval"
+            ),
+        )
+
     with session_scope(session_factory) as session:
+        preparation_interlock_error_code = _preparation_http_interlock_error_code(
+            session, application_id
+        )
+        if preparation_interlock_error_code is not None:
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    f"{preparation_interlock_error_code}: resolve the preparation HTTP blocker "
+                    "before approval"
+                ),
+            )
         approval = get_active_approval(session, application_id)
         if approval is None:
             raise HTTPException(
@@ -611,6 +711,20 @@ def submit_endpoint(
     settings = app.state.settings
     session_factory = app.state.session_factory
 
+    from universal_auto_applier.submission.execution_service import (
+        PREPARATION_INTERLOCK_PERSISTENCE_FAILED_ERROR_CODE,
+        preparation_interlock_latch_error_code,
+    )
+
+    if preparation_interlock_latch_error_code(application_id) is not None:
+        raise HTTPException(
+            status_code=503,
+            detail=(
+                f"{PREPARATION_INTERLOCK_PERSISTENCE_FAILED_ERROR_CODE}: restore storage and "
+                "reconcile the remote application state before submission"
+            ),
+        )
+
     context_factory = getattr(app.state, "submission_context_factory", None)
 
     if context_factory is not None:
@@ -625,6 +739,8 @@ def submit_endpoint(
             approval_id=body.approval_id,
             artifact_dir=artifact_dir,
         )
+        if result.error_message.startswith(PREPARATION_INTERLOCK_PERSISTENCE_FAILED_ERROR_CODE):
+            raise HTTPException(status_code=503, detail=result.error_message)
         return LiveReviewSubmitResponse(
             application_id=application_id,
             state=str(result.state),

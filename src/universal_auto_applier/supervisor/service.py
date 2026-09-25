@@ -426,20 +426,57 @@ class SupervisorService:
                 # Conservative: an unreachable/blocked observation is a human
                 # matter (CAPTCHA, login wall, moved form, cookie banner...) — NEVER
                 # auto-retried, so a blocker can never loop.
-                if outcome.error and "cookie_consent_blocked" in outcome.error.lower():
+                if outcome.error_code == "preparation_interlock_persistence_failed":
+                    blocker_reason = ReasonCode.PREPARATION_INTERLOCK_PERSISTENCE_FAILED
+                    blocker_question = (
+                        "Preparation detected an HTTP blocker but could not durably record its "
+                        "intervention. Has storage recovered and has the remote state been "
+                        "reconciled with the owner?"
+                    )
+                    blocker_action = (
+                        "Do not retry preparation or submission. Restore storage, reconcile the "
+                        "remote application state with the owner, and restart UAA only after the "
+                        "operator records the recovery decision."
+                    )
+                elif outcome.error_code == "http_request_outcome_unknown_reconciliation_required":
+                    blocker_reason = ReasonCode.HTTP_REQUEST_OUTCOME_UNKNOWN
+                    blocker_question = (
+                        "A preparation HTTP request may have reached the application. "
+                        "Has the application state been reconciled with the owner?"
+                    )
+                    blocker_action = (
+                        "Reconcile the remote application state with the owner before any "
+                        "preparation retry or submission attempt."
+                    )
+                elif outcome.error_code == "preparation_http_mutation_blocked":
+                    blocker_reason = ReasonCode.PREPARATION_HTTP_MUTATION_BLOCKED
+                    blocker_question = (
+                        "Preparation blocked an application HTTP mutation. Review the request "
+                        "evidence and choose a safe next action."
+                    )
+                    blocker_action = (
+                        "Review the sanitized blocked-request evidence and resolve the flow "
+                        "before retrying preparation."
+                    )
+                elif outcome.error and "cookie_consent_blocked" in outcome.error.lower():
                     cookie_reason = ReasonCode.COOKIE_CONSENT_BLOCKED
+                    blocker_reason = cookie_reason
+                    blocker_question = ""
+                    blocker_action = "Inspect the live application page and resume manually."
                 else:
-                    cookie_reason = (
+                    blocker_reason = (
                         ReasonCode.NO_SAFE_NAVIGATION
                         if outcome.error
                         else ReasonCode.UNKNOWN_FAILURE
                     )
+                    blocker_question = ""
+                    blocker_action = "Inspect the live application page and resume manually."
                 self._handoff(
                     run_id,
                     job,
-                    reason_code=cookie_reason,
-                    question="",
-                    action_required="Inspect the live application page and resume manually (observation was blocked).",
+                    reason_code=blocker_reason,
+                    question=blocker_question,
+                    action_required=blocker_action,
                     tool_result=outcome.error or "observation blocked",
                     resulting_state=SupervisorState.NEEDS_HUMAN,
                 )
@@ -447,7 +484,7 @@ class SupervisorService:
                     {
                         "application_id": app_id,
                         "company": job.company,
-                        "reason_code": cookie_reason.value,
+                        "reason_code": blocker_reason.value,
                     }
                 )
                 return

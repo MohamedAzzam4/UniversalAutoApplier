@@ -5,6 +5,30 @@ forbidden shortcuts, acceptance criteria, required tests, and predecessor.
 Items are not started until they are pulled into an active workpackage in
 `docs/handoffs/ACTIVE_WORKPACKAGE.md`.
 
+## V2 progress ledger
+
+Approximate overall progress is **20-25%** across the ten V2 workpackages; this
+is a directional estimate, not a size-weighted schedule. V2-00 and V2-01 are
+complete. V2-02 remains in progress. The request-guard checkpoint is pushed on
+its source branch and merged into this safety worktree locally. Integrated gates
+pass; the combined tree is staged for supervisor review and is not committed or
+pushed. V2-03 through V2-08 are not complete. V2-07A and V2-07B are tracked as
+separate workpackages; 07A has not been implemented and remains a read-only
+design audit.
+
+| Workpackage | Status |
+|---|---|
+| V2-00 | Complete; baseline checkpointed, with its browser-gate caveat documented |
+| V2-01 | Complete |
+| V2-02 | In progress; integrated tree validated and staged, not committed/pushed |
+| V2-03 | Not complete |
+| V2-04 | Not complete |
+| V2-05 | Not complete |
+| V2-06 | Not complete |
+| V2-07A | Not implemented; read-only design audit remains |
+| V2-07B | Not complete |
+| V2-08 | Not complete |
+
 ## V2 roadmap — current delivery order
 
 The V2 plan and critique are now in [`docs/v2/`](v2/UAA_V2_REVIEW_AND_PLAN.md).
@@ -188,98 +212,115 @@ active below.
 Owner approval is separately required for any real target/live action under
 the existing WQ-8 contract; no code review gate blocks this synthetic work.
 
-### V2-02 — One executor (safety/browser checkpoints pushed; classifier integration validated; supervisor review approved)
+### V2-02 — One executor (safety, classifier, request guard; broader work incomplete)
 
 **Objective.** Route CLI, dashboard worker, supervisor preparation and snapshot
 observation through one multi-step state machine; remove duplicated readiness
-decisions; provide structured errors and progress fingerprints. The completed
-safety slice makes the preparation runner's submit block mandatory and adds a
-conservative, context-scoped HTTP method guard. The classifier follow-up fixes
-false error-page detection caused by inert source markup in static observation.
+decisions; provide structured errors and progress fingerprints. The guarded
+browser and request-preparation slices reduce mutation risk, but they do not
+complete the shared executor or its same-URL progress behavior.
 
-**Safety implementation.** `hard_submit_block` defaults to true and cannot be
-disabled. `LiveBrowserRunner.run` and synthetic-mutation paths install submit
-and request guards before creating a page or navigating. Playwright context
-routes allow `GET`, `HEAD` and `OPTIONS`; all other HTTP methods are aborted
-with sanitized report and CLI evidence. Popups are covered. Internally created
-contexts block service workers; caller-owned contexts fail closed when pages
-or active workers are visible, deny later registration, and require page-level
-service-worker bypass before navigation. No method/URL exception is enabled.
-These claims apply only to those `LiveBrowserRunner` paths.
+**Safety/browser implementation.** `hard_submit_block` defaults to true and
+cannot be disabled. `LiveBrowserRunner.run` and synthetic-mutation paths install
+submit and request guards before creating a page or navigating. Playwright
+context routes allow `GET`, `HEAD` and `OPTIONS`; all other routed HTTP methods
+are aborted with sanitized report and CLI evidence, including popup requests.
+Internally created contexts block service workers. Caller-owned contexts fail
+closed when pages or active workers are visible, deny later service-worker
+registration, and require page-level service-worker bypass before navigation.
+CLI attached-session options fail early because existing pages cannot satisfy
+the fresh-context precondition; safe attached-session resume is deferred to
+V2-04. Failed route continuation or abort requires outcome reconciliation and
+cannot be treated as a safe retry.
 
-CLI attached-session options now fail early with an actionable message because
-their existing-page flow cannot satisfy the fresh-context precondition. Safe
-attached-session resume is deferred to V2-04. A failed route continuation or
-abort is reported as an unknown request outcome requiring reconciliation, and
-the pipeline worker stores that state as `NEEDS_USER_INPUT`, which is not
-eligible for automatic retry.
+**Static visible-text classifier.** `observe_html()` previously included
+script/style source in text passed to page-state detection; harmless `new
+Error(...)` source could classify a form as an error page. `_DomExtractor` now
+excludes `script`, `style`, and inert `template` subtrees while retaining title,
+ordinary body text, and clickable labels. `noscript` remains included because
+this parser cannot know whether scripting is disabled. Live Playwright
+`analyze_page()` is unchanged. CSS-hidden content may still affect static
+classification because there is no rendered layout information. Regression tests
+cover inert source on form/login pages, visible error text, retained `noscript`
+login text, and CAPTCHA precedence.
 
-**Visible-text classifier.** Static `observe_html()` previously included
-script/style source in text passed to page-state detection; harmless
-`new Error(...)` source could classify an application form as an error page.
-`_DomExtractor` now excludes `script`, `style`, and inert `template`
-subtrees while retaining title, ordinary body text, and clickable labels.
-`noscript` remains included because this static parser cannot know whether
-scripting is disabled. Live Playwright `analyze_page()` is unchanged; this
-was a static parser defect. CSS-hidden body content can still affect static
-classification because the parser has no rendering/layout information.
+**Shared observation/fill request guard.**
+`SubmissionExecutionService.observe_and_persist_snapshot()` installs the submit
+interlock and default-deny HTTP request guard before creating its page, and
+refuses contexts with any pre-existing page or active service worker. A blocked
+non-read request prevents an approvable snapshot and stores only sanitized
+evidence (method, resource type, origin, reason). The pending intervention
+commits before approval revocation in a separate transaction, so a revocation
+failure leaves a durable blocker. That blocker gates further API/supervisor
+preparation, approval, coordinator/CLI preparation, and controlled-submit
+claims. The manually approved WQ-8 final-submit route remains separate and can
+proceed only when its existing approval gates pass and no blocker exists.
 
-Regression tests cover harmless source on a form and login page, a visible
-error page, retained `noscript` login text, and CAPTCHA precedence. No live
-page or ATS is used.
+Abort or allowed-request continuation failure produces distinct outcome-unknown
+reconciliation state and takes precedence over an earlier ordinary
+blocked-mutation result, including while route callbacks settle. The API and
+supervisor surface reconciliation-required state; supervisor handling is
+terminal and does not automatically retry. Failure to persist the first blocker
+raises a typed persistence error and returns HTTP 503; a process latch is
+secondary fail-closed protection. If the initial write cannot commit, no durable
+evidence can survive process loss, so storage must be restored and the target
+owner must reconcile before restart or retry.
 
-**Unresolved P1 — shared observation/fill executor.** The API
-`POST /api/submit/{application_id}/observe` and supervisor
-`prepare_application` / `retry_application` use
-`SubmissionExecutionService.observe_and_persist_snapshot()`, which performs observation and fill inline but still installs only the submit
-interlock before `execute_live_form`. That review-only path can still issue POST-based
-autosave or intermediate requests. The ordinary pipeline worker path uses
-`LiveBrowserRunner` and is covered. Do not claim all UAA preparation is
-protected. Address this in the next shared-executor slice; keep controlled
-submission execution separate until that design is reviewed.
+**Broader V2-02 work still incomplete.** The objective remains one multi-step
+state machine across CLI, dashboard worker, supervisor preparation, and
+observation/fill, with duplicated readiness removed and structured
+errors/progress fingerprints. Acceptance still requires equivalent outcomes for
+the same fixtures across entry points, completion of three successive steps on
+the same URL and nested conditional questions, and never reporting review-ready
+while a final boundary is incomplete. These remaining behaviors must be
+implemented and validated before V2-02 is complete.
 
-**Coverage limits.** The request guard covers routed Playwright HTTP methods,
-not universal network side effects. WebSocket frames and GET endpoints with
-server-side effects are outside its coverage. Caller-owned contexts may have
-dormant service-worker registrations that Playwright does not expose; the
-guard cannot prove those background paths absent. Flows requiring blocked
-POST/PUT/PATCH/DELETE requests remain paused. Reports distinguish
-`submitted=false` from `request_outcome_unknown=true`: false means UAA did
-not confirm submission and does not prove remote non-submission when the
-outcome is unknown.
+**Coverage limits.** The interlock covers routed Playwright HTTP requests; it
+does not cover WebSocket frames, server-side effects on GET endpoints, or
+dormant service-worker activity that Playwright cannot enumerate. These paths
+are not a universal no-side-effect guarantee. `submitted=false` means UAA did
+not confirm submission; when `request_outcome_unknown=true`, it does not prove
+remote non-submission. No exception for blocked methods or URLs is enabled.
+Controlled WQ-8 authorization and submission authority are unchanged.
 
-**Checkpoint lineage.** The safety and V2-01 browser-gate integration is
-checkpointed on `checkpoint/v2-02-safety` at
-`a8c42880449be75a20a7c855e5031468c543bcf0`. The classifier source is
-checkpointed separately on `checkpoint/v2-02-classifier` at
-`98725115569fb15b200bceb91240821d60b108c2`; it has been integrated into
-the safety branch. Supervisor review approved one merge commit and push for
-this four-path integration. The request guard remains its own
-preparation-safety slice and does not cover the API/supervisor observation
-path above.
+**Checkpoint lineage.** V2-01 and the safety/browser checkpoint are preserved on
+`checkpoint/v2-02-safety`; the verified pushed safety/classifier checkpoint is
+`88a279cfceaea7b7a7ac1c9cedadcb0257b5a926`. The classifier source checkpoint
+`98725115569fb15b200bceb91240821d60b108c2` is separately preserved on its source
+branch and integrated in that safety checkpoint. The request-guard source
+checkpoint `021330b811c33888dcf15a37d35d49596f6eafb3` is pushed on
+`checkpoint/v2-02-request-guard`. Its integration into the safety worktree is
+currently an uncommitted local merge for review; do not describe the combined
+tree as committed or pushed.
 
-**Inherited validation.** The safety fixture → WQ-8 → WQ-7C browser selection
-passed **18 tests in 66.54 seconds**; WQ-7C → WQ-8 passed **14 tests in 54.67
-seconds**; the representative plugin-page → safety fixture → WQ-7C → WQ-8
-sequence passed **41 tests in 120.31 seconds**. The broader runner/request-
-interlock/WQ-7/WQ-8 selection passed **106 tests in 118.07 seconds**. After
-the V2-01 browser-gate integration, the conflict-area WQ-7C/WQ-8/final-pipeline
-selection passed **42 tests in 107.96 seconds**, and the browser-inclusive
-non-live gate passed **1,821 tests, 3 deselected in 1,693.04 seconds**.
-Ruff check/format passed (242 files formatted); Pyright reported zero errors,
-warnings, or informations. No real ATS or submission was used.
+**Inherited validation.** The safety fixture → WQ-8 → WQ-7C selection passed 18
+tests; WQ-7C → WQ-8 passed 14; plugin-page → safety fixture → WQ-7C → WQ-8
+passed 41. The broader runner/request-interlock/WQ-7/WQ-8 selection passed 106.
+After V2-01 browser-gate integration, the conflict-area browser selection passed
+42 and the then-current browser-inclusive non-live gate passed 1,821 tests, 3
+deselected. Classifier source tests passed 33; its source branch passed 1,516
+non-browser tests, 313 deselected. Request-guard source focused tests passed 86
+and affected browser tests passed 17; its source branch passed 1,521 non-browser
+tests, 313 deselected, and 1,831 browser-inclusive tests, 3 deselected. Those
+source-branch totals are inherited records, not integrated-tree acceptance.
 
-**Classifier-source validation.** On its source branch, focused page-observer
-tests passed **33 tests**; the full non-live/non-Playwright gate passed
-**1,516 tests, 313 deselected in 825.01 seconds**. Ruff check/format and
-Pyright passed. On the integrated safety worktree, focused observer-consumer tests passed 214 tests in 12.35 seconds, the request-interlock/WQ-7C/WQ-8/final-pipeline browser selection passed 19 tests in 67.28 seconds, and the full non-live/non-Playwright gate passed 1,516 tests, 313 deselected in 739.04 seconds. Ruff check/format passed (242 files formatted), and Pyright reported zero diagnostics.
+**Integrated-tree validation.** Focused request-guard, supervisor,
+intervention-store, page-observer, and WQ-8 persistence tests passed **119 tests
+in 123.28 seconds**. The affected preparation-interlock/WQ-8/default-no-submit
+browser selection passed **21 tests in 46.64 seconds**. The full
+non-live/non-Playwright gate passed **1,526 tests, 313 deselected (1,839
+collected) in 935.79 seconds**. The full browser-inclusive `pytest -m "not
+live"` gate passed **1,836 tests, 3 deselected (1,839 collected) in 1,878.03
+seconds**. Ruff check passed; Ruff format check passed (**242 files already
+formatted**); Pyright reported **0 errors, 0 warnings, 0 informations**. Pyright
+noted the isolated worktree has no local `.venv`; the installed executable
+produced the zero-diagnostic result. Integrated diff checks pass. No live test,
+ATS target, or real submission was used.
 
-**Next action.** Integrated observer, browser, full non-live and static gates
-are green. Supervisor review approved the four-path integration for one
-merge commit and push on the V2-02 safety branch. After the push, fetch
-origin and verify local/remote branch heads match with the dynamic commands
-in the active handoff. Do not merge to main, start shared-executor work, or run real ATS actions.
-
+**Next action.** The integrated safety
+tree is validated and staged for supervisor review. Review the exact staged
+source, test and documentation changes and gate evidence. Do not commit or push
+until supervisor approval; do not merge to main or run real ATS actions.
 
 ### V2-07A — Dashboard interaction design (separate follow-up)
 

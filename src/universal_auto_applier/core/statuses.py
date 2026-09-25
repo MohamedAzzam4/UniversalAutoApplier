@@ -171,6 +171,8 @@ class InterventionKind(StrEnum):
     MISSING_DOCUMENT = "missing_document"
     VALIDATION_ERROR = "validation_error"
     MANUAL_UPLOAD_REQUIRED = "manual_upload_required"
+    PREPARATION_HTTP_MUTATION_BLOCKED = "preparation_http_mutation_blocked"
+    HTTP_REQUEST_OUTCOME_UNKNOWN = "http_request_outcome_unknown"
     # WQ-5: a worker-owned job was interrupted (stale run recovered on
     # restart). The intervention explains the interruption and the next safe
     # action; nothing is auto-resubmitted.

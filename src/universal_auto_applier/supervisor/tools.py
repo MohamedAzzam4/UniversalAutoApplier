@@ -53,6 +53,7 @@ class PrepareOutcome:
     application_id: str
     snapshot: SubmissionSnapshot | None = None
     error: str | None = None
+    error_code: str | None = None
 
     @property
     def blocked(self) -> bool:
@@ -196,6 +197,9 @@ class SupervisorTools:
         """Browser-backed prepare via SubmissionExecutionService (review only)."""
         from universal_auto_applier.submission.execution_service import (
             PlaywrightContextFactory,
+            PreparationHttpMutationBlockedError,
+            PreparationInterlockPersistenceError,
+            PreparationRequestOutcomeUnknownError,
             SubmissionExecutionService,
         )
 
@@ -214,6 +218,28 @@ class SupervisorTools:
         )
         try:
             snapshot = service.observe_and_persist_snapshot(application_id=application_id)
+        except PreparationInterlockPersistenceError as exc:
+            logger.error(
+                "[%s] supervisor preparation blocker persistence failed",
+                application_id[:12],
+            )
+            return PrepareOutcome(
+                application_id=application_id,
+                snapshot=None,
+                error=str(exc),
+                error_code=exc.error_code,
+            )
+        except (
+            PreparationHttpMutationBlockedError,
+            PreparationRequestOutcomeUnknownError,
+        ) as exc:
+            logger.warning("[%s] supervisor preparation requires human review", application_id[:12])
+            return PrepareOutcome(
+                application_id=application_id,
+                snapshot=None,
+                error=str(exc),
+                error_code=exc.error_code,
+            )
         except Exception as exc:  # noqa: BLE001 — surface as a blocked outcome
             logger.exception("[%s] supervisor prepare failed", application_id[:12])
             return PrepareOutcome(application_id=application_id, snapshot=None, error=str(exc))

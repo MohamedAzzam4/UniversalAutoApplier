@@ -473,6 +473,105 @@ def test_e_captcha_immediate_human_no_retry(tmp_path: Path) -> None:
         engine.dispose()
 
 
+@pytest.mark.parametrize(
+    ("failure", "reason_code"),
+    [
+        pytest.param(
+            "unknown",
+            ReasonCode.HTTP_REQUEST_OUTCOME_UNKNOWN,
+            id="unknown-outcome",
+        ),
+        pytest.param(
+            "blocked",
+            ReasonCode.PREPARATION_HTTP_MUTATION_BLOCKED,
+            id="blocked-mutation",
+        ),
+        pytest.param(
+            "persistence",
+            ReasonCode.PREPARATION_INTERLOCK_PERSISTENCE_FAILED,
+            id="persistence-failure",
+        ),
+    ],
+)
+def test_preparation_http_interlock_failure_is_terminal_handoff(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    failure: str,
+    reason_code: ReasonCode,
+) -> None:
+    """A request interlock blocker becomes a human handoff with no retry loop."""
+    from universal_auto_applier.submission.execution_service import (
+        PreparationHttpMutationBlockedError,
+        PreparationInterlockPersistenceError,
+        PreparationRequestOutcomeUnknownError,
+        SubmissionExecutionService,
+    )
+    from universal_auto_applier.supervisor.store import list_human_handoffs
+
+    factory, engine = _session_factory(tmp_path)
+    try:
+        settings = _settings(tmp_path)
+        job = _make_job(external_job_id=f"http-interlock-{failure}")
+        _insert_job(factory, job)
+        prepare_calls = {"count": 0}
+        if failure == "unknown":
+            error: RuntimeError = PreparationRequestOutcomeUnknownError("request_abort_failed")
+        elif failure == "persistence":
+            error = PreparationInterlockPersistenceError(
+                "preparation_http_mutation_blocked",
+                stage="blocker_write",
+                blocker_persisted=False,
+            )
+        else:
+            error = PreparationHttpMutationBlockedError()
+
+        def observe_and_raise(
+            _service: SubmissionExecutionService,
+            *,
+            application_id: str,
+            artifact_dir=None,
+        ):
+            del application_id, artifact_dir
+            prepare_calls["count"] += 1
+            raise error
+
+        monkeypatch.setattr(
+            SubmissionExecutionService,
+            "observe_and_persist_snapshot",
+            observe_and_raise,
+        )
+        tools = SupervisorTools(settings=settings, session_factory=factory)
+        service = SupervisorService(
+            tools=tools,
+            policy_engine=PolicyEngine(),
+            planner=DeterministicPlanner(PolicyEngine()),
+            session_factory=factory,
+            limits=SupervisorLimits(max_application_attempts=4),
+            freshness_fn=lambda _url, _platform: ("UNKNOWN", "synthetic fixture"),
+        )
+
+        summary = service.run(application_ids=[job.application_id])
+
+        assert prepare_calls["count"] == 1
+        assert job.application_id not in summary.review_ready
+        handoffs = [
+            item for item in summary.needs_human if item["application_id"] == job.application_id
+        ]
+        assert len(handoffs) == 1
+        assert handoffs[0]["reason_code"] == reason_code.value
+        with session_scope(factory) as session:
+            rows = list_human_handoffs(session, status="open")
+        matching = [row for row in rows if row.application_id == job.application_id]
+        assert len(matching) == 1
+        assert matching[0].reason_code == reason_code.value
+        if failure in {"unknown", "persistence"}:
+            assert "reconcile" in matching[0].action_required.lower()
+        if failure == "persistence":
+            assert "do not retry" in matching[0].action_required.lower()
+    finally:
+        engine.dispose()
+
+
 # ---------------------------------------------------------------------------
 # F. login/2FA → human
 # ---------------------------------------------------------------------------
