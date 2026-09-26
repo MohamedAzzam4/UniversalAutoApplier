@@ -42,12 +42,6 @@ from universal_auto_applier.supervisor.models import InterventionView
 
 logger = logging.getLogger("universal_auto_applier.supervisor.tools")
 
-# Snapshot field statuses that mean "not resolved" (same set the submission
-# snapshot model uses).
-_UNRESOLVED_FIELD_STATUSES = frozenset(
-    {"intervention_needed", "validation_error", "failed", "blocked", "unfilled", "unsupported"}
-)
-
 
 @dataclass
 class PrepareOutcome:
@@ -259,39 +253,20 @@ class SupervisorTools:
     def sync_interventions_from_snapshot(self, application_id: str) -> int:
         """Persist FIELD_ANSWER interventions for unresolved snapshot fields.
 
-        The observe path builds the snapshot but does not persist field
-        interventions; the supervisor syncs them through the OFFICIAL
-        ``create_intervention`` store (deterministic ids — idempotent, no
-        duplicates). Returns the number of now-pending field interventions.
+        The shared snapshot bridge writes through the official intervention
+        store with deterministic IDs, so the supervisor and pipeline worker
+        preserve the same field identity and idempotency behavior.
         """
-        from universal_auto_applier.core.statuses import InterventionKind
-        from universal_auto_applier.interventions.store import create_intervention
-
         snapshot = self.load_review_snapshot(application_id)
-        if snapshot is None:
-            return 0
-        created = 0
-        with session_scope(self._session_factory) as session:
-            for f in snapshot.fields:
-                if f.status not in _UNRESOLVED_FIELD_STATUSES:
-                    continue
-                create_intervention(
-                    session,
-                    application_id=application_id,
-                    kind=InterventionKind.FIELD_ANSWER,
-                    question=f.label,
-                    suggested_answer=None,
-                    field_selector=f.field_token,
-                    llm_metadata={
-                        "field_label": f.label,
-                        "field_token": f.field_token,
-                        "field_type": f.field_type,
-                        "unresolved_reason": f.status,
-                        "required": f.required,
-                    },
-                )
-                created += 1
-        return created
+        from universal_auto_applier.interventions.snapshot_sync import (
+            sync_field_interventions_from_snapshot,
+        )
+
+        return sync_field_interventions_from_snapshot(
+            self._session_factory,
+            application_id=application_id,
+            snapshot=snapshot,
+        )
 
     def get_interventions(self, application_id: str) -> list[InterventionView]:
         """Structured, sanitized pending interventions for decisions."""

@@ -1,0 +1,50 @@
+<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8"><title>Synthetic three-step application</title></head>
+<body data-submitted="false">
+  <form id="application-form" method="post" action="/final-submit">
+    <section id="step-content"></section>
+    <button id="continue" type="button">Continue</button>
+    <button id="submit" type="submit" hidden>Submit Application</button>
+  </form>
+  <script>
+    const steps = [
+      '<label for="first_name">First name</label><input id="first_name" name="first_name" required>' +
+      '<label for="last_name">Last name</label><input id="last_name" name="last_name" required>',
+      '<fieldset><legend>Do you require sponsorship?</legend>' +
+      '<label><input type="radio" name="requires_sponsorship" value="Yes" required> Yes</label>' +
+      '<label><input type="radio" name="requires_sponsorship" value="No"> No</label></fieldset>' +
+      '<fieldset id="authorization" hidden><legend>Are you authorized to work?</legend>' +
+      '<label><input type="radio" name="work_authorization" value="Yes" required> Yes</label>' +
+      '<label><input type="radio" name="work_authorization" value="No"> No</label></fieldset>' +
+      '<div id="city-container" hidden><label for="city">City</label>' +
+      '<input id="city" name="city" required></div>',
+      '<label for="email">Email address</label><input id="email" name="email" type="email" required>' +
+      '__UPLOAD_CONTROL__' +
+      '__EXTRA_REQUIRED_FIELD__'
+    ];
+    let currentStep = 0;
+    const content = document.querySelector('#step-content');
+    const next = document.querySelector('#continue');
+    const submit = document.querySelector('#submit');
+    const render = () => {
+      content.innerHTML = steps[currentStep];
+      next.hidden = currentStep === steps.length - 1;
+      submit.hidden = currentStep !== steps.length - 1;
+      const sponsorship = content.querySelector('[name="requires_sponsorship"]');
+      content.querySelectorAll('[name="requires_sponsorship"]').forEach((radio) => {
+        radio.addEventListener('change', () => {
+          document.querySelector('#authorization').hidden = radio.value !== 'No';
+        });
+      });
+      content.querySelectorAll('[name="work_authorization"]').forEach((radio) => {
+        radio.addEventListener('change', () => {
+          document.querySelector('#city-container').hidden = radio.value !== 'Yes';
+        });
+      });
+    };
+    next.addEventListener('click', () => { currentStep += 1; render(); });
+    render();
+  </script>
+</body>
+</html>

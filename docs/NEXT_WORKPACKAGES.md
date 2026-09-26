@@ -14,10 +14,17 @@ the progress-fingerprint slice passed its combined non-live gate and supervisor
 review; local capture/import validation of the existing queue snapshot and the
 named-service double-import check are accepted. Producer completion/run
 provenance and a queue-to-document generation manifest are unverified, so the
-actual-completed-export checkpoint is not fully accepted. Production app/worker
-preparation and the current combined non-live gate remain pending. See
+actual-completed-export checkpoint is not fully accepted. The published intake
+checkpoint is `84ee4900365a5e7b10734e8bc2b6033f6aa76b92` on the active branch.
+The focused local synthetic app/API/subprocess-worker selection passed **12
+tests in 41.34 seconds**, asserting attempt/phase persistence plus the expected
+blocked required-field, unqualified-upload, and denied-HTTP cases. Static
+checks passed, with a Pyright result before final formatting cleanup. UI review
+and the combined non-live gate remain pending. Full required-document
+preparation is not accepted. See
 [`docs/evidence/v2/INTAKE_DISCOVERY.md`](evidence/v2/INTAKE_DISCOVERY.md) and
-resolve publication dynamically in the active handoff. The V2-02 source/base
+[`docs/evidence/v2/WORKER_PREPARATION.md`](evidence/v2/WORKER_PREPARATION.md).
+Resolve publication dynamically in the active handoff. The V2-02 source/base
 SHAs are reference points, not publication status.
 
 The combined `pytest -m 'not live'` gate passed **1,854 tests with 3
@@ -41,7 +48,7 @@ operator dashboard work assigned to V2-07B.
 |---|---|
 | V2-00 | Complete; baseline checkpointed, with its browser-gate caveat documented |
 | V2-01 | Complete |
-| V2-02 | In progress; progress-fingerprint slice validated; existing queue snapshot passed local importer and named-service intake for the owner-selected DATEV Workday row in a disposable store. Producer completion/run provenance and a queue-to-document generation manifest remain unverified; production app/worker preparation, review boundary, correction/reuse, and final combined gate remain pending. No live DATEV readiness is claimed. Controlled multi-step submit replay is separate and does not gate preparation. |
+| V2-02 | In progress; progress-fingerprint and local snapshot-intake slices are preserved at `84ee490`; producer completion/run provenance and a queue-to-document generation manifest remain unverified. The focused local synthetic app/API/subprocess-worker selection passed 12 tests in 41.34 seconds with attempt/phase persistence. Native file selection still lacks a named flow upload/send contract, so full required-document review-ready acceptance remains pending. UI review, correction/reuse, and final combined gate remain pending. Actual DATEV live preparation is separate and unauthorized. Controlled multi-step submit replay is separate and does not gate preparation. |
 | V2-03 | Not complete |
 | V2-04 | Not complete |
 | V2-05 | Not complete |
@@ -58,7 +65,7 @@ readiness. None of these four acceptance checkpoints is currently accepted.
 | Checkpoint | Required done criteria | Current status |
 |---|---|---|
 | Intake and first-flow discovery | Inspect one actual completed JobHunter export and record the owner-selected first flow, importer validity, and artifact existence without committing private artifacts. | **Partially accepted locally (2026-09-26):** the existing snapshot's one row passed `_validate_and_build_job`; its producer verdict is `consider` and queue status is `ready_to_apply`; DATEV Workday is selected; referenced PDFs existed and parsed; two named-service imports succeeded in a disposable SQLite store with matching source fingerprints and one persisted job. The snapshot has no completion/run marker or queue-to-document generation manifest, so completed-export provenance is pending. Live page inspection remains unverified. See [`INTAKE_DISCOVERY.md`](evidence/v2/INTAKE_DISCOVERY.md). |
-| Preparation | Start the production UAA app/API/worker; process the selected job through the real browser/executor path to a truthful final review boundary; verify persisted attempt/history and dashboard status, reason, next action and review evidence; fixture server observes zero final-application requests. | **Pending.** The accepted temp-store intake check did not start the production app/API/worker or browser; the normal local runtime still needs an explicit queue path. |
+| Preparation | Start the production UAA app/API/worker; process the selected job through the real browser/executor path to a truthful final review boundary; verify persisted attempt/history and dashboard status, reason, next action and review evidence; fixture server observes zero final-application requests. | **Pending.** Focused local synthetic app/API/subprocess-worker tests passed 12/12 in 41.34s with attempt/phase persistence and expected blocked cases. UI review and the combined non-live gate remain pending. Native `Resume` selection currently records `selection_verified` / `native_selection` without a named flow `upload_contract`; the safe gate must block `review_ready` for required documents until the selected flow's upload/send contract is qualified. Local synthetic worker results remain separate from DATEV live preparation. Dashboard scope is current job/run/outcome evidence, not a detailed attempt timeline. |
 | Correction and reuse | Save correction provenance, resolve only the targeted intervention, invalidate only affected approvals and enqueue one scoped idempotent resume atomically; verify later reuse at matching scope and job-local handling of uncertain answers. | Not accepted. |
 | Release qualification | Record supported/unsupported/unverified capability matrix and run the single combined accepted-code gate; assess release-relevant upgrade/restore and any separately authorized live levels. | Not accepted; all actual/live readiness remains unverified. |
 
@@ -376,13 +383,13 @@ ATS target, or real submission was used.
 
 **Exact next action.** Keep completed-export provenance pending unless the
 producer completion/run marker and queue-to-document generation manifest can
-be established. Continue only the bounded preparation core using the selected
-snapshot and an explicit local queue path. The production app/API/worker E2E
-must use a deterministic local fixture, persist history and truthful review
-evidence, and show zero final-application requests at the fixture server. Do
-not navigate or prepare on the live DATEV site without separate authorization.
-Preserve the approved-submit safety regressions. This plan grants no live
-authorization.
+be established. Finish the bounded worker persistence/routing proof on a
+deterministic local fixture and retain the native-upload negative gate: local
+selection alone cannot make a required document approvable. Full preparation
+acceptance needs an explicit upload/send contract for the selected flow after
+flow discovery; do not add a generalized exception. Do not navigate or
+prepare on the live DATEV site without separate authorization. Preserve the
+approved-submit safety regressions. This plan grants no live authorization.
 
 ### V2-07A — Dashboard interaction design (separate follow-up)
 

@@ -21,18 +21,26 @@ update; ``last_updated_at`` is always refreshed.
 
 from __future__ import annotations
 
+import uuid
 from datetime import UTC, datetime
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from universal_auto_applier.core.models import ApplicationJob
 from universal_auto_applier.core.statuses import (
     ALLOWED_TRANSITIONS,
     TERMINAL_STATUSES,
+    AdapterResultStatus,
     ApplicationStatus,
+    AttemptMode,
+    Phase,
 )
-from universal_auto_applier.persistence.models import ApplicationJobRow
+from universal_auto_applier.persistence.models import (
+    ApplicationAttemptRow,
+    ApplicationJobRow,
+    PhaseResultRow,
+)
 
 _UAA_SUBMISSION_MARKER_KEYS = ("dashboard_submitted", "dashboard_submitted_at")
 _QUESTION_ANSWER_METADATA_KEYS = ("application_answers", "form_answers", "question_answers")
@@ -305,6 +313,76 @@ def is_manual_submitted(job: ApplicationJob) -> bool:
     return bool(job.metadata.get("dashboard_submitted"))
 
 
+def record_attempt_started(
+    session: Session,
+    *,
+    application_id: str,
+    run_id: str,
+    adapter: str,
+    mode: AttemptMode,
+) -> ApplicationAttemptRow:
+    """Create one durable attempt row for a pipeline job execution."""
+    row = ApplicationAttemptRow(
+        attempt_id=uuid.uuid4().hex,
+        application_id=application_id,
+        run_id=run_id,
+        adapter=adapter,
+        mode=str(mode),
+        status=ApplicationStatus.IN_PROGRESS.value,
+        started_at=_utcnow(),
+    )
+    session.add(row)
+    session.flush()
+    return row
+
+
+def record_phase_result(
+    session: Session,
+    *,
+    attempt_id: str,
+    phase: Phase,
+    status: AdapterResultStatus,
+    message: str,
+    metadata: dict[str, object] | None = None,
+) -> PhaseResultRow:
+    """Append an immutable result for one attempt phase."""
+    attempt = session.get(ApplicationAttemptRow, attempt_id)
+    if attempt is None:
+        raise LookupError(f"Application attempt {attempt_id} does not exist")
+    latest_sequence = session.scalar(
+        select(func.max(PhaseResultRow.sequence)).where(PhaseResultRow.attempt_id == attempt_id)
+    )
+    row = PhaseResultRow(
+        attempt_id=attempt_id,
+        sequence=int(latest_sequence or 0) + 1,
+        phase=str(phase),
+        status=str(status),
+        message=message,
+        metadata_json=dict(metadata or {}),
+        recorded_at=_utcnow(),
+    )
+    attempt.last_phase = str(phase)
+    session.add(row)
+    session.flush()
+    return row
+
+
+def finish_attempt(
+    session: Session,
+    *,
+    attempt_id: str,
+    status: ApplicationStatus,
+) -> ApplicationAttemptRow | None:
+    """Mark one attempt complete with its final application status."""
+    row = session.get(ApplicationAttemptRow, attempt_id)
+    if row is None:
+        return None
+    row.status = str(status)
+    row.finished_at = _utcnow()
+    session.flush()
+    return row
+
+
 __all__ = [
     "upsert_application_job",
     "get_application_job",
@@ -313,4 +391,7 @@ __all__ = [
     "update_application_status",
     "set_manual_submitted",
     "is_manual_submitted",
+    "record_attempt_started",
+    "record_phase_result",
+    "finish_attempt",
 ]

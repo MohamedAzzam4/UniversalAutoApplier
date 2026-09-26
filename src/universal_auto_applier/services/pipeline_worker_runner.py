@@ -22,8 +22,8 @@ Contract:
   pause/cancel take effect between jobs.
 * The worker NEVER performs final submission: fixture mode uses the generic
   orchestrator path (``PipelineOrchestrator.process_job``) and live mode uses
-  :class:`LiveBrowserRunner`, both of which stop before any "Submit application"
-  control.
+  the existing persisted review-snapshot service, which stops before any
+  "Submit application" control.
 
 Run as::
 
@@ -41,12 +41,16 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from universal_auto_applier.browser.live_runner import LiveBrowserConfig, LiveBrowserRunner
-from universal_auto_applier.candidate_profile_loader import resolve_candidate_profile
 from universal_auto_applier.config import Settings, load_settings
 from universal_auto_applier.core.eligibility import is_repeat_processing_eligible
 from universal_auto_applier.core.models import ApplicationJob
-from universal_auto_applier.core.statuses import ApplicationStatus, InterventionKind
+from universal_auto_applier.core.statuses import (
+    AdapterResultStatus,
+    ApplicationStatus,
+    AttemptMode,
+    InterventionKind,
+    Phase,
+)
 from universal_auto_applier.interventions.store import create_intervention
 from universal_auto_applier.persistence.db import (
     build_engine_url,
@@ -55,8 +59,11 @@ from universal_auto_applier.persistence.db import (
     session_scope,
 )
 from universal_auto_applier.persistence.job_repository import (
+    finish_attempt,
     get_application_job,
     list_application_jobs,
+    record_attempt_started,
+    record_phase_result,
     upsert_application_job,
 )
 from universal_auto_applier.persistence.pipeline_run_repository import (
@@ -80,20 +87,6 @@ def _progress_error(application_id: str | None, error: str, phase: str = "") -> 
     }
 
 
-def _build_live_config(settings: Settings) -> LiveBrowserConfig:
-    """Build a :class:`LiveBrowserConfig` from resolved settings."""
-    return LiveBrowserConfig(
-        artifacts_root=settings.data_dir / "live-runs",
-        profile_dir=settings.browser_profile_dir,
-        headless=settings.browser_headless,
-        channel=settings.browser_channel,
-        timeout_ms=settings.browser_timeout_ms,
-        max_steps=settings.browser_max_steps,
-        capture_trace=True,
-        hard_submit_block=True,
-    )
-
-
 class PipelineWorkerRunner:
     """Runs one durable pipeline run in this (sub)process.
 
@@ -103,7 +96,8 @@ class PipelineWorkerRunner:
     boundary, and persisting every state change.
 
     Safety guarantees:
-    - Live mode never clicks a final submit control (LiveBrowserRunner dry-run).
+    - Live mode uses the persisted review-snapshot observer and never clicks
+      a final submit control.
     - Fixture mode is planning-only dry-run (generic orchestrator path).
     - Cancel is checked before every job; a job already in flight finishes
       safely and the next one is never started.
@@ -133,7 +127,8 @@ class PipelineWorkerRunner:
         )
         self.mode = "fixture" if fixture_file is not None else "live"
         self._orchestrator: Any | None = None
-        self._live_runner: LiveBrowserRunner | None = None
+        self._submission_context_factory: Any | None = None
+        self._active_attempt_id: str | None = None
 
     def run(self) -> int:
         """Execute the run. Returns the process exit code.
@@ -214,7 +209,16 @@ class PipelineWorkerRunner:
         if fixture_html is not None:
             self._orchestrator = self._make_orchestrator()
         else:
-            self._live_runner = LiveBrowserRunner(_build_live_config(self.settings))
+            from universal_auto_applier.submission.execution_service import (
+                PlaywrightContextFactory,
+            )
+
+            self._submission_context_factory = PlaywrightContextFactory(
+                settings=self.settings,
+                profile_dir=self.settings.browser_profile_dir,
+                headless=self.settings.browser_headless,
+                channel=self.settings.browser_channel,
+            )
 
         pulse_ticks = max(0, self.job_pulse_ms // 100)
 
@@ -323,18 +327,37 @@ class PipelineWorkerRunner:
         try:
             if self._orchestrator is not None:
                 self._process_job_fixture(job, fixture_html)
-            elif self._live_runner is not None:
+            elif self._submission_context_factory is not None:
                 self._process_job_live(job)
             else:
                 raise RuntimeError("no job processor available")
         except Exception as exc:  # noqa: BLE001 - per-job error boundary
             logger.exception("job %s failed: %s", application_id[:12], exc)
+            if self._active_attempt_id is not None:
+                self._finish_live_attempt(
+                    job_status=ApplicationStatus.FAILED,
+                    result_status=AdapterResultStatus.FAILED,
+                    message="Live preparation failed before a final review outcome was recorded.",
+                    outcome="worker_error",
+                )
             with session_scope(self.session_factory) as session:
                 job.status = ApplicationStatus.FAILED
                 upsert_application_job(session, job)
             self._bump(jobs_failed=1)
-            self._update(last_error=f"Job {application_id[:12]} error: {exc}")
-            self._append_error(_progress_error(application_id, str(exc), "job"))
+            self._update(
+                last_error=f"Job {application_id[:12]} error: {exc}",
+                last_action=(
+                    f"Job {application_id[:12]} failed: {exc} "
+                    "Next action: inspect the durable worker error before retrying."
+                ),
+            )
+            self._append_error(
+                _progress_error(
+                    application_id,
+                    f"{exc} Next action: inspect the durable worker error before retrying.",
+                    "job",
+                )
+            )
 
     def _process_job_fixture(self, job: ApplicationJob, fixture_html: str | None) -> None:
         """Run one job through the generic fixture orchestrator path.
@@ -367,48 +390,243 @@ class PipelineWorkerRunner:
             )
 
     def _process_job_live(self, job: ApplicationJob) -> None:
-        """Run one job through the live browser dry-run (never submits)."""
+        """Observe one live job through the shared persisted review path."""
         application_id = job.application_id
-        self._update(current_phase="browser_dry_run", last_action="launching_browser")
-
-        candidate = resolve_candidate_profile(job.metadata)
+        self._update(current_phase="preparing_review", last_action="launching_browser")
         with session_scope(self.session_factory) as session:
             job.status = ApplicationStatus.IN_PROGRESS
             upsert_application_job(session, job)
-
-        assert self._live_runner is not None
-        report = self._live_runner.run(job, candidate=candidate, qa_service=None)
-
-        if report.status == "review_ready":
-            self._update(
-                current_phase="recording_result",
-                last_action=f"Job {application_id[:12]} reached review_ready",
+            attempt = record_attempt_started(
+                session,
+                application_id=application_id,
+                run_id=self.run_id,
+                adapter=str(job.platform),
+                mode=AttemptMode.REVIEW,
             )
-            self._bump(jobs_completed=1)
+        self._active_attempt_id = attempt.attempt_id
+
+        assert self._submission_context_factory is not None
+        from universal_auto_applier.submission.execution_service import (
+            PreparationHttpMutationBlockedError,
+            PreparationInterlockPersistenceError,
+            PreparationRequestOutcomeUnknownError,
+            SubmissionExecutionService,
+        )
+        from universal_auto_applier.submission.models import (
+            derive_unresolved_required_count,
+            derive_unresolved_upload_count,
+            has_final_boundary_evidence,
+            is_review_ready_snapshot,
+        )
+
+        service = SubmissionExecutionService(
+            self.settings,
+            self.session_factory,
+            context_factory=self._submission_context_factory,
+        )
+        try:
+            snapshot = service.observe_and_persist_snapshot(application_id=application_id)
+        except PreparationInterlockPersistenceError as exc:
+            # This outcome means blocker persistence itself was incomplete.
+            # Keep its typed reason and require storage recovery/reconciliation;
+            # never turn it into an ordinary retriable browser failure.
+            self._record_live_failure(
+                job,
+                error=str(exc),
+                next_action="Restore durable storage and reconcile before any retry.",
+                phase="preparation_interlock_persistence",
+            )
+            return
+        except PreparationRequestOutcomeUnknownError as exc:
+            self._record_live_blocker(
+                job,
+                error=str(exc),
+                next_action="Reconcile application state with the owner before any retry.",
+                phase="preparation_request_outcome_unknown",
+                create_intervention_row=False,
+            )
+            return
+        except PreparationHttpMutationBlockedError as exc:
+            self._record_live_blocker(
+                job,
+                error=str(exc),
+                next_action="Review and resolve the preparation HTTP blocker before retrying.",
+                phase="preparation_http_mutation_blocked",
+                create_intervention_row=False,
+            )
+            return
+
+        if snapshot is None:
+            reason = (
+                "No review snapshot was persisted because observation did not reach a usable "
+                "application form."
+            )
+            with session_scope(self.session_factory) as session:
+                create_intervention(
+                    session,
+                    application_id=application_id,
+                    kind=InterventionKind.UNKNOWN_PAGE,
+                    question=reason,
+                    field_selector="pipeline-preparation-observation",
+                    llm_metadata={"reason": "snapshot_not_reached"},
+                )
+            self._record_live_blocker(
+                job,
+                error=reason,
+                next_action="Inspect the page blocker and resume observation when it is resolved.",
+                phase="preparation_observation",
+                create_intervention_row=False,
+            )
+            return
+
+        from universal_auto_applier.interventions.snapshot_sync import (
+            sync_field_interventions_from_snapshot,
+        )
+
+        sync_field_interventions_from_snapshot(
+            self.session_factory,
+            application_id=application_id,
+            snapshot=snapshot,
+        )
+        # The observer's snapshot count predates field-intervention sync. Read
+        # pending blockers again from durable state before declaring readiness.
+        from universal_auto_applier.interventions.store import list_pending_interventions
+
+        with session_scope(self.session_factory) as session:
+            pending = list_pending_interventions(session, application_id)
+
+        review_ready = is_review_ready_snapshot(snapshot) and not pending
+        if review_ready:
             self._set_job_status(job, ApplicationStatus.REVIEW_READY)
-        elif report.status == "needs_user_input":
-            self._update(
-                current_phase="recording_result",
-                last_action=f"Job {application_id[:12]} needs user input",
+            self._finish_live_attempt(
+                job_status=ApplicationStatus.REVIEW_READY,
+                result_status=AdapterResultStatus.REVIEW_READY,
+                message="Persisted a complete review snapshot at the verified final boundary.",
+                outcome="review_ready",
             )
             self._bump(jobs_completed=1)
-            self._set_job_status(job, ApplicationStatus.NEEDS_USER_INPUT)
-            if report.stopped_reason:
-                with session_scope(self.session_factory) as session:
-                    create_intervention(
-                        session,
-                        application_id=application_id,
-                        kind=InterventionKind.UNKNOWN_PAGE,
-                        question=f"Pipeline stopped: {report.stopped_reason}",
-                        field_selector="",
-                    )
-        else:
-            self._update(last_error=f"Job {application_id[:12]} failed: {report.stopped_reason}")
-            self._bump(jobs_failed=1)
-            self._set_job_status(job, ApplicationStatus.FAILED)
-            self._append_error(
-                _progress_error(application_id, report.stopped_reason, "browser_dry_run")
+            self._update(
+                current_phase="review",
+                last_action=f"Job {application_id[:12]} reached verified review boundary",
+                last_error="",
             )
+            return
+
+        reasons: list[str] = []
+        if not has_final_boundary_evidence(snapshot):
+            reasons.append("final review boundary evidence is incomplete")
+        unresolved_required = derive_unresolved_required_count(snapshot.fields)
+        if unresolved_required:
+            reasons.append(f"{unresolved_required} required field(s) remain unresolved")
+        unresolved_uploads = derive_unresolved_upload_count(snapshot.documents)
+        if unresolved_uploads:
+            reasons.append(f"{unresolved_uploads} document upload(s) lack complete evidence")
+        if snapshot.pending_intervention_count:
+            reasons.append(
+                f"snapshot recorded {snapshot.pending_intervention_count} pending intervention(s)"
+            )
+        if pending:
+            reasons.append(f"{len(pending)} pending intervention(s) remain")
+        if not reasons:
+            reasons.append("snapshot failed the review-readiness checks")
+        self._record_live_blocker(
+            job,
+            error="Review snapshot is incomplete: " + "; ".join(reasons) + ".",
+            next_action="Resolve the listed fields or documents, then observe the application again.",
+            phase="preparation_review_readiness",
+            intervention_kind=InterventionKind.REVIEW_BEFORE_SUBMIT,
+            create_intervention_row=not pending,
+        )
+
+    def _record_live_blocker(
+        self,
+        job: ApplicationJob,
+        *,
+        error: str,
+        next_action: str,
+        phase: str,
+        intervention_kind: InterventionKind = InterventionKind.UNKNOWN_PAGE,
+        create_intervention_row: bool = True,
+    ) -> None:
+        """Persist a needs-input outcome with an actionable durable reason."""
+        application_id = job.application_id
+        if create_intervention_row:
+            with session_scope(self.session_factory) as session:
+                create_intervention(
+                    session,
+                    application_id=application_id,
+                    kind=intervention_kind,
+                    question=error,
+                    field_selector=f"pipeline-preparation:{phase}",
+                    llm_metadata={"error_code": phase, "next_action": next_action},
+                )
+        self._set_job_status(job, ApplicationStatus.NEEDS_USER_INPUT)
+        self._finish_live_attempt(
+            job_status=ApplicationStatus.NEEDS_USER_INPUT,
+            result_status=AdapterResultStatus.NEEDS_USER_INPUT,
+            message=f"{error} Next action: {next_action}",
+            outcome=phase,
+        )
+        self._bump(jobs_completed=1)
+        self._update(
+            current_phase="needs_user_input",
+            last_action=f"{error} Next action: {next_action}",
+            last_error=error,
+        )
+        self._append_error(
+            _progress_error(application_id, f"{error} Next action: {next_action}", phase)
+        )
+
+    def _record_live_failure(
+        self,
+        job: ApplicationJob,
+        *,
+        error: str,
+        next_action: str,
+        phase: str,
+    ) -> None:
+        """Persist a non-retriable worker failure without hiding its cause."""
+        application_id = job.application_id
+        self._set_job_status(job, ApplicationStatus.FAILED)
+        self._finish_live_attempt(
+            job_status=ApplicationStatus.FAILED,
+            result_status=AdapterResultStatus.FAILED,
+            message=f"{error} Next action: {next_action}",
+            outcome=phase,
+        )
+        self._bump(jobs_failed=1)
+        self._update(
+            current_phase="failed",
+            last_action=f"Preparation stopped: {error} Next action: {next_action}",
+            last_error=error,
+        )
+        self._append_error(
+            _progress_error(application_id, f"{error} Next action: {next_action}", phase)
+        )
+
+    def _finish_live_attempt(
+        self,
+        *,
+        job_status: ApplicationStatus,
+        result_status: AdapterResultStatus,
+        message: str,
+        outcome: str,
+    ) -> None:
+        """Append the preparation result and finish the current durable attempt."""
+        attempt_id = self._active_attempt_id
+        if attempt_id is None:
+            return
+        with session_scope(self.session_factory) as session:
+            record_phase_result(
+                session,
+                attempt_id=attempt_id,
+                phase=Phase.PREPARE,
+                status=result_status,
+                message=message,
+                metadata={"preparation_outcome": outcome},
+            )
+            finish_attempt(session, attempt_id=attempt_id, status=job_status)
+        self._active_attempt_id = None
 
     def _set_job_status(self, job: ApplicationJob, status: ApplicationStatus) -> None:
         """Persist a job status transition."""
@@ -459,11 +677,20 @@ class PipelineWorkerRunner:
     def _mark_terminal(self, status: str, last_action: str) -> None:
         """Mark the run terminal (completed / cancelled / failed)."""
         with session_scope(self.session_factory) as session:
+            row = get_pipeline_run(session, self.run_id)
+            if status == "completed" and row is not None:
+                # Keep the final job's actionable result visible after the run
+                # transitions to completed.
+                last_action = row.last_action or last_action
+                last_error = row.last_error or ""
+            else:
+                last_error = ""
             mark_pipeline_run_terminal(
                 session,
                 self.run_id,
                 status=status,
                 last_action=last_action,
+                last_error=last_error,
             )
 
     def _mark_failed(self, error: str, phase: str) -> None:

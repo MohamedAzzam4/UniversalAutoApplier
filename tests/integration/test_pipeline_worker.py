@@ -21,6 +21,7 @@ deliberately unused port (connection refused) — no external hosts.
 
 from __future__ import annotations
 
+import json
 import socket
 import threading
 import time
@@ -30,6 +31,7 @@ from pathlib import Path
 from typing import Any
 
 from fastapi.testclient import TestClient
+from sqlalchemy import select
 
 from universal_auto_applier.api.app import create_app
 from universal_auto_applier.config import Settings
@@ -42,7 +44,11 @@ from universal_auto_applier.persistence.job_repository import (
     upsert_application_job,
 )
 from universal_auto_applier.persistence.migrations import apply_migrations
-from universal_auto_applier.persistence.models import Base
+from universal_auto_applier.persistence.models import (
+    ApplicationAttemptRow,
+    Base,
+    PhaseResultRow,
+)
 from universal_auto_applier.persistence.pipeline_run_repository import (
     get_latest_pipeline_run,
 )
@@ -52,11 +58,17 @@ FIXTURES_DIR = Path(__file__).parent.parent / "fixtures" / "platforms"
 GREENHOUSE_APPLY_HTML = (FIXTURES_DIR / "greenhouse_apply.html").read_text(encoding="utf-8")
 
 
-def _make_settings(tmp_path: Path, *, pulse_ms: int = 800) -> Settings:
+def _make_settings(
+    tmp_path: Path,
+    *,
+    pulse_ms: int = 800,
+    queue_path: Path | None = None,
+) -> Settings:
     return Settings(
         host="127.0.0.1",
         port=8400,
         data_dir=tmp_path / "uaa_wq4",
+        queue_path=queue_path,
         browser_headless=True,
         submit_mode="review",
         enable_real_submission=False,
@@ -104,7 +116,12 @@ def _make_job(
 
 
 @contextmanager
-def _running_app(tmp_path: Path, jobs: list[ApplicationJob]) -> Any:
+def _running_app(
+    tmp_path: Path,
+    jobs: list[ApplicationJob],
+    *,
+    queue_path: Path | None = None,
+) -> Any:
     """Create an app over a fresh migrated DB, seed jobs, and yield
     ``(client, app, settings)`` while the app lifespan is active.
 
@@ -114,7 +131,7 @@ def _running_app(tmp_path: Path, jobs: list[ApplicationJob]) -> Any:
     lifespan reuse the engine without disposing it, leaking a pooled sqlite3
     connection until garbage collection (a ResourceWarning failure on Python 3.14).
     """
-    settings = _make_settings(tmp_path)
+    settings = _make_settings(tmp_path, queue_path=queue_path)
     settings.data_dir.mkdir(parents=True, exist_ok=True)
     from universal_auto_applier.persistence.db import build_engine_url
 
@@ -159,20 +176,111 @@ def _unused_port() -> int:
         return int(sock.getsockname()[1])
 
 
-class _FixtureServer:
-    """Tiny local HTTP server serving the greenhouse apply fixture HTML."""
+def _synthetic_worker_queue(tmp_path: Path, url: str, external_id: str) -> tuple[Path, str]:
+    """Write one synthetic, ready-to-apply queue row and its fake documents."""
+    cv_path = tmp_path / f"{external_id}-synthetic-cv.pdf"
+    cover_path = tmp_path / f"{external_id}-synthetic-cover.pdf"
+    cv_path.write_bytes(b"%PDF-1.4\nSynthetic CV fixture\n")
+    cover_path.write_bytes(b"%PDF-1.4\nSynthetic cover letter fixture\n")
+    application_id = compute_application_id(
+        platform=Platform.GENERIC.value,
+        external_job_id=external_id,
+        url=url,
+    )
+    row = {
+        "application_id": application_id,
+        "platform": Platform.GENERIC.value,
+        "source": "synthetic-fixture",
+        "company": "Synthetic Fixture Co",
+        "title": "Synthetic Engineer",
+        "url": url,
+        "location": "Erlangen, Germany",
+        "job_description": "Synthetic local worker acceptance fixture.",
+        "verdict": "apply",
+        "cv_pdf": str(cv_path),
+        "cover_letter_pdf": str(cover_path),
+        "status": ApplicationStatus.READY_TO_APPLY.value,
+        "external_job_id": external_id,
+        "metadata": {
+            "candidate_profile": {
+                "full_name": "Synthetic Candidate",
+                "first_name": "Synthetic",
+                "last_name": "Candidate",
+                "email": "synthetic.candidate@example.test",
+                "city": "Erlangen",
+                "country": "Germany",
+                "requires_sponsorship": False,
+                "work_authorization": "Yes",
+            }
+        },
+    }
+    queue_path = tmp_path / f"{external_id}-application_queue.jsonl"
+    queue_path.write_text(json.dumps(row) + "\n", encoding="utf-8")
+    return queue_path, application_id
 
-    def __init__(self) -> None:
-        self._html = GREENHOUSE_APPLY_HTML
+
+def _worker_preparation_fixture(
+    *,
+    extra_required_field: bool = False,
+    include_upload: bool = False,
+    denied_post: bool = False,
+) -> str:
+    fixture_path = (
+        Path(__file__).parent.parent
+        / "fixtures"
+        / "platforms"
+        / ("worker_preparation_same_url_nested.html")
+    )
+    extra = (
+        '<label for="preferred_language">Preferred programming language</label>'
+        '<input id="preferred_language" name="preferred_language" required>'
+        if extra_required_field
+        else ""
+    )
+    upload = (
+        '<label for="resume">Resume</label><input id="resume" name="resume" type="file" required>'
+        if include_upload
+        else ""
+    )
+    html = fixture_path.read_text(encoding="utf-8")
+    html = html.replace("__EXTRA_REQUIRED_FIELD__", extra).replace("__UPLOAD_CONTROL__", upload)
+    if denied_post:
+        html = html.replace(
+            "</body>",
+            "<script>fetch('/autosave', {method: 'POST', body: 'synthetic fixture'}).catch(() => {});</script></body>",
+        )
+    return html
+
+
+class _FixtureServer:
+    """Tiny local HTTP server recording page and application requests."""
+
+    def __init__(self, html: str | None = None) -> None:
+        self._html = html or GREENHOUSE_APPLY_HTML
+        self.get_count = 0
+        self.post_count = 0
+        self.request_paths: list[tuple[str, str]] = []
+        self._request_lock = threading.Lock()
+        owner = self
 
         class _Handler(BaseHTTPRequestHandler):
             html = self._html
 
             def do_GET(self) -> None:  # noqa: N802
+                with owner._request_lock:
+                    owner.get_count += 1
+                    owner.request_paths.append(("GET", self.path))
                 self.send_response(200)
                 self.send_header("Content-Type", "text/html")
                 self.end_headers()
                 self.wfile.write(self.html.encode("utf-8"))
+
+            def do_POST(self) -> None:  # noqa: N802
+                with owner._request_lock:
+                    owner.post_count += 1
+                    owner.request_paths.append(("POST", self.path))
+                self.send_response(204)
+                self.end_headers()
 
             def log_message(self, *args: Any) -> None:  # noqa: ARG002
                 pass
@@ -579,5 +687,269 @@ class TestOneFailedJobDoesNotEraseResults:
                     ApplicationStatus.FAILED.value,
                     ApplicationStatus.NEEDS_USER_INPUT.value,
                 )
+        finally:
+            server.stop()
+
+
+class TestProductionWorkerPreparation:
+    def _import_and_start(
+        self,
+        client: TestClient,
+        queue_path: Path,
+    ) -> dict[str, Any]:
+        imported = client.post("/api/queue/import")
+        assert imported.status_code == 200, imported.text
+        assert imported.json()["run"]["state"] == "success"
+        assert imported.json()["run"]["imported"] == 1
+        started = client.post("/api/pipeline/start", json={"max_jobs": 1})
+        assert started.status_code == 200, started.text
+        assert started.json()["mode"] == "sequential_dry_run"
+        return _wait_for_terminal(client, timeout=90)
+
+    def test_real_worker_persists_three_step_nested_review_snapshot(self, tmp_path: Path) -> None:
+        """The API import and subprocess worker persist complete same-URL evidence."""
+        server = _FixtureServer(_worker_preparation_fixture())
+        try:
+            queue_path, application_id = _synthetic_worker_queue(
+                tmp_path,
+                f"http://127.0.0.1:{server.port}/apply",
+                "worker-preparation-ready",
+            )
+            with _running_app(tmp_path, [], queue_path=queue_path) as (client, app, _settings):
+                final = self._import_and_start(client, queue_path)
+                review = client.get(f"/api/submit/{application_id}/status").json()["snapshot"]
+                dashboard = client.get("/api/status").json()
+                interventions = client.get(
+                    "/api/interventions",
+                    params={"application_id": application_id, "pending_only": "true"},
+                ).json()
+
+                with session_scope(app.state.session_factory) as session:
+                    persisted_job = get_application_job(session, application_id)
+                    from universal_auto_applier.submission.store import get_active_approval
+
+                    approval = get_active_approval(session, application_id)
+                    attempts = session.scalars(
+                        select(ApplicationAttemptRow).where(
+                            ApplicationAttemptRow.application_id == application_id
+                        )
+                    ).all()
+                    phase_results = (
+                        session.scalars(
+                            select(PhaseResultRow).where(
+                                PhaseResultRow.attempt_id == attempts[0].attempt_id
+                            )
+                        ).all()
+                        if attempts
+                        else []
+                    )
+
+                assert final["status"] == "completed"
+                assert final["jobs_completed"] == 1
+                assert final["jobs_failed"] == 0
+                field_states = [
+                    (field["label"], field["status"], field["required"])
+                    for field in review["fields"]
+                ]
+                upload_states = [
+                    (
+                        doc["document_kind"],
+                        doc["status"],
+                        doc["evidence_source"],
+                        doc["upload_contract"],
+                    )
+                    for doc in review["documents"]
+                ]
+                assert "verified review boundary" in final["last_action"], (
+                    f"field states={field_states} upload states={upload_states}"
+                )
+                assert persisted_job is not None
+                assert str(persisted_job.status) == ApplicationStatus.REVIEW_READY.value
+                assert approval is not None
+                assert len(attempts) == 1
+                assert attempts[0].status == ApplicationStatus.REVIEW_READY.value
+                assert attempts[0].finished_at is not None
+                assert attempts[0].mode == "review"
+                assert len(phase_results) == 1
+                assert phase_results[0].phase == "prepare"
+                assert phase_results[0].status == "review_ready"
+                assert phase_results[0].metadata_json == {"preparation_outcome": "review_ready"}
+                persisted_snapshot = approval.snapshot_json
+                assert persisted_snapshot["completed_form_step_count"] == 3
+                assert persisted_snapshot["final_boundary_confirmed"] is True
+                assert len(persisted_snapshot["form_progress_fingerprint"]) >= 32
+                assert {field["label"] for field in persisted_snapshot["fields"]} >= {
+                    "First name",
+                    "Last name",
+                    "Do you require sponsorship?",
+                    "Are you authorized to work?",
+                    "City",
+                    "Email address",
+                }
+                assert review["application_status"] == ApplicationStatus.REVIEW_READY.value
+                assert review["application_url"] == f"http://127.0.0.1:{server.port}/apply"
+                assert review["completed_form_step_count"] == 3
+                assert review["final_boundary_confirmed"] is True
+                assert review["can_approve"] is True
+                assert review["pending_intervention_count"] == 0
+                assert review["documents"] == []
+                assert dashboard["jobs_by_status"][ApplicationStatus.REVIEW_READY.value] == 1
+                assert interventions["total"] == 0
+                assert server.get_count >= 1
+                assert {path for method, path in server.request_paths if method == "GET"} == {
+                    "/apply"
+                }
+                assert server.post_count == 0
+        finally:
+            server.stop()
+
+    def test_unresolved_required_field_is_intervened_and_worker_will_not_retry(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        server = _FixtureServer(_worker_preparation_fixture(extra_required_field=True))
+        try:
+            queue_path, application_id = _synthetic_worker_queue(
+                tmp_path,
+                f"http://127.0.0.1:{server.port}/apply",
+                "worker-preparation-unresolved",
+            )
+            with _running_app(tmp_path, [], queue_path=queue_path) as (client, app, _settings):
+                final = self._import_and_start(client, queue_path)
+                review = client.get(f"/api/submit/{application_id}/status").json()["snapshot"]
+                listed = client.get(
+                    "/api/interventions",
+                    params={"application_id": application_id, "pending_only": "true"},
+                ).json()["interventions"]
+
+                with session_scope(app.state.session_factory) as session:
+                    persisted_job = get_application_job(session, application_id)
+
+                assert final["status"] == "completed"
+                assert final["jobs_completed"] == 1
+                assert "1 required field(s) remain unresolved" in final["last_error"]
+                assert "Next action:" in final["last_action"]
+                assert persisted_job is not None
+                assert str(persisted_job.status) == ApplicationStatus.NEEDS_USER_INPUT.value
+                assert review["final_boundary_confirmed"] is True
+                assert review["can_approve"] is False
+                assert review["unresolved_required_field_count"] == 1
+                field_interventions = [item for item in listed if item["kind"] == "field_answer"]
+                assert len(field_interventions) == 1
+                assert field_interventions[0]["llm_metadata"]["field_label"] == (
+                    "Preferred programming language"
+                )
+                assert field_interventions[0]["field_selector"]
+                assert server.post_count == 0
+
+                before_retry_count = server.get_count
+                retried = client.post("/api/pipeline/start", json={"max_jobs": 1})
+                assert retried.status_code == 200, retried.text
+                second_run = _wait_for_terminal(client, timeout=30)
+                assert second_run["status"] == "completed"
+                assert second_run["jobs_total"] == 0
+                assert server.get_count == before_retry_count
+                assert server.post_count == 0
+        finally:
+            server.stop()
+
+    def test_native_upload_without_qualified_flow_stays_blocked(self, tmp_path: Path) -> None:
+        server = _FixtureServer(_worker_preparation_fixture(include_upload=True))
+        try:
+            queue_path, application_id = _synthetic_worker_queue(
+                tmp_path,
+                f"http://127.0.0.1:{server.port}/apply",
+                "worker-preparation-upload-unqualified",
+            )
+            with _running_app(tmp_path, [], queue_path=queue_path) as (client, app, _settings):
+                final = self._import_and_start(client, queue_path)
+                review = client.get(f"/api/submit/{application_id}/status").json()["snapshot"]
+                listed = client.get(
+                    "/api/interventions",
+                    params={"application_id": application_id, "pending_only": "true"},
+                ).json()["interventions"]
+
+                with session_scope(app.state.session_factory) as session:
+                    persisted_job = get_application_job(session, application_id)
+
+                assert final["status"] == "completed"
+                assert final["jobs_completed"] == 1
+                assert "document upload(s) lack complete evidence" in final["last_error"]
+                assert "Next action:" in final["last_action"]
+                assert persisted_job is not None
+                assert str(persisted_job.status) == ApplicationStatus.NEEDS_USER_INPUT.value
+                assert review["can_approve"] is False
+                assert review["unresolved_required_field_count"] == 1
+                assert review["unresolved_upload_count"] == 1
+                assert len(review["documents"]) == 1
+                document = review["documents"][0]
+                assert document["document_kind"] == "cv"
+                assert document["status"] == "selection_verified"
+                assert document["evidence_source"] == "native_selection"
+                assert document["upload_contract"] is None
+                field_interventions = [item for item in listed if item["kind"] == "field_answer"]
+                assert len(field_interventions) == 1
+                assert field_interventions[0]["llm_metadata"]["field_label"] == "Resume"
+                assert server.post_count == 0
+
+                before_retry_count = server.get_count
+                retried = client.post("/api/pipeline/start", json={"max_jobs": 1})
+                assert retried.status_code == 200, retried.text
+                second_run = _wait_for_terminal(client, timeout=30)
+                assert second_run["status"] == "completed"
+                assert second_run["jobs_total"] == 0
+                assert server.get_count == before_retry_count
+                assert server.post_count == 0
+        finally:
+            server.stop()
+
+    def test_denied_http_mutation_stays_blocked_and_is_not_retried(self, tmp_path: Path) -> None:
+        server = _FixtureServer(_worker_preparation_fixture(denied_post=True))
+        try:
+            queue_path, application_id = _synthetic_worker_queue(
+                tmp_path,
+                f"http://127.0.0.1:{server.port}/apply",
+                "worker-preparation-http-blocked",
+            )
+            with _running_app(tmp_path, [], queue_path=queue_path) as (client, app, _settings):
+                final = self._import_and_start(client, queue_path)
+                review = client.get(f"/api/submit/{application_id}/status").json()["snapshot"]
+                listed = client.get(
+                    "/api/interventions",
+                    params={"application_id": application_id, "pending_only": "true"},
+                ).json()["interventions"]
+
+                with session_scope(app.state.session_factory) as session:
+                    persisted_job = get_application_job(session, application_id)
+
+                assert final["status"] == "completed"
+                assert final["jobs_completed"] == 1
+                assert "preparation_http_mutation_blocked" in final["last_error"]
+                assert "before retrying" in final["last_action"]
+                assert persisted_job is not None
+                assert str(persisted_job.status) == ApplicationStatus.NEEDS_USER_INPUT.value
+                assert review["snapshot_hash"] == ""
+                assert review["can_approve"] is False
+                http_blockers = [
+                    item for item in listed if item["kind"] == "preparation_http_mutation_blocked"
+                ]
+                assert len(http_blockers) == 1
+                assert http_blockers[0]["llm_metadata"]["blocked_request_count"] >= 1
+                assert http_blockers[0]["llm_metadata"]["blocked_requests"][0]["method"] == "POST"
+                assert server.get_count >= 1
+                assert server.post_count == 0
+
+                before_retry_count = server.get_count
+                retried = client.post("/api/pipeline/start", json={"max_jobs": 1})
+                assert retried.status_code == 200, retried.text
+                second_run = _wait_for_terminal(client, timeout=30)
+                assert second_run["status"] == "completed"
+                assert second_run["jobs_total"] == 0
+                # The API observer also refuses the retry before browser creation.
+                observation_retry = client.post(f"/api/submit/{application_id}/observe")
+                assert observation_retry.status_code == 409
+                assert "preparation_http_mutation_blocked" in observation_retry.json()["detail"]
+                assert server.get_count == before_retry_count
+                assert server.post_count == 0
         finally:
             server.stop()

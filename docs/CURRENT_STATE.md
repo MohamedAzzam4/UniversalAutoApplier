@@ -8,8 +8,11 @@ section below is historical, not current checkout status.
 
 - **Repository:** `MohamedAzzam4/UniversalAutoApplier`.
 - **Active branch:** `codex/v2-intake-preparation`, based on source checkpoint
-  `322f3aaea844f61c090d4f4c8c9167fb7ea4f307`. The WIP is not published until
-  dynamic branch-head equality is verified in the active handoff.
+  `322f3aaea844f61c090d4f4c8c9167fb7ea4f307`. The latest published intake
+  checkpoint is `84ee4900365a5e7b10734e8bc2b6033f6aa76b92`; local `HEAD` and
+  `origin/codex/v2-intake-preparation` matched at verification. Current worker
+  changes are unpublished and must be resolved dynamically before claiming a
+  later checkpoint.
 - **Actual-input intake:** local capture/import validation is accepted for the
   owner-selected DATEV Workday row in the existing queue snapshot. It passed
   importer validation and two named-service imports against a disposable temp
@@ -20,9 +23,22 @@ section below is historical, not current checkout status.
   [`docs/evidence/v2/INTAKE_DISCOVERY.md`](evidence/v2/INTAKE_DISCOVERY.md).
 - **Current delivery status:** V2-00 and V2-01 are complete. V2-02 remains
   active; the progress-fingerprint and actual-input intake slices are
-  validated, while production app/API/worker preparation, review-boundary
-  acceptance, correction/reuse, and the combined non-live gate remain pending.
-  No live DATEV readiness or submission is claimed.
+  validated. The focused local synthetic app/API/subprocess-worker selection
+  passed (12 tests in 41.34s) with attempt/phase persistence and expected
+  required-field, upload, and denied-HTTP blocks. Ruff check/format and diff
+  checks passed; Pyright reported 0 errors and 0 warnings before final
+  formatting cleanup, so rerun final static checks after cleanup. UI review
+  and the combined non-live gate remain pending. Review-boundary acceptance
+  and correction/reuse remain pending.
+  Native `Resume` file selection still has no named flow upload/send contract,
+  so selection alone cannot satisfy required-document readiness or pass the
+  review-ready gate. Full preparation remains pending until the selected
+  flow's contract is qualified. No live DATEV preparation or submission is
+  claimed. The planned operator
+  evidence is limited to current job/run/outcome state; no detailed attempt
+  timeline UI or new API is claimed.
+  Focused worker evidence is in
+  [`docs/evidence/v2/WORKER_PREPARATION.md`](evidence/v2/WORKER_PREPARATION.md).
   V2-07A is a separate unmerged design/prototype checkpoint.
 - **Branch preservation:** the divergent `checkpoint/project-rebaseline`
   branch remains preserved. The current implementation WIP uses
