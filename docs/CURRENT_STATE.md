@@ -8,13 +8,10 @@ section below is historical, not current checkout status.
 
 - **Repository:** `MohamedAzzam4/UniversalAutoApplier`.
 - **Active branch:** `codex/v2-intake-preparation`, based on source checkpoint
-  `322f3aaea844f61c090d4f4c8c9167fb7ea4f307`. The latest published checkpoint
-  is the CSS wrap fix `9a2f0a03982fdde13c6f1d3ee52aa559770f29bd`, following
-  intake checkpoint `84ee4900365a5e7b10734e8bc2b6033f6aa76b92` and worker
-  checkpoint `227aac407a1f605ff7e142b110081911be815752`; local `HEAD` and
-  `origin/codex/v2-intake-preparation` matched at verification. Current
-  documentation updates are unpublished and the branch head must be resolved
-  dynamically before claiming a later checkpoint.
+  `322f3aaea844f61c090d4f4c8c9167fb7ea4f307`. `5735967` is the tested
+  production checkpoint used for the combined gate, not the current branch
+  head. Resolve current publication by comparing `git rev-parse HEAD` with
+  `git rev-parse origin/codex/v2-intake-preparation`.
 - **Actual-input intake:** local capture/import validation is accepted for the
   owner-selected DATEV Workday row in the existing queue snapshot. It passed
   importer validation and two named-service imports against a disposable temp
@@ -30,16 +27,18 @@ section below is historical, not current checkout status.
   attempt/phase persistence and expected required-field, upload, and
   denied-HTTP blocks. Python Playwright review passed at 1440×900 and 390×844
   for three synthetic jobs; the fixture observed no final-application POST.
-  Repo-wide Ruff check and format check passed (244 files already formatted), Pyright
-  reported 0 errors, 0 warnings and 0 informations, and `git diff --check`
-  passed on published checkpoint `9a2f0a0`. The first combined non-live gate
-  attempt was deliberately stopped at 19% after two failures, so no full-gate
-  result is claimed. Both failures concerned swallowed network/navigation
-  errors. The opt-in `raise_on_error` correction now preserves these errors as
-  durable `failed` results while retaining earlier job results; the corrected
-  focused selection passed **18 tests in 53.60s**. Post-correction Ruff check,
-  format (244 files already formatted), Pyright (0 errors/warnings), and
-  `git diff --check` passed. The corrected full gate is about to rerun.
+  Repo-wide Ruff check and format check passed (244 files already formatted),
+  and Pyright reported 0 errors, 0 warnings and 0 informations on published
+  checkpoint `5735967`. The first combined `pytest -m "not live"` run on that
+  checkpoint exited 1: **1,864 passed, 1 failed, 3 deselected in 1,377.31s**.
+  The sole failure was
+  `tests/playwright/test_final_pipeline.py::TestFinalCompletePipeline::test_full_pipeline_workflow`:
+  the fixture's file-change telemetry POST received HTTP 409 because the
+  preparation interlock correctly blocked it. The test-only repair removes
+  those fixture POSTs and reads the browser's actual file-input `FileList` on
+  its Playwright owner thread. The repaired focused test passed (**1 passed in
+  26.45s**); targeted Ruff check/format and Pyright passed. The combined gate
+  has not been rerun, so full-gate acceptance is not claimed.
   Review-boundary acceptance and correction/reuse remain pending.
   Native `Resume` file selection still has no named flow upload/send contract,
   so selection alone cannot satisfy required-document readiness or pass the

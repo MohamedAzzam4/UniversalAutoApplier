@@ -381,45 +381,28 @@ noted the isolated worktree has no local `.venv`; the installed executable
 produced the zero-diagnostic result. Integrated diff checks pass. No live test,
 ATS target, or real submission was used.
 
-**V2-02 intake/worker checkpoint update (2026-09-26).** Local actual-input
-capture/import is accepted for the owner-selected DATEV Workday row: the named
-service imported the unchanged queue twice into a disposable SQLite store and
-persisted one job plus two successful run records. This establishes
-import-compatibility only. The producer completion marker and queue-to-document
-generation manifest remain unavailable, so completed-export provenance stays
-unverified. Focused worker tests passed **12 in 41.34s**, covering persisted
-attempt/preparation-phase state, the nested three-step no-upload route, and
-fail-closed required-field, unqualified-upload, and denied-HTTP cases. Python
-Playwright review of the local app at 1440×900 and 390×844 passed for three
-synthetic jobs; no final-application POST was observed. Review-tab consistency
-remains a V2-07B follow-up. Repo-wide Ruff check/format, Pyright, and
-`git diff --check` passed on published checkpoint `9a2f0a0`. The first combined
-non-live gate attempt was stopped at 19% after two failures. Both exposed a
-swallowed navigation error: `TestErrorsVisible::test_failed_job_records_durable_error`
-and `TestOneFailedJobDoesNotEraseResults::test_previous_results_preserved`
-expected a durable `failed` result, but the service returned `None` and the
-worker reported `needs_input`. The worker/service now use the minimal opt-in
-`raise_on_error` correction. The affected selection passed **18 tests in
-53.60s**, including both failures, `TestProductionWorkerPreparation`, the
-request-interlock unit suite, WQ-8 snapshot persistence and event-order
-interlock tests (including blocked-CMP opt-in), and supervisor sync. Network
-failures now produce durable `FAILED` results and prior job results are
-preserved. Post-correction repo-wide Ruff check/format, Pyright, and
-`git diff --check` passed. The corrected full `pytest -m "not live"` gate is
-about to rerun; no full-gate result is claimed. These local synthetic results
-do not establish DATEV live readiness, full required-document preparation,
-or correction/reuse.
+**V2-02 intake/worker checkpoint update (2026-09-26).** Actual-input
+capture/import is accepted for the selected DATEV Workday queue row, but
+producer completion and queue-to-document provenance remain unverified. The
+focused synthetic worker selection passed **12 tests in 41.34s**; local UI
+review passed at 1440×900 and 390×844. On published checkpoint `5735967`, the
+combined `pytest -m "not live"` gate exited 1 with **1,864 passed, 1 failed,
+3 deselected in 1,377.31s**. Its sole failure was
+`tests/playwright/test_final_pipeline.py::TestFinalCompletePipeline::test_full_pipeline_workflow`:
+fixture telemetry received HTTP 409 from the correct preparation interlock.
+The unpublished test-only fixture/harness repair removes telemetry POSTs and
+reads actual browser `FileList` state; the repaired focused test passed **1 in
+26.45s**. Targeted Ruff check/format and Pyright also passed. The full gate was
+not rerun, so acceptance remains pending. Evidence and limits are recorded in
+`docs/evidence/v2/WORKER_PREPARATION.md`; these local results do not establish
+DATEV live readiness, required-document preparation, or correction/reuse.
 
-**Exact next action.** Run the full combined non-live gate on the corrected
-worker/service checkpoint and record its exact result. Keep completed-export
-provenance pending unless the producer
-completion/run marker and queue-to-document generation manifest can be
-established. Retain the native-upload negative gate: local selection alone
-cannot make a required document approvable. Full preparation acceptance needs
-an explicit upload/send contract for the selected flow after flow discovery;
-do not add a generalized exception. Do not navigate or prepare on the live
-DATEV site without separate authorization. Preserve the approved-submit safety
-regressions. This plan grants no live authorization.
+**Exact next action.** Review and preserve the bounded fixture/harness repair
+and its handoff evidence. Before merge, run the combined non-live gate once on
+the accepted checkpoint and record its exact result. Keep producer provenance,
+required-document preparation, DATEV live readiness, and correction/reuse
+pending; retain the native-upload negative gate and do not prepare on the live
+DATEV site without separate authorization.
 
 ### V2-07A — Dashboard interaction design (separate follow-up)
 

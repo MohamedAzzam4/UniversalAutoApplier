@@ -317,7 +317,7 @@ class TestFinalCompletePipeline:
             # 6. Observe live form with LLM -> high-risk salary field
             # ================================================================
             resp = client.post(f"/api/submit/{app_id}/observe")
-            assert resp.status_code == 200
+            assert resp.status_code == 200, f"observe returned {resp.status_code}: {resp.text}"
             observe = resp.json()
             snapshot = observe["snapshot"]
             snapshot_hash = snapshot["snapshot_hash"]
@@ -456,21 +456,10 @@ class TestFinalCompletePipeline:
             assert cover_doc["upload_contract"] == "native_final_submit"
             assert cover_doc["evidence_source"] == "native_selection"
 
-            # Browser file input proof: the real browser file inputs received
-            # the correct filenames via Playwright's setInputFiles.  The
-            # change-event handlers in the fixture HTML reported them back
-            # to the fixture server.  Poll briefly if the events haven't
-            # arrived yet (async POST from the browser).
-            deadline = time.time() + 3.0
-            file_metrics = metrics
-            while time.time() < deadline:
-                file_metrics = server.get_metrics()
-                if (
-                    file_metrics.get("cv_filename") == "cv.pdf"
-                    and file_metrics.get("cover_filename") == "cover.pdf"
-                ):
-                    break
-                time.sleep(0.2)
+            # Browser file input proof: the harness reads the real browser
+            # FileList on its owning Playwright thread after deterministic fill.
+            # This avoids fixture telemetry POSTs during preparation.
+            file_metrics = server.get_metrics()
             assert file_metrics["cv_filename"] == "cv.pdf", (
                 f"Browser CV input filename: expected cv.pdf, got {file_metrics['cv_filename']!r}"
             )

@@ -1,9 +1,10 @@
 # V2 Local Worker Preparation — Focused WIP Evidence
 
-**Status:** focused worker checks and correction, local UI review, and repo-wide static checks pass. The first combined non-live gate attempt stopped at 19% after two failures; the corrected full gate is about to rerun. Full required-document preparation is not accepted.
+**Status:** WIP. The full combined non-live gate on `5735967` had one fixture-telemetry failure; a test-only repair passes the affected test, but the full gate has not been rerun. Full required-document preparation is not accepted.
 **Published worker checkpoint:** `227aac407a1f605ff7e142b110081911be815752`.
-**Published UI checkpoint:** `9a2f0a03982fdde13c6f1d3ee52aa559770f29bd` on `codex/v2-intake-preparation`; `HEAD` and the remote branch matched at verification.
+**Published UI checkpoint:** `9a2f0a03982fdde13c6f1d3ee52aa559770f29bd`. The published worker failure-outcome correction is `5735967` on `codex/v2-intake-preparation`; `HEAD` and the remote branch matched at verification.
 **Scope:** local synthetic app/API/subprocess-worker and safety fixtures only. No live DATEV navigation, mutation, upload, or submission was performed.
+**Current WIP:** test-only repair in `final_pipeline_apply.html`, `final_pipeline_server.py`, and `test_final_pipeline.py`; it removes telemetry POSTs and reads the actual browser `FileList` on its Playwright owner thread.
 
 ## Focused results
 
@@ -19,9 +20,9 @@ The worker fixture verifies the nested three-step no-upload review snapshot and 
 
 An earlier preliminary selection had 8 passes and 2 failures because its native-upload fixture expectations did not reflect the required block for a flow without an upload contract. The fixture and expectations were corrected; the final focused selection passed without weakening the safety gate.
 
-Focused worker selection: **12 passed in 41.34 seconds**. Its matrix verifies persisted preparation-phase/attempt evidence on the nested three-step no-upload path and blocks required-field, unqualified-upload, and denied-HTTP cases. The first `pytest -m "not live"` attempt was stopped at 19% after two failures to avoid spending the remaining runtime before correcting them. `TestErrorsVisible::test_failed_job_records_durable_error` and `TestOneFailedJobDoesNotEraseResults::test_previous_results_preserved` exposed swallowed network/navigation errors: the service returned `None`, so the worker reported `needs_input` instead of the required durable `failed` outcome.
+The earlier worker error-propagation correction passed its affected selection (**18 tests in 53.60 seconds**) and was published in `5735967`. Repo-wide Ruff check/format passed (**244 files already formatted**), and Pyright reported **0 errors, 0 warnings, 0 informations** on that checkpoint.
 
-The worker and service now support the minimal opt-in `raise_on_error` correction. The affected selection passed **18 tests in 53.60 seconds**, covering both network-failure regressions, `TestProductionWorkerPreparation`, the request-interlock unit suite, WQ-8 snapshot persistence / `TestEventOrderInterlockBeforeNavigation` including the blocked-CMP opt-in case, and the supervisor sync regression. Network failures now produce durable `FAILED` results, earlier job results are preserved, and typed guards / the production worker matrix still pass. Post-correction repo-wide static checks passed: `ruff check src tests migrations`; `ruff format --check src tests migrations` (**244 already formatted**); Pyright (**0 errors, 0 warnings**); `git diff --check`. The corrected full `pytest -m "not live"` gate is about to rerun; no full-gate result is claimed yet.
+The combined `pytest -m "not live"` run on `5735967` exited 1: **1,864 passed, 1 failed, 3 deselected in 1,377.31 seconds**. The sole failure was `tests/playwright/test_final_pipeline.py::TestFinalCompletePipeline::test_full_pipeline_workflow`: fixture file-change telemetry POSTed to `/record-file` and received HTTP 409 from the preparation interlock. The test-only repair removes those POSTs and reads the real browser `FileList`; the focused repaired test passed (**1 passed in 26.45 seconds**). Targeted Ruff check/format passed, and Pyright reported **0 errors, 0 warnings, 0 informations**. The full gate was not rerun, so no all-green full-gate result is claimed.
 
 ## Local UI inspection
 
@@ -35,4 +36,4 @@ The legacy Review tab still calls an in-memory API and shows generic defaults fo
 
 The current native `Resume` path can report `selection_verified` / `native_selection`, but it has no named flow `upload_contract`; `execute_live_form` has no qualified native-upload flow. The safe readiness gate therefore rejects `review_ready` when the required-document path is unqualified. Keep that behavior fail-closed. Qualify the selected flow's upload/send contract after flow discovery; do not add a generalized exception.
 
-The positive nested-route fixture has no upload control. It supports local shared-routing and persistence evidence, not readiness for DATEV or any required-document flow. Actual DATEV live readiness, full preparation, and correction/reuse remain pending and separately gated. The operator surface is limited to current job/run/outcome evidence; this work adds no new API or detailed attempt-timeline UI. The first combined non-live gate attempt stopped after two failures; the targeted correction and static checks now pass, but no full-gate result is claimed until the corrected run completes.
+The positive nested-route fixture has no upload control. It supports local shared-routing and persistence evidence, not readiness for DATEV or any required-document flow. Actual DATEV live readiness, full preparation, and correction/reuse remain pending and separately gated. The operator surface is limited to current job/run/outcome evidence; this work adds no new API or detailed attempt-timeline UI.

@@ -416,6 +416,16 @@ def main() -> int:
             native_upload_contracts=_FIXTURE_NATIVE_UPLOAD_CONTRACTS,
         )
 
+        # Read actual browser file-input state on its owning Playwright thread.
+        # The fixture must not POST telemetry during preparation because the
+        # preparation request interlock correctly blocks HTTP mutations.
+        _MetricsHandler.metrics["cv_filename"] = page.locator("#cv_upload").evaluate(
+            "element => element.files.length ? element.files[0].name : ''"
+        )
+        _MetricsHandler.metrics["cover_filename"] = page.locator("#cover_letter").evaluate(
+            "element => element.files.length ? element.files[0].name : ''"
+        )
+
         # 2. Re-extract live fields for LLM processing.
         targets = _le_mod._extract_live_fields(page)
         target_by_token: dict[str, object] = {t.token: t for t in targets}
