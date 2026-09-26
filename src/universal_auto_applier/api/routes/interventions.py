@@ -9,7 +9,7 @@ from __future__ import annotations
 from typing import Any
 
 from fastapi import APIRouter, HTTPException, Request
-from pydantic import BaseModel, model_validator
+from pydantic import BaseModel, Field, model_validator
 
 from universal_auto_applier.core.statuses import InterventionStatus
 
@@ -33,6 +33,8 @@ class InterventionResponse(BaseModel):
     llm_metadata: dict[str, Any] | None = None
     created_at: str = ""
     resolved_at: str | None = None
+    revision: str = ""
+    snapshot_hash: str = ""
 
 
 class InterventionListResponse(BaseModel):
@@ -81,6 +83,14 @@ class ResolveRequest(BaseModel):
         return self
 
 
+class CorrectionResumeRequest(BaseModel):
+    """Owner-supplied scalar correction bound to the displayed snapshot."""
+
+    answer: str = Field(min_length=1)
+    revision: str = Field(min_length=1)
+    snapshot_hash: str = Field(min_length=1)
+
+
 @router.get("/interventions", response_model=InterventionListResponse)
 def list_interventions(
     request: Request,
@@ -102,6 +112,18 @@ def list_interventions(
         else:
             interventions = list_all_interventions(session, application_id)
 
+        from universal_auto_applier.interventions.resolve_service import (
+            field_intervention_revision,
+        )
+        from universal_auto_applier.submission.store import get_latest_approval
+
+        snapshot_hashes: dict[str, str] = {}
+        for intervention in interventions:
+            app_id = intervention.application_id
+            if app_id not in snapshot_hashes:
+                latest = get_latest_approval(session, app_id)
+                snapshot_hashes[app_id] = latest.snapshot_hash if latest is not None else ""
+
     return InterventionListResponse(
         total=len(interventions),
         interventions=[
@@ -120,6 +142,8 @@ def list_interventions(
                 llm_metadata=i.llm_metadata,
                 created_at=i.created_at.isoformat() if i.created_at else "",
                 resolved_at=i.resolved_at.isoformat() if i.resolved_at else None,
+                revision=field_intervention_revision(i, snapshot_hashes[i.application_id]),
+                snapshot_hash=snapshot_hashes[i.application_id],
             )
             for i in interventions
         ],
@@ -200,3 +224,35 @@ def resolve_intervention_endpoint(
         session.commit()
 
     return {"status": "resolved", "intervention_id": intervention_id, "resolution": body.resolution}
+
+
+@router.post("/interventions/{intervention_id}/correct-and-resume")
+def correct_and_resume_intervention_endpoint(
+    request: Request,
+    intervention_id: str,
+    body: CorrectionResumeRequest,
+) -> dict[str, Any]:
+    """Save an exact FIELD_ANSWER correction and queue its job when unblocked."""
+    from universal_auto_applier.interventions.resolve_service import (
+        correct_and_resume_field_answer,
+    )
+    from universal_auto_applier.interventions.store import get_intervention
+
+    session_factory = request.app.state.session_factory
+    with session_factory() as session:
+        intervention = get_intervention(session, intervention_id)
+        if intervention is None:
+            raise HTTPException(status_code=404, detail="Intervention not found")
+        try:
+            receipt = correct_and_resume_field_answer(
+                session,
+                intervention=intervention,
+                answer=body.answer,
+                expected_revision=body.revision,
+                expected_snapshot_hash=body.snapshot_hash,
+            )
+            session.commit()
+        except ValueError as exc:
+            session.rollback()
+            raise HTTPException(status_code=409, detail=str(exc)) from None
+    return receipt

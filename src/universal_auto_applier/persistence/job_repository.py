@@ -43,6 +43,7 @@ from universal_auto_applier.persistence.models import (
 )
 
 _UAA_SUBMISSION_MARKER_KEYS = ("dashboard_submitted", "dashboard_submitted_at")
+_UAA_FIELD_CORRECTIONS_KEY = "_uaa_field_corrections"
 _QUESTION_ANSWER_METADATA_KEYS = ("application_answers", "form_answers", "question_answers")
 
 
@@ -53,7 +54,7 @@ def _utcnow() -> datetime:
 def _metadata_for_insert(metadata: dict[str, object]) -> dict[str, object]:
     """Copy producer metadata without accepting UAA-owned submission markers."""
     result = dict(metadata)
-    for key in _UAA_SUBMISSION_MARKER_KEYS:
+    for key in (*_UAA_SUBMISSION_MARKER_KEYS, _UAA_FIELD_CORRECTIONS_KEY):
         result.pop(key, None)
     return result
 
@@ -76,6 +77,11 @@ def _metadata_for_reimport(
     for key in _UAA_SUBMISSION_MARKER_KEYS:
         if key in existing:
             result[key] = existing[key]
+
+    # Corrections are UAA-owned, job-local operator state. Queue re-imports
+    # must neither erase it nor accept a producer-supplied replacement.
+    if _UAA_FIELD_CORRECTIONS_KEY in existing:
+        result[_UAA_FIELD_CORRECTIONS_KEY] = existing[_UAA_FIELD_CORRECTIONS_KEY]
 
     for key in _QUESTION_ANSWER_METADATA_KEYS:
         if key not in result and key in existing:
@@ -277,6 +283,23 @@ def update_application_status(
     return row
 
 
+def set_uaa_field_corrections(
+    session: Session,
+    application_id: str,
+    corrections: dict[str, object],
+) -> ApplicationJobRow | None:
+    """Persist UAA-owned field corrections without treating them as producer metadata."""
+    row = session.get(ApplicationJobRow, application_id)
+    if row is None:
+        return None
+    metadata = dict(row.metadata_json or {})
+    metadata[_UAA_FIELD_CORRECTIONS_KEY] = corrections
+    row.metadata_json = metadata
+    row.last_updated_at = _utcnow()
+    session.flush()
+    return row
+
+
 def set_manual_submitted(
     session: Session,
     application_id: str,
@@ -389,6 +412,7 @@ __all__ = [
     "list_application_jobs",
     "count_application_jobs",
     "update_application_status",
+    "set_uaa_field_corrections",
     "set_manual_submitted",
     "is_manual_submitted",
     "record_attempt_started",

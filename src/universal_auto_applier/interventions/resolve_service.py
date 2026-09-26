@@ -20,10 +20,19 @@ Semantics (decoupled):
 
 from __future__ import annotations
 
+import hashlib
+import json
+from datetime import UTC, datetime
 from typing import Any, cast
 
 from universal_auto_applier.core.models import DocumentBundleEntry, Intervention
-from universal_auto_applier.core.statuses import InterventionStatus
+from universal_auto_applier.core.statuses import (
+    ApplicationStatus,
+    InterventionKind,
+    InterventionStatus,
+)
+
+FIELD_CORRECTIONS_METADATA_KEY = "_uaa_field_corrections"
 
 ACCEPTING_RESOLUTIONS: frozenset[InterventionStatus] = frozenset(
     {
@@ -188,9 +197,242 @@ def resolve_with_persistence(
         )
 
 
+def field_intervention_revision(intervention: Intervention, snapshot_hash: str) -> str:
+    """Hash the pending machine context and exact persisted snapshot for stale checks."""
+    payload = {
+        "intervention_id": intervention.intervention_id,
+        "application_id": intervention.application_id,
+        "kind": str(intervention.kind),
+        "status": str(intervention.status),
+        "question": intervention.question,
+        "field_selector": intervention.field_selector,
+        "options": intervention.options,
+        "suggested_answer": intervention.suggested_answer,
+        "confidence": intervention.confidence,
+        "llm_metadata": intervention.llm_metadata or {},
+        "created_at": intervention.created_at.isoformat() if intervention.created_at else "",
+        "snapshot_hash": snapshot_hash,
+    }
+    canonical = json.dumps(payload, sort_keys=True, separators=(",", ":"), default=str)
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
+def correct_and_resume_field_answer(
+    session: Any,
+    *,
+    intervention: Intervention,
+    answer: str,
+    expected_revision: str,
+    expected_snapshot_hash: str,
+) -> dict[str, Any]:
+    """Persist one exact job-local correction and queue only after blockers clear.
+
+    The caller owns the SQLAlchemy transaction. Repeating the same correction
+    returns its original receipt without changing job state.
+    """
+    from universal_auto_applier.core.eligibility import repeat_processing_block_reason
+    from universal_auto_applier.core.models import FieldOption
+    from universal_auto_applier.interventions.store import (
+        count_pending_interventions,
+        list_pending_interventions,
+        resolve_intervention,
+    )
+    from universal_auto_applier.persistence.job_repository import (
+        get_application_job,
+        set_uaa_field_corrections,
+        update_application_status,
+    )
+    from universal_auto_applier.persistence.pipeline_run_repository import get_active_pipeline_run
+    from universal_auto_applier.submission.models import SubmissionSnapshot
+    from universal_auto_applier.submission.store import (
+        get_latest_approval,
+        get_latest_result,
+        has_unconsumed_claim,
+        revoke_approval,
+    )
+
+    if intervention.kind != InterventionKind.FIELD_ANSWER:
+        raise ValueError("Only FIELD_ANSWER interventions accept scalar corrections")
+
+    normalized_answer = answer.strip()
+    if not normalized_answer:
+        raise ValueError("Correction answer must not be blank")
+
+    job = get_application_job(session, intervention.application_id)
+    if job is None:
+        raise ValueError("Intervention job no longer exists")
+
+    correction_key = hashlib.sha256(
+        f"{intervention.intervention_id}:{expected_revision}".encode()
+    ).hexdigest()
+    corrections_raw: Any = job.metadata.get(FIELD_CORRECTIONS_METADATA_KEY, {})
+    corrections: dict[str, Any] = (
+        cast(dict[str, Any], corrections_raw) if isinstance(corrections_raw, dict) else {}
+    )
+    previous: Any = corrections.get(correction_key)
+    if isinstance(previous, dict):
+        previous_record = cast(dict[str, Any], previous)
+        receipt: Any = previous_record.get("receipt")
+        if (
+            previous_record.get("answer") == normalized_answer
+            and previous_record.get("snapshot_hash") == expected_snapshot_hash
+            and isinstance(receipt, dict)
+        ):
+            return dict(cast(dict[str, Any], receipt))
+        raise ValueError("Correction revision was already used with different data")
+
+    if str(job.status) != ApplicationStatus.NEEDS_USER_INPUT.value:
+        raise ValueError(f"Correction requires needs_user_input status, found {job.status}")
+    if repeat_processing_block_reason(job) is not None:
+        raise ValueError("Application is blocked from repeat processing")
+    pending = list_pending_interventions(session, intervention.application_id)
+    unsafe_kinds = {
+        InterventionKind.PREPARATION_HTTP_MUTATION_BLOCKED,
+        InterventionKind.HTTP_REQUEST_OUTCOME_UNKNOWN,
+    }
+    if any(item.kind in unsafe_kinds for item in pending):
+        raise ValueError("HTTP preparation or outcome blockers require reconciliation first")
+    if get_active_pipeline_run(session) is not None:
+        raise ValueError("A pipeline run is active; wait until it reaches a safe stop")
+    latest_result = get_latest_result(session, intervention.application_id)
+    if latest_result is not None and latest_result.state == "outcome_unknown":
+        raise ValueError("Submission outcome is unknown; reconcile it before correction or retry")
+    if has_unconsumed_claim(session, intervention.application_id):
+        raise ValueError(
+            "A submission claim is unresolved; reconcile it before correction or retry"
+        )
+    if str(intervention.status) != InterventionStatus.PENDING.value:
+        raise ValueError("Intervention is no longer pending")
+
+    latest_approval = get_latest_approval(session, intervention.application_id)
+    if latest_approval is None or not latest_approval.snapshot_json:
+        raise ValueError("No persisted snapshot is available for this intervention")
+    if latest_approval.snapshot_hash != expected_snapshot_hash:
+        raise ValueError("The persisted snapshot changed; reload the intervention")
+    if (
+        field_intervention_revision(intervention, latest_approval.snapshot_hash)
+        != expected_revision
+    ):
+        raise ValueError("The intervention changed; reload the correction form")
+
+    snapshot = SubmissionSnapshot.model_validate(latest_approval.snapshot_json)
+    metadata = intervention.llm_metadata or {}
+    if metadata.get("snapshot_hash") != snapshot.snapshot_hash:
+        raise ValueError("The intervention belongs to an older snapshot")
+    field_type = str(metadata.get("field_type", "")).lower()
+    if field_type not in {
+        "text",
+        "textarea",
+        "select",
+        "radio",
+        "checkbox",
+        "email",
+        "phone",
+        "number",
+        "date",
+    }:
+        raise ValueError("This intervention is not a supported scalar field")
+
+    field_token = metadata.get("field_token")
+    source_field_token = metadata.get("source_field_token")
+    step_identity = metadata.get("step_identity")
+    progress_fingerprint = metadata.get("form_progress_fingerprint")
+    if not all(
+        isinstance(value, str) and value
+        for value in (field_token, source_field_token, step_identity)
+    ):
+        raise ValueError("The intervention lacks a complete field identity")
+    matching_fields = [
+        field
+        for field in snapshot.fields
+        if field.field_token == field_token
+        and field.source_field_token == source_field_token
+        and field.step_identity == step_identity
+        and field.status
+        in {
+            "intervention_needed",
+            "validation_error",
+            "failed",
+            "blocked",
+            "unfilled",
+            "unsupported",
+        }
+    ]
+    if len(matching_fields) != 1:
+        raise ValueError("The field identity is missing or ambiguous in the persisted snapshot")
+
+    options = [FieldOption(value=value, label=value) for value in intervention.options]
+    if field_type in {"select", "radio"} and not options:
+        raise ValueError("Cannot correct an option field without its current option set")
+    if field_type in {"select", "radio", "checkbox", "number", "date"}:
+        from universal_auto_applier.form_engine.live_executor import validate_typed_answer
+
+        valid, reason = validate_typed_answer(field_type, normalized_answer, options)
+        if not valid:
+            raise ValueError(f"Correction is invalid for this field: {reason}")
+
+    resolve_intervention(
+        session,
+        intervention.intervention_id,
+        resolution=InterventionStatus.EDITED,
+        answer=normalized_answer,
+    )
+    correction_id = correction_key[:32]
+    pending_count = count_pending_interventions(session, intervention.application_id)
+    resume_status = "queued" if pending_count == 0 else "awaiting_interventions"
+    target_field = matching_fields[0]
+    correction = {
+        "application_id": intervention.application_id,
+        "intervention_id": intervention.intervention_id,
+        "revision": expected_revision,
+        "snapshot_hash": expected_snapshot_hash,
+        "answer": normalized_answer,
+        "source": "owner_supplied",
+        "saved_at": datetime.now(UTC).isoformat(),
+        "field_identity": {
+            "field_token": target_field.field_token,
+            "source_field_token": target_field.source_field_token,
+            "step_identity": target_field.step_identity,
+            "form_progress_fingerprint": progress_fingerprint,
+        },
+        "resume_status": resume_status,
+    }
+    receipt = {
+        "application_id": intervention.application_id,
+        "intervention_id": intervention.intervention_id,
+        "correction_id": correction_id,
+        "status": "resume_queued" if pending_count == 0 else "saved_waiting_for_interventions",
+        "resume_status": resume_status,
+        "pending_intervention_count": pending_count,
+    }
+    correction["receipt"] = receipt
+    corrections[correction_key] = correction
+    stored = set_uaa_field_corrections(
+        session,
+        intervention.application_id,
+        cast(dict[str, object], corrections),
+    )
+    if stored is None:
+        raise ValueError("Intervention job no longer exists")
+
+    # Only the current job's exact snapshot approval is affected. Revoke it
+    # before queueing, in the same transaction as the correction and resolve.
+    if latest_approval.consumed_at is None and latest_approval.revoked_at is None:
+        revoke_approval(session, latest_approval.approval_id)
+    if pending_count == 0:
+        update_application_status(
+            session,
+            intervention.application_id,
+            ApplicationStatus.QUEUED,
+        )
+    return receipt
+
+
 __all__ = [
     "ACCEPTING_RESOLUTIONS",
     "audit_answer_for",
+    "correct_and_resume_field_answer",
+    "field_intervention_revision",
     "parse_structured_bundle",
     "resolve_with_persistence",
 ]

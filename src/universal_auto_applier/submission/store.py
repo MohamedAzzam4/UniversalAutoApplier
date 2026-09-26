@@ -186,6 +186,20 @@ def get_active_approval(
     return session.execute(stmt).scalar_one_or_none()
 
 
+def get_latest_approval(
+    session: Session,
+    application_id: str,
+) -> SubmissionApprovalRow | None:
+    """Return the newest persisted snapshot row, including a revoked approval."""
+    stmt = (
+        select(SubmissionApprovalRow)
+        .where(SubmissionApprovalRow.application_id == application_id)
+        .order_by(SubmissionApprovalRow.created_at.desc(), SubmissionApprovalRow.approval_id.desc())
+        .limit(1)
+    )
+    return session.execute(stmt).scalars().first()
+
+
 def confirm_high_risk_fields(
     session: Session,
     approval_id: str,
@@ -558,6 +572,7 @@ __all__ = [
     "get_active_approval",
     "get_approval",
     "get_latest_result",
+    "get_latest_approval",
     "has_consumed_claim",
     "has_unconsumed_claim",
     "record_result",

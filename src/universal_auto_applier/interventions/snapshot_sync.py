@@ -45,6 +45,10 @@ def sync_field_interventions_from_snapshot(
                 llm_metadata={
                     "field_label": field.label,
                     "field_token": field.field_token,
+                    "source_field_token": field.source_field_token or field.field_token,
+                    "step_identity": field.step_identity,
+                    "form_progress_fingerprint": snapshot.form_progress_fingerprint,
+                    "snapshot_hash": snapshot.snapshot_hash,
                     "field_type": field.field_type,
                     "unresolved_reason": field.status,
                     "required": field.required,

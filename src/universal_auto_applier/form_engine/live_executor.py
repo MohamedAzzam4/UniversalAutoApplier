@@ -40,6 +40,7 @@ from universal_auto_applier.core.models import (
     CandidateProfile,
     FieldOption,
     FormField,
+    FormFillSummary,
 )
 from universal_auto_applier.form_engine.fill_engine import fill_form
 from universal_auto_applier.synthetic_profile import (
@@ -1466,7 +1467,32 @@ def execute_live_form(
     """
     targets = _extract_live_fields(page)
     target_by_token = {target.token: target for target in targets}
-    summary = fill_form([target.field for target in targets], candidate, job)
+
+    def fill_current_step(fields: list[FormField]) -> FormFillSummary:
+        # Keep the executor's current form-step identity transient on this
+        # in-memory job so the deterministic mapper can match an owner
+        # correction by token + step schema. It is restored before returning
+        # and is never persisted as producer/job metadata.
+        if not job.metadata.get("_uaa_field_corrections"):
+            return fill_form(fields, candidate, job)
+
+        from universal_auto_applier.browser.progress import form_step_schema_fingerprint
+
+        key = "_uaa_current_form_identity"
+        existed = key in job.metadata
+        previous = job.metadata.get(key)
+        job.metadata[key] = {
+            "step_identity": form_step_schema_fingerprint(page),
+        }
+        try:
+            return fill_form(fields, candidate, job)
+        finally:
+            if existed:
+                job.metadata[key] = previous
+            else:
+                job.metadata.pop(key, None)
+
+    summary = fill_current_step([target.field for target in targets])
     execution = LiveFormExecution()
     filled_tokens: set[str] = set()
 
@@ -1725,7 +1751,7 @@ def execute_live_form(
             break
         # Process the newly revealed fields with the fill engine.
         revealed_fields = [t.field for t in revealed_targets]
-        revealed_summary = fill_form(revealed_fields, candidate, job)
+        revealed_summary = fill_current_step(revealed_fields)
         revealed_by_token = {t.token: t for t in revealed_targets}
 
         for result in revealed_summary.results:

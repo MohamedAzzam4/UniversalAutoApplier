@@ -205,6 +205,10 @@ def _try_explicit_job_answer(field: FormField, job: ApplicationJob) -> FieldMapp
     and ``question_answers``. Values come from the user or the upstream
     pipeline; this function never invents an answer.
     """
+    scoped_correction = _try_job_local_correction(field, job)
+    if scoped_correction is not None:
+        return scoped_correction
+
     normalized_field = _normalize_question(_question_text(field))
     if not normalized_field:
         return None
@@ -277,6 +281,49 @@ def _try_explicit_job_answer(field: FormField, job: ApplicationJob) -> FieldMapp
                 explanation=f"Matched explicit answer from metadata.{metadata_key}",
             )
     return None
+
+
+def _try_job_local_correction(field: FormField, job: ApplicationJob) -> FieldMapping | None:
+    """Match owner corrections by the current step schema and stable field token."""
+    raw_corrections: Any = job.metadata.get("_uaa_field_corrections")
+    raw_context: Any = job.metadata.get("_uaa_current_form_identity")
+    if not isinstance(raw_corrections, dict) or not isinstance(raw_context, dict):
+        return None
+    context = cast(dict[str, Any], raw_context)
+    step_identity = context.get("step_identity")
+    if not isinstance(step_identity, str) or not step_identity:
+        return None
+
+    matches: list[dict[str, Any]] = []
+    for raw_correction in cast(dict[str, Any], raw_corrections).values():
+        if not isinstance(raw_correction, dict):
+            continue
+        correction = cast(dict[str, Any], raw_correction)
+        identity = correction.get("field_identity")
+        if not isinstance(identity, dict):
+            continue
+        identity = cast(dict[str, Any], identity)
+        if (
+            correction.get("application_id") == job.application_id
+            and identity.get("source_field_token") == field.selector
+            and identity.get("step_identity") == step_identity
+            and isinstance(correction.get("answer"), str)
+            and correction["answer"].strip()
+        ):
+            matches.append(correction)
+    if not matches:
+        return None
+
+    correction = max(matches, key=lambda item: str(item.get("saved_at", "")))
+    answer = str(correction["answer"]).strip()
+    return FieldMapping(
+        field_selector=field.selector,
+        value=answer,
+        source="user_input",
+        confidence=1.0,
+        requires_user_confirmation=False,
+        explanation="Matched owner correction for this exact form-step field",
+    )
 
 
 def _has_yes_no_options(field: FormField) -> bool:

@@ -803,6 +803,111 @@ class TestProductionWorkerPreparation:
         finally:
             server.stop()
 
+    def test_api_correction_is_consumed_by_worker_for_duplicate_labels(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        """Two same-label fields stay separate through API correction and live retry."""
+        html = """<!doctype html>
+        <html><body><form>
+          <label for="reference-a">Reference code</label>
+          <input id="reference-a" name="reference_a" type="text" required>
+          <label for="reference-b">Reference code</label>
+          <input id="reference-b" name="reference_b" type="text" required>
+          <button type="submit">Submit Application</button>
+        </form></body></html>"""
+        server = _FixtureServer(html)
+        try:
+            job = _make_job(
+                tmp_path,
+                "correction-duplicate-labels",
+                f"http://127.0.0.1:{server.port}/apply",
+            )
+            with _running_app(tmp_path, [job]) as (client, app, _settings):
+                client.post("/api/pipeline/start", json={"max_jobs": 1})
+                first_run = _wait_for_terminal(client, timeout=90)
+                assert first_run["status"] == "completed"
+                assert first_run["jobs_completed"] == 1
+
+                listed = client.get(
+                    "/api/interventions",
+                    params={"application_id": job.application_id, "pending_only": "true"},
+                ).json()["interventions"]
+                assert len(listed) == 2
+                assert {item["question"] for item in listed} == {"Reference code"}
+                assert all(item["revision"] and item["snapshot_hash"] for item in listed)
+                before_correction_gets = server.get_count
+
+                first = listed[0]
+                first_body = {
+                    "answer": "Value A",
+                    "revision": first["revision"],
+                    "snapshot_hash": first["snapshot_hash"],
+                }
+                saved = client.post(
+                    f"/api/interventions/{first['intervention_id']}/correct-and-resume",
+                    json=first_body,
+                )
+                assert saved.status_code == 200, saved.text
+                assert saved.json()["status"] == "saved_waiting_for_interventions"
+                assert server.get_count == before_correction_gets
+
+                # Same receipt is idempotent; a conflicting replay is rejected.
+                repeat = client.post(
+                    f"/api/interventions/{first['intervention_id']}/correct-and-resume",
+                    json={**first_body, "answer": " Value A "},
+                )
+                assert repeat.status_code == 200
+                assert repeat.json() == saved.json()
+                conflict = client.post(
+                    f"/api/interventions/{first['intervention_id']}/correct-and-resume",
+                    json={**first_body, "answer": "Different value"},
+                )
+                assert conflict.status_code == 409
+
+                second = next(
+                    item for item in listed if item["intervention_id"] != first["intervention_id"]
+                )
+                queued = client.post(
+                    f"/api/interventions/{second['intervention_id']}/correct-and-resume",
+                    json={
+                        "answer": "Value B",
+                        "revision": second["revision"],
+                        "snapshot_hash": second["snapshot_hash"],
+                    },
+                )
+                assert queued.status_code == 200, queued.text
+                assert queued.json()["status"] == "resume_queued"
+
+                with session_scope(app.state.session_factory) as session:
+                    persisted = get_application_job(session, job.application_id)
+                    from universal_auto_applier.submission.store import get_latest_approval
+
+                    approval = get_latest_approval(session, job.application_id)
+                assert persisted is not None
+                assert str(persisted.status) == ApplicationStatus.QUEUED.value
+                assert approval is not None and approval.revoked_at is not None
+                assert server.get_count == before_correction_gets
+
+                client.post("/api/pipeline/start", json={"max_jobs": 1})
+                second_run = _wait_for_terminal(client, timeout=90)
+                assert second_run["status"] == "completed"
+                assert second_run["jobs_completed"] == 1
+                assert second_run["jobs_failed"] == 0
+
+                snapshot = client.get(f"/api/submit/{job.application_id}/status").json()["snapshot"]
+                values_by_token = {
+                    field["field_token"]: field["filled_value"] for field in snapshot["fields"]
+                }
+                for item, expected in ((first, "Value A"), (second, "Value B")):
+                    token = item["llm_metadata"]["field_token"]
+                    assert values_by_token[token] == expected
+                assert snapshot["pending_intervention_count"] == 0
+                assert snapshot["can_approve"] is True
+                assert server.post_count == 0
+        finally:
+            server.stop()
+
     def test_unresolved_required_field_is_intervened_and_worker_will_not_retry(
         self,
         tmp_path: Path,
