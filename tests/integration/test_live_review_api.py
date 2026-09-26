@@ -124,6 +124,9 @@ def _make_snapshot(
         submit_control=SubmissionSnapshotSubmitControl(
             text="Submit", selector="button[type='submit']"
         ),
+        final_boundary_confirmed=True,
+        completed_form_step_count=1,
+        form_progress_fingerprint="api-test-form-progress",
     )
     return snap.with_hashes()
 

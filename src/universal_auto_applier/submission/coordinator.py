@@ -79,6 +79,8 @@ from universal_auto_applier.submission.models import (
     derive_unconfirmed_high_risk_count,
     derive_unresolved_required_count,
     derive_unresolved_upload_count,
+    has_final_boundary_evidence,
+    has_progress_metadata,
 )
 from universal_auto_applier.submission.store import (
     acquire_claim,
@@ -633,6 +635,19 @@ class SubmissionCoordinator:
                 raise PreparationRequestOutcomeUnknownError("reconciliation_intervention_pending")
             if pending_kind == InterventionKind.PREPARATION_HTTP_MUTATION_BLOCKED:
                 raise PreparationHttpMutationBlockedError()
+            if not has_final_boundary_evidence(snapshot):
+                existing = get_active_approval(session, application_id)
+                if (
+                    existing is not None
+                    and existing.snapshot_hash == snapshot.snapshot_hash
+                    and not has_progress_metadata(snapshot)
+                ):
+                    # A legacy active approval remains usable until a fresh
+                    # live observation replaces it with boundary evidence.
+                    return existing.approval_id
+                raise ValueError(
+                    "cannot approve a snapshot without confirmed final-boundary evidence"
+                )
             row = create_approval(
                 session,
                 application_id=application_id,

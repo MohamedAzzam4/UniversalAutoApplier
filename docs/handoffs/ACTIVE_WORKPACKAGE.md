@@ -1,34 +1,108 @@
-# Active Workpackage — V2-02 Safety, Classifier, and Request-Guard Integration
+# Active Workpackage — V2-02 Progress Fingerprint Slice
 
 - **Repository:** `MohamedAzzam4/UniversalAutoApplier`.
-- **WP ID / objective:** V2-02, one executor. Preserve the browser safety and
-  visible-text classifier checkpoints, integrate the shared observation/fill
-  HTTP guard, and continue toward one multi-step state machine across CLI,
-  dashboard worker, supervisor preparation and snapshot observation.
-- **Status:** **V2-02 remains in progress. Safety/classifier and request-guard
-  source checkpoints are pushed separately. The combined safety tree is
-  validated and staged locally for supervisor review; it has not been committed
-  or pushed.**
-- **Branch:** `checkpoint/v2-02-safety`.
-- **Base SHA:** `8ed966d7e9a1c775a268ea2b1f9262d5dda57cd2` (V2-01 checkpoint).
-- **Last completed/pushed checkpoint:** resolve `origin/checkpoint/v2-02-safety`
-  dynamically. At merge start it was `88a279cfceaea7b7a7ac1c9cedadcb0257b5a926`;
-  request-guard source checkpoint `021330b811c33888dcf15a37d35d49596f6eafb3` is
-  pushed separately on `checkpoint/v2-02-request-guard`.
-- **Branch-head verification (required before any checkpoint/handoff):**
+- **WP ID / objective:** V2-02 progress-fingerprint slice. Recognize safe
+  same-URL form steps and nested reveals across runner and snapshot observation;
+  bind readiness to verified fields and a unique final boundary.
+- **Status:** **V2-02 active; progress-fingerprint slice validated and
+  supervisor-reviewed; publication is verified dynamically.** V2-02 is not
+  complete.
+- **Branch:** `checkpoint/v2-02-progress-fingerprint`.
+- **Prior checkpoint/base SHA:**
+  `93a45055f96f00a0d4217f37e4da01b639d73695` on
+  `origin/checkpoint/v2-02-safety`.
+- **Publication verification commands:**
 
   ```text
   git fetch origin
+  git branch --show-current
   git rev-parse HEAD
-  git rev-parse origin/checkpoint/v2-02-safety
-  git rev-parse origin/checkpoint/v2-02-request-guard
+  git rev-parse origin/checkpoint/v2-02-progress-fingerprint
+  git status --short
   ```
 
-The merge is intentionally uncommitted. `HEAD` and the safety origin ref still
-identify the last pushed safety checkpoint; the index and working tree contain
-the local integration. Do not treat this as a published combined checkpoint.
+Before handoff, confirm local HEAD equals the resolved origin branch head. The
+base SHA above is a prior checkpoint reference, not the progress branch's
+publication status.
 
-## Completed work in this integration
+## Current progress-fingerprint slice
+
+- Runner and service observation now use a privacy-safe progress fingerprint
+  and bounded same-URL step progression. Step identity hashes stable form
+  schema and visible step markers, not answer values or value-state digests.
+- The report/frozen-plan `field_token` stays unchanged. A separate stable
+  `step_identity` scopes cross-step consolidation, so same-step read-backs
+  still consolidate while repeated tokens on distinct steps remain distinct.
+- Snapshot confirmation IDs are made unique only when a source token collides
+  across steps. `source_field_token` and `step_identity` are bound together in
+  canonical hashes when either is present; empty defaults remain omitted for
+  legacy hash compatibility.
+- Continue is blocked until current-step required fields and uploads are
+  resolved and read-back verified. Accumulated evidence and final boundary
+  proof are required for a newly approvable snapshot.
+- Existing one-page controlled submission fails closed on a multi-step
+  observation. No final-boundary proof means no fresh approval; only a truly
+  legacy snapshot with its prior hash and active approval retains the existing
+  compatibility path.
+
+## Current validation
+
+- Focused identity, WQ-7C frozen-plan, legacy hash and coordinator selection:
+  **90 passed in 34.62 seconds**.
+- Corrected legacy-harness, full live-review API module, independent old-hash
+  reconstruction and step-metadata coordinator regression: **33 passed in
+  46.94 seconds**.
+- Full `pytest -m 'not live' -vv --tb=short`: **1,854 passed, 3 deselected
+  (1,857 collected) in 1,961.65 seconds**. This combined gate includes all
+  non-browser tests and the browser-inclusive suite.
+- Ruff check passed; Ruff format check passed (**243 files already formatted**);
+  Pyright reported **0 errors, 0 warnings, 0 informations**; `git diff --check`
+  passed.
+- Required synthetic browser viewports passed at **1440×900** and **390×844**.
+  No dedicated Playwright MCP tool is exposed in this session, so Python
+  Playwright viewport and visual tests were used. Render-only screenshots are
+  saved outside the repository at
+  `C:\Users\LOQ\.codex\visualizations\2026\09\26\uaa-v2-02-progress-fingerprint-viewport`.
+  They use mocked UI fixture data and show layout only; they are not backend
+  readiness evidence. Readiness is covered by passing API and service tests.
+- No live tests, real ATS target, or real submission was run.
+
+## Current changed paths
+
+- `docs/NEXT_WORKPACKAGES.md` and `docs/handoffs/ACTIVE_WORKPACKAGE.md`
+- `src/universal_auto_applier/api/models/submission.py`
+- `src/universal_auto_applier/api/routes/submit.py`
+- `src/universal_auto_applier/browser/live_models.py`
+- `src/universal_auto_applier/browser/live_runner.py`
+- `src/universal_auto_applier/browser/progress.py` (new)
+- `src/universal_auto_applier/form_engine/live_executor.py`
+- `src/universal_auto_applier/submission/coordinator.py`
+- `src/universal_auto_applier/submission/execution_service.py`
+- `src/universal_auto_applier/submission/models.py`
+- `src/universal_auto_applier/submission/store.py`
+- `src/universal_auto_applier/supervisor/service.py`
+- `src/universal_auto_applier/supervisor/tools.py`
+- `tests/fixtures/live_browser/nested_conditional_reveal.html` (new)
+- `tests/fixtures/live_browser/no_final_boundary.html` (new)
+- `tests/fixtures/live_browser/same_url_three_step.html` (new)
+- `tests/fixtures/live_browser/unresolved_step.html` (new)
+- `tests/integration/test_live_review_api.py`
+- `tests/integration/test_submission_harness.py`
+- `tests/integration/test_wq8_snapshot_persistence.py`
+- `tests/playwright/test_controlled_submission.py`
+- `tests/playwright/test_default_cannot_submit.py`
+- `tests/playwright/test_live_browser_executor.py`
+- `tests/playwright/test_submission_scenarios.py`
+- `tests/playwright/test_submit_view_dashboard.py`
+- `tests/unit/test_submission_coordinator.py`
+- `tests/unit/test_submission_gates.py`
+- `tests/unit/test_submission_safety_consistency.py`
+- `tests/unit/test_supervisor_freshness.py`
+- `tests/unit/test_supervisor_v0.py`
+- `tests/unit/test_wq8_authorization.py`
+- `tests/unit/test_wq8_form_heuristic.py`
+
+## Pushed safety/request-guard base (reference)
 
 - The safety/browser slice makes `hard_submit_block` mandatory and installs
   context-scoped HTTP and submit guards before page creation/navigation on
@@ -62,7 +136,7 @@ the local integration. Do not treat this as a published combined checkpoint.
   blocker prevents it from claiming or clicking, and existing explicit approval
   gates remain required.
 
-## Changed paths
+## Pushed base paths (reference)
 
 - `src/universal_auto_applier/api/routes/submit.py`
 - `src/universal_auto_applier/browser/request_interlock.py`
@@ -78,7 +152,7 @@ the local integration. Do not treat this as a published combined checkpoint.
 - `docs/NEXT_WORKPACKAGES.md`
 - `docs/handoffs/ACTIVE_WORKPACKAGE.md`
 
-## Validation
+## Pushed base validation (reference)
 
 - Focused request-guard, supervisor, intervention-store, page-observer and WQ-8
   persistence tests: **119 passed in 123.28 seconds**.
@@ -99,12 +173,29 @@ the local integration. Do not treat this as a published combined checkpoint.
 
 ## Remaining V2-02 scope
 
-V2-02 is not complete. The remaining objective is a unified multi-step state
-machine across CLI, dashboard worker, supervisor preparation and
-observation/fill, removal of duplicated readiness decisions, and structured
-errors/progress fingerprints. Acceptance still includes equivalent fixture
-outcomes across entry points, three same-URL steps, nested conditional
-questions, and no review-ready state while a final boundary is incomplete.
+V2-02 is not complete. Controlled submission still reconstructs only one page;
+a snapshot prepared across multiple steps is rejected before a final click
+rather than replayed. Multi-step controlled-submit execution needs a separately
+reviewed design that preserves each approved step and all request/submit
+interlocks. Do not loosen snapshot-hash gates or add Continue/final clicks in
+this slice.
+
+A form that repeats identical blank controls and exposes no distinct visible
+heading, active-step attribute, or progress marker has no observable evidence
+that it advanced. The bounded unchanged-state check must stop in that case; do
+not infer progress from URL or action text alone.
+
+A final review-only page with no answer inputs is currently recognized only if
+the analyzer independently classifies it as an application form. A page with
+only a Submit control and no answer controls is otherwise rejected as an
+ambiguous boundary. Keep this fail-closed until a separately reviewed boundary
+signal can establish that the prior verified steps reached the final review.
+
+The broader V2-02 objective remains one executor/readiness contract across CLI,
+dashboard worker, supervisor preparation and controlled submission. This slice
+validates the live runner and observation paths; it does not unify every entry
+point or change controlled-submit replay. Same-URL three-step progression and
+nested conditional handling are covered for observation/fill only.
 
 ## Decisions, limits, and risks
 
@@ -120,11 +211,24 @@ questions, and no review-ready state while a final boundary is incomplete.
   owner before restarting or retrying.
 - No change authorizes a real ATS run or changes the WQ-8 controlled-submission
   approval contract.
+- Continue remains subject to default-deny HTTP mutation guards; no method
+  exception was added.
+- Identical DOM state with no visible step marker remains a fail-closed limit.
+- A review-only final page without answer controls remains ambiguous unless the
+  analyzer recognizes it as an application form; it is not accepted as a final
+  boundary in this slice.
 
 ## Exact next action
 
-The combined safety tree is validated and staged for supervisor review. Review
-the exact staged source, tests, backlog ledger and handoff. Do not commit or
-push until supervisor approval; do not merge to main or run real ATS actions.
+After the reviewed checkpoint is published, verify the branch head and resume
+the remaining V2-02 unified-executor, review-only-boundary and controlled-replay
+work. Resolve publication and clean-state details with these commands:
 
-- **Last updated:** 2026-09-25T20:59:13Z.
+  ```text
+  git fetch origin
+  git rev-parse HEAD
+  git rev-parse origin/checkpoint/v2-02-progress-fingerprint
+  git status --short
+  ```
+
+- **Last updated:** 2026-09-26T03:01:27Z.

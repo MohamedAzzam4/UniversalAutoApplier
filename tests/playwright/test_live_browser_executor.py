@@ -11,7 +11,9 @@ from pathlib import Path
 import pytest
 from playwright.sync_api import BrowserContext, Page
 
+from universal_auto_applier.browser.live_models import LiveFieldRecord
 from universal_auto_applier.browser.live_runner import LiveBrowserConfig, LiveBrowserRunner
+from universal_auto_applier.browser.progress import step_scoped_fields
 from universal_auto_applier.core.identity import compute_application_id
 from universal_auto_applier.core.models import (
     ApplicationJob,
@@ -30,6 +32,7 @@ from universal_auto_applier.core.statuses import ApplicationStatus, Platform
 from universal_auto_applier.form_engine.live_executor import (
     AsyncUploadProtocol,
     NativeFinalSubmitUploadContract,
+    consolidate_fields,
     execute_live_form,
     execute_live_form_with_llm,
 )
@@ -89,6 +92,7 @@ def _make_job(tmp_path: Path, url: str, external_id: str) -> ApplicationJob:
                 "full_name": "Mohamed Azzam",
                 "email": "mohamed@example.com",
                 "phone": "+49 1234567",
+                "city": "Berlin",
                 "requires_sponsorship": False,
                 "salutation": "Mr.",
             },
@@ -549,6 +553,152 @@ def test_multistep_form_fills_each_page(
     assert {"First name", "Email address", "Phone number"} <= labels
     upload_fields = [record for record in report.fields if record.field_type == "file"]
     assert upload_fields and all(record.status == "intervention_needed" for record in upload_fields)
+
+
+def test_same_url_three_step_form_tracks_schema_progress_and_stops_before_submit(
+    context: BrowserContext,
+    live_fixture_server: str,
+    tmp_path: Path,
+) -> None:
+    url = f"{live_fixture_server}/same_url_three_step.html"
+    job = _make_job(tmp_path, url, "same-url-three-step")
+    report = _runner(tmp_path).run_in_context(
+        context, job, artifact_dir=tmp_path / "same-url-three-step-artifacts"
+    )
+
+    assert report.status == "review_ready", report.model_dump_json(indent=2)
+    assert [record.text for record in report.click_path] == ["Continue", "Continue"]
+    assert report.final_url == url
+    assert {record.label for record in report.fields if record.status == "filled"} == {
+        "First name",
+        "Last name",
+        "City",
+    }, report.model_dump_json(indent=2)
+    assert len({record.field_token for record in report.fields}) == 3
+    assert report.submit_interlock is not None
+    assert report.submit_interlock.uaa_submit_clicks == 0
+    assert report.submit_interlock.submit_events == 0
+    assert report.submit_interlock.form_submit_calls == 0
+    assert context.pages[-1].locator("body").get_attribute("data-submitted") == "false"
+
+
+def test_same_token_keeps_plan_identity_and_scopes_by_step_schema(
+    page: Page,
+) -> None:
+    record = LiveFieldRecord(
+        page_url="http://fixture.local/wizard",
+        selector="input[name='answer']",
+        label="First name",
+        field_type="text",
+        status="filled",
+        field_token="reused-token",
+        filled_value="synthetic-value",
+    )
+    page.set_content(
+        '<h1>About you</h1><form><label for="answer">Name</label>'
+        '<input id="answer" name="answer" required></form>'
+    )
+    first_step = step_scoped_fields([record], page)[0]
+    page.set_content(
+        '<h1>Location</h1><form><label for="answer">Name</label>'
+        '<input id="answer" name="answer" required></form>'
+    )
+    second_step = step_scoped_fields([record], page)[0]
+    assert first_step.field_token == second_step.field_token == "reused-token"
+    assert first_step.step_identity != second_step.step_identity
+
+    across_steps = consolidate_fields(
+        [
+            first_step.model_copy(update={"status": "intervention_needed"}),
+            second_step.model_copy(update={"status": "filled"}),
+        ]
+    )
+    assert len(across_steps) == 2
+    assert {item.field_token for item in across_steps} == {"reused-token"}
+    assert len({item.step_identity for item in across_steps}) == 2
+
+    page.set_content(
+        '<h1>About you</h1><form><label for="answer">Name</label>'
+        '<input id="answer" name="answer" required></form>'
+    )
+    before_fill = step_scoped_fields([record], page)[0]
+    page.fill("#answer", "synthetic-value")
+    after_fill = step_scoped_fields([record], page)[0]
+    assert before_fill.step_identity == after_fill.step_identity
+
+    first_observation = record.model_copy(update={"status": "intervention_needed"})
+    reread = record.model_copy(update={"status": "filled", "filled_value": "synthetic-value"})
+    scoped_records = step_scoped_fields([first_observation, reread], page)
+    consolidated = consolidate_fields(scoped_records)
+    assert len(consolidated) == 1
+    assert consolidated[0].status == "filled"
+
+
+def test_nested_conditional_questions_are_filled_before_final_boundary(
+    context: BrowserContext,
+    live_fixture_server: str,
+    tmp_path: Path,
+) -> None:
+    url = f"{live_fixture_server}/nested_conditional_reveal.html"
+    job = _make_job(tmp_path, url, "nested-conditional")
+    job.metadata["question_answers"] = {
+        "Do you have experience with Python?": "Yes",
+        "Do you use FastAPI?": "Yes",
+        "Which framework do you use?": "FastAPI",
+    }
+    report = _runner(tmp_path).run_in_context(
+        context, job, artifact_dir=tmp_path / "nested-conditional-artifacts"
+    )
+
+    assert report.status == "review_ready", report.model_dump_json(indent=2)
+    assert {record.label for record in report.fields if record.status == "filled"} >= {
+        "Do you have experience with Python?",
+        "Do you use FastAPI?",
+        "Which framework do you use?",
+    }
+    assert context.pages[-1].locator("#framework").input_value() == "FastAPI"
+    assert report.submit_interlock is not None
+    assert report.submit_interlock.uaa_submit_clicks == 0
+    assert report.submit_interlock.submit_events == 0
+    assert context.pages[-1].locator("body").get_attribute("data-submitted") == "false"
+
+
+def test_unchanged_same_url_continue_stops_without_final_boundary(
+    context: BrowserContext,
+    live_fixture_server: str,
+    tmp_path: Path,
+) -> None:
+    url = f"{live_fixture_server}/no_final_boundary.html"
+    job = _make_job(tmp_path, url, "missing-final-boundary")
+    report = _runner(tmp_path).run_in_context(
+        context, job, artifact_dir=tmp_path / "missing-final-boundary-artifacts"
+    )
+
+    assert report.status == "needs_user_input"
+    assert report.stopped_reason == "navigation_loop_detected"
+    assert len(report.click_path) == 1
+    assert report.click_path[0].text == "Continue"
+    assert report.submit_interlock is not None
+    assert report.submit_interlock.uaa_submit_clicks == 0
+    assert report.submit_interlock.submit_events == 0
+    assert context.pages[-1].locator("body").get_attribute("data-submitted") == "false"
+
+
+def test_unresolved_required_field_blocks_continue_to_later_step(
+    context: BrowserContext,
+    live_fixture_server: str,
+    tmp_path: Path,
+) -> None:
+    url = f"{live_fixture_server}/unresolved_step.html"
+    job = _make_job(tmp_path, url, "unresolved-step")
+    report = _runner(tmp_path).run_in_context(
+        context, job, artifact_dir=tmp_path / "unresolved-step-artifacts"
+    )
+
+    assert report.status == "needs_user_input"
+    assert report.stopped_reason == "required_fields_unresolved"
+    assert report.click_path == []
+    assert context.pages[-1].locator("#continue").count() == 1
 
 
 @pytest.mark.parametrize(

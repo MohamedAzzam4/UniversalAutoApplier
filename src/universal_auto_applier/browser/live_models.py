@@ -53,6 +53,9 @@ class LiveFieldRecord(BaseModel):
     source: str | None = None
     explanation: str = ""
     field_token: str = ""
+    # Privacy-safe digest of the visible step schema and step markers. The
+    # original field_token remains the executor and frozen-plan identity.
+    step_identity: str = ""
     proposed_answer: str | None = None
     confidence: float | None = None
     evidence_summary: str = ""

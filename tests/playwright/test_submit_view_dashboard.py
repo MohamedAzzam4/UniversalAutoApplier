@@ -260,6 +260,9 @@ class TestSubmitViewDashboard:
         """Clicking Refresh Live Review sends a POST to /observe."""
         port = _get_free_port()
         base, app, server = _start_dashboard(tmp_path, port)
+        # Keep this test on the documented missing-factory error path and
+        # prevent the production factory from navigating its synthetic URL.
+        app.state.submission_context_factory = None
         job = _make_job(tmp_path)
         with session_scope(app.state.session_factory) as session:
             upsert_application_job(session, job)
@@ -631,6 +634,7 @@ class TestSubmitViewDashboard:
         from universal_auto_applier.submission.models import (
             SubmissionSnapshot,
             SubmissionSnapshotField,
+            SubmissionSnapshotSubmitControl,
         )
         from universal_auto_applier.submission.store import create_approval
 
@@ -654,6 +658,12 @@ class TestSubmitViewDashboard:
             documents=[],
             unresolved_required_field_count=0,
             pending_intervention_count=0,
+            final_boundary_confirmed=True,
+            completed_form_step_count=1,
+            form_progress_fingerprint="synthetic-confirmed-boundary",
+            submit_control=SubmissionSnapshotSubmitControl(
+                text="Submit Application", selector="#submit"
+            ),
         )
         with session_scope(app.state.session_factory) as session:
             upsert_application_job(session, job)
@@ -667,9 +677,20 @@ class TestSubmitViewDashboard:
 
             # The approve button should be enabled (can_approve is true).
             page.wait_for_selector("#submit-approve:not([disabled])", timeout=3_000)
+            displayed_state = page.inner_text("#submit-state-display")
+            assert "hash-app-123" in displayed_state
 
             # Click approve.
-            page.click("#submit-approve")
+            with page.expect_request(
+                lambda request: (
+                    request.url.endswith(f"/api/submit/{job.application_id}/approve")
+                    and request.method == "POST"
+                )
+            ) as approval_request_info:
+                page.click("#submit-approve")
+            approval_request = approval_request_info.value
+            posted_snapshot_hash = approval_request.post_data_json["snapshot_hash"]
+            assert posted_snapshot_hash == "hash-app-123"
             # After approval, state should refresh.
             page.wait_for_selector(".uaa-submit-field-detail", timeout=5_000)
             text = page.inner_text("#submit-state-display")
@@ -688,6 +709,7 @@ class TestSubmitViewDashboard:
         from universal_auto_applier.submission.models import (
             SubmissionSnapshot,
             SubmissionSnapshotField,
+            SubmissionSnapshotSubmitControl,
         )
         from universal_auto_applier.submission.store import create_approval
 
@@ -711,6 +733,12 @@ class TestSubmitViewDashboard:
             documents=[],
             unresolved_required_field_count=0,
             pending_intervention_count=0,
+            final_boundary_confirmed=True,
+            completed_form_step_count=1,
+            form_progress_fingerprint="synthetic-confirmed-boundary",
+            submit_control=SubmissionSnapshotSubmitControl(
+                text="Submit Application", selector="#submit"
+            ),
         )
         with session_scope(app.state.session_factory) as session:
             upsert_application_job(session, job)
@@ -840,6 +868,7 @@ class TestSubmitViewDashboard:
 
         from universal_auto_applier.submission.models import (
             SubmissionSnapshot,
+            SubmissionSnapshotSubmitControl,
         )
         from universal_auto_applier.submission.store import create_approval
 
@@ -852,6 +881,12 @@ class TestSubmitViewDashboard:
             documents=[],
             unresolved_required_field_count=0,
             pending_intervention_count=0,
+            final_boundary_confirmed=True,
+            completed_form_step_count=1,
+            form_progress_fingerprint="synthetic-confirmed-boundary",
+            submit_control=SubmissionSnapshotSubmitControl(
+                text="Submit Application", selector="#submit"
+            ),
         )
         with session_scope(app.state.session_factory) as session:
             upsert_application_job(session, job)
@@ -1004,6 +1039,8 @@ class TestSubmitViewDashboard:
         """When the API returns an error, it is shown in the display."""
         port = _get_free_port()
         base, app, server = _start_dashboard(tmp_path, port)
+        # Exercise the error-rendering path without opening a real browser.
+        app.state.submission_context_factory = None
         job = _make_job(tmp_path, suffix="err-test")
         with session_scope(app.state.session_factory) as session:
             upsert_application_job(session, job)

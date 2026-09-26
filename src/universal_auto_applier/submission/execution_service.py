@@ -26,12 +26,24 @@ from typing import Any, Protocol, cast
 
 from playwright.sync_api import BrowserContext, sync_playwright
 
+from universal_auto_applier.browser.progress import (
+    ProgressTracker,
+    consolidated_uploads,
+    final_boundary_metadata,
+    form_progress_fingerprint,
+    form_step_has_unresolved_work,
+    has_final_review_boundary,
+    has_visible_answer_controls,
+    is_form_step_candidate,
+    step_scoped_fields,
+    uniquely_safe_form_continue,
+)
 from universal_auto_applier.candidate_profile_loader import resolve_candidate_profile
 from universal_auto_applier.config import Settings
 from universal_auto_applier.core.eligibility import repeat_processing_block_reason
 from universal_auto_applier.core.models import ApplicationJob
 from universal_auto_applier.core.statuses import InterventionKind
-from universal_auto_applier.form_engine.live_executor import execute_live_form
+from universal_auto_applier.form_engine.live_executor import consolidate_fields, execute_live_form
 from universal_auto_applier.interventions.store import (
     create_intervention,
     list_pending_interventions,
@@ -43,6 +55,7 @@ from universal_auto_applier.submission.models import (
     SubmissionResult,
     SubmissionResultState,
     SubmissionSnapshot,
+    has_progress_metadata,
 )
 from universal_auto_applier.submission.store import (
     build_snapshot,
@@ -464,9 +477,16 @@ class SubmissionExecutionService:
             )
 
             max_nav_steps = max(self._settings.browser_max_steps, 1)
-            seen_actions: set[tuple[str, str, str]] = set()
+            progress = ProgressTracker()
             form_reached = False
+            final_boundary = False
+            completed_form_step_count = 0
+            accumulated_fields: list[Any] = []
+            accumulated_uploads: list[Any] = []
+            candidate = resolve_candidate_profile(job.metadata)
+            final_analysis: Any | None = None
             for _step in range(max_nav_steps):
+                step_completed = False
                 _raise_if_request_interlock_needs_human(request_interlock)
                 request_interlock.verify_page(page)
                 analysis = analyze_page(page)
@@ -504,29 +524,109 @@ class SubmissionExecutionService:
                     )
                     return None
 
-                if analysis.is_application_form:
+                if is_form_step_candidate(page, analysis):
                     form_reached = True
-                    break
+                    # Cookie/CMP preflight is repeated after same-page step
+                    # rerenders; it only resolves the configured consent
+                    # policy and never weakens the request guard.
+                    try:
+                        from universal_auto_applier.browser.consent_banner import (
+                            ConsentPolicy,
+                            handle_consent_banner,
+                        )
 
-                # Not yet an application form — follow only safe Apply/Continue.
-                action = choose_safe_action(analysis, allow_apply=True, allow_continue=True)
-                if action is None:
-                    logger.warning(
-                        "[%s] observe navigation: no safe apply path at %s",
-                        application_id[:12],
-                        analysis.url,
-                    )
-                    return None
+                        form_policy = cast(
+                            ConsentPolicy,
+                            getattr(self._settings, "cookie_consent_policy", "necessary_only"),
+                        )
+                        _cmp_form = handle_consent_banner(page, policy=form_policy, timeout_ms=4000)
+                        _raise_if_request_interlock_needs_human(request_interlock)
+                        request_interlock.verify_page(page)
+                        if _cmp_form.result in ("blocked", "human_required"):
+                            logger.warning(
+                                "[%s] observe: cookie consent blocked on form (cmp=%s result=%s)",
+                                application_id[:12],
+                                _cmp_form.cmp,
+                                _cmp_form.result,
+                            )
+                            break
+                    except RuntimeError:
+                        raise
+                    except Exception as exc:  # noqa: BLE001
+                        logger.warning(
+                            "[%s] CMP preflight on form failed: %s", application_id[:12], exc
+                        )
 
-                fingerprint = (page.url, action.selector_hint, action.text)
-                if fingerprint in seen_actions:
-                    logger.warning(
-                        "[%s] observe navigation: loop detected at %s",
-                        application_id[:12],
-                        analysis.url,
+                    execution = execute_live_form(page, candidate, job)
+                    accumulated_fields.extend(step_scoped_fields(execution.fields, page))
+                    accumulated_uploads.extend(execution.uploads)
+                    _raise_if_request_interlock_needs_human(request_interlock)
+                    request_interlock.verify_page(page)
+                    final_analysis = analyze_page(page)
+                    if final_analysis.blocker:
+                        logger.warning(
+                            "[%s] observe form step blocked: %s at %s",
+                            application_id[:12],
+                            final_analysis.blocker,
+                            final_analysis.url,
+                        )
+                        break
+                    if has_final_review_boundary(
+                        final_analysis,
+                        answer_controls_present=has_visible_answer_controls(page),
+                    ):
+                        final_boundary = True
+                        if not form_step_has_unresolved_work(
+                            execution.fields,
+                            execution.uploads,
+                            required_unresolved=execution.required_unresolved,
+                            validation_errors=execution.validation_errors,
+                        ):
+                            completed_form_step_count += 1
+                        break
+
+                    action = choose_safe_action(
+                        final_analysis,
+                        allow_apply=False,
+                        allow_continue=True,
                     )
-                    return None
-                seen_actions.add(fingerprint)
+                    if action is None:
+                        logger.warning(
+                            "[%s] observe form has no final boundary or safe Continue at %s",
+                            application_id[:12],
+                            final_analysis.url,
+                        )
+                        break
+                    if not uniquely_safe_form_continue(final_analysis):
+                        logger.warning(
+                            "[%s] observe form has an ambiguous Continue control at %s",
+                            application_id[:12],
+                            final_analysis.url,
+                        )
+                        break
+                    if form_step_has_unresolved_work(
+                        execution.fields,
+                        execution.uploads,
+                        required_unresolved=execution.required_unresolved,
+                        validation_errors=execution.validation_errors,
+                    ):
+                        logger.warning(
+                            "[%s] observe form step has unresolved work; Continue blocked at %s",
+                            application_id[:12],
+                            final_analysis.url,
+                        )
+                        break
+                    step_completed = True
+                else:
+                    # Not yet an application form — follow only safe Apply/Continue.
+                    action = choose_safe_action(analysis, allow_apply=True, allow_continue=True)
+                    if action is None:
+                        logger.warning(
+                            "[%s] observe navigation: no safe apply path at %s",
+                            application_id[:12],
+                            analysis.url,
+                        )
+                        return None
 
                 logger.info(
                     "[%s] observe nav click %s text=%r",
@@ -534,81 +634,67 @@ class SubmissionExecutionService:
                     action.classification,
                     action.text,
                 )
+                if not progress.register(page, action):
+                    logger.warning(
+                        "[%s] observe navigation: unchanged DOM/action repeated at %s",
+                        application_id[:12],
+                        analysis.url,
+                    )
+                    break
                 page = click_action(
                     context,
                     page,
                     action,
                     timeout_ms=self._settings.browser_timeout_ms,
                 )
+                if step_completed:
+                    completed_form_step_count += 1
                 _raise_if_request_interlock_needs_human(request_interlock)
                 request_interlock.verify_page(page)
+                final_analysis = None
             else:
-                # Loop exhausted without break — max steps reached.
+                # Loop exhausted without a confirmed final review boundary.
                 logger.warning(
-                    "[%s] observe navigation: max steps (%d) reached without finding a form",
+                    "[%s] observe navigation: max steps (%d) reached without a final boundary",
                     application_id[:12],
                     max_nav_steps,
                 )
-                return None
 
             if not form_reached:
                 logger.warning("[%s] observe: application form not reached", application_id[:12])
                 return None
 
-            # Cookie/CMP preflight on the actual form page (B/C).
-            try:
-                from universal_auto_applier.browser.consent_banner import handle_consent_banner
-
-                form_policy = getattr(self._settings, "cookie_consent_policy", "necessary_only")
-                _cmp_form = handle_consent_banner(page, policy=form_policy, timeout_ms=4000)  # type: ignore[arg-type]
-                _raise_if_request_interlock_needs_human(request_interlock)
-                request_interlock.verify_page(page)
-                if _cmp_form.result in ("blocked", "human_required"):
-                    logger.warning(
-                        "[%s] observe: cookie consent blocked on form (cmp=%s result=%s)",
-                        application_id[:12],
-                        _cmp_form.cmp,
-                        _cmp_form.result,
-                    )
-                    raise RuntimeError("cookie_consent_blocked")
-                if _cmp_form.result == "resolved":
-                    logger.info(
-                        "[%s] observe: cookie consent resolved on form (cmp=%s)",
-                        application_id[:12],
-                        _cmp_form.cmp,
-                    )
-            except RuntimeError:
-                raise
-            except Exception as exc:  # noqa: BLE001
-                logger.warning("[%s] CMP preflight on form failed: %s", application_id[:12], exc)
-
-            # We are now on the actual application form. Fill it.
+            # Capture the final observed URL/control and the accumulated
+            # evidence from every completed same-URL or cross-URL step.
             actual_form_url = page.url
-            candidate = resolve_candidate_profile(job.metadata)
-            execution = execute_live_form(page, candidate, job)
-            _raise_if_request_interlock_needs_human(request_interlock)
-            request_interlock.verify_page(page)
+            if final_analysis is None:
+                final_analysis = analyze_page(page)
+                final_boundary, submit_text, submit_selector, submit_frame_url = (
+                    False,
+                    "",
+                    "",
+                    "",
+                )
+            else:
+                final_boundary, submit_text, submit_selector, submit_frame_url = (
+                    final_boundary_metadata(
+                        final_analysis,
+                        answer_controls_present=has_visible_answer_controls(page),
+                    )
+                )
+            progress_fingerprint = form_progress_fingerprint(page)
+            accumulated_fields = consolidate_fields(accumulated_fields)
+            accumulated_uploads = consolidated_uploads(accumulated_uploads)
 
             # Build the snapshot from the execution results.
             with session_scope(self._session_factory) as session:
                 pending_count = len(list_pending_interventions(session, application_id))
 
-            # Find the submit control on the actual form page.
-            analysis = analyze_page(page)
-            submit_clickables = [
-                c for c in analysis.clickables if c.classification.value == "dangerous_submit"
-            ]
-            submit_text = submit_clickables[0].text if len(submit_clickables) == 1 else ""
-            submit_selector = (
-                submit_clickables[0].selector_hint if len(submit_clickables) == 1 else ""
-            )
-            submit_frame_url = submit_clickables[0].frame_url if len(submit_clickables) == 1 else ""
-
-            # Fail closed: an observation that reached a "form" but has no
-            # fields and no submit control is not a valid review snapshot.
-            if not execution.fields and not submit_clickables:
+            # A non-final observation can be preserved for intervention and
+            # diagnostics, but never treated as an approvable review packet.
+            if not accumulated_fields and not final_boundary:
                 logger.warning(
-                    "[%s] observe: form reached but has no fields and no submit control at %s",
+                    "[%s] observe: form has no captured fields or final boundary at %s",
                     application_id[:12],
                     actual_form_url,
                 )
@@ -621,12 +707,15 @@ class SubmissionExecutionService:
                 # a detail page). The owner reviews and authorizes this
                 # exact form URL.
                 application_url=actual_form_url,
-                fields=execution.fields,
-                uploads=execution.uploads,
+                fields=accumulated_fields,
+                uploads=accumulated_uploads,
                 pending_intervention_count=pending_count,
                 submit_control_text=submit_text,
                 submit_control_selector=submit_selector,
                 submit_control_frame_url=submit_frame_url,
+                final_boundary_confirmed=final_boundary,
+                completed_form_step_count=completed_form_step_count,
+                form_progress_fingerprint=progress_fingerprint,
             )
 
             # Persist the snapshot as the "current live review snapshot"
@@ -1119,6 +1208,7 @@ class SubmissionExecutionService:
         # The owner approved one exact form target; Phase B must not rediscover
         # or guess another URL.
         approved_form_url: str | None = None
+        approved_snapshot: SubmissionSnapshot | None = None
         with session_scope(self._session_factory) as session:
             from universal_auto_applier.submission.authorization_store import (
                 get_active_authorization,
@@ -1126,21 +1216,23 @@ class SubmissionExecutionService:
 
             wq8_auth_row = get_active_authorization(session, application_id)
             wq8_active = wq8_auth_row is not None
+            # Load the exact approved snapshot for progress-aware hash
+            # reconstruction on all controlled-submit routes. WQ-8 alone
+            # uses the approved application URL to choose navigation; generic
+            # controlled submission keeps its established job.url behavior.
+            from universal_auto_applier.submission.store import get_active_approval
+
+            approval = get_active_approval(session, application_id)
+            if approval is not None and approval.snapshot_json:
+                from universal_auto_applier.submission.models import SubmissionSnapshot
+
+                try:
+                    approved_snapshot = SubmissionSnapshot.model_validate(approval.snapshot_json)
+                    if wq8_auth_row is not None:
+                        approved_form_url = approved_snapshot.application_url
+                except Exception:  # noqa: BLE001
+                    pass
             if wq8_auth_row is not None:
-                # The authorization's application_url is the exact frozen form
-                # URL the owner approved. Load the persisted snapshot to cross-
-                # check; both must agree.
-                from universal_auto_applier.submission.store import get_active_approval
-
-                approval = get_active_approval(session, application_id)
-                if approval is not None and approval.snapshot_json:
-                    from universal_auto_applier.submission.models import SubmissionSnapshot
-
-                    try:
-                        snap = SubmissionSnapshot.model_validate(approval.snapshot_json)
-                        approved_form_url = snap.application_url
-                    except Exception:  # noqa: BLE001
-                        pass
                 # Fall back to the authorization's own URL if the snapshot
                 # could not be loaded.
                 if not approved_form_url and wq8_auth_row.application_url:
@@ -1199,18 +1291,44 @@ class SubmissionExecutionService:
                 submit_clickables[0].selector_hint if len(submit_clickables) == 1 else ""
             )
             submit_frame_url = submit_clickables[0].frame_url if len(submit_clickables) == 1 else ""
+            final_boundary, boundary_text, boundary_selector, boundary_frame_url = (
+                final_boundary_metadata(
+                    analysis,
+                    answer_controls_present=has_visible_answer_controls(page),
+                )
+            )
+
+            # New WQ-8 approvals bind their observed wizard progress. Preserve
+            # the legacy snapshot hash shape for approvals created before that
+            # evidence existed; a fresh observation will replace them with the
+            # new boundary metadata explicitly.
+            progress_metadata: dict[str, Any] = {}
+            if approved_snapshot is not None and has_progress_metadata(approved_snapshot):
+                progress_metadata = {
+                    "final_boundary_confirmed": final_boundary,
+                    "completed_form_step_count": approved_snapshot.completed_form_step_count,
+                    "form_progress_fingerprint": form_progress_fingerprint(page),
+                }
+                submit_text = boundary_text
+                submit_selector = boundary_selector
+                submit_frame_url = boundary_frame_url
+
+            snapshot_fields = execution.fields
+            if progress_metadata:
+                snapshot_fields = step_scoped_fields(execution.fields, page)
 
             # WQ-8 ATS URL separation: the current snapshot's application_url
             # is the actual page.url the browser is on, NOT job.url.
             current_snapshot = build_snapshot(
                 application_id=application_id,
                 application_url=page.url,
-                fields=execution.fields,
+                fields=snapshot_fields,
                 uploads=execution.uploads,
                 pending_intervention_count=pending_count,
                 submit_control_text=submit_text,
                 submit_control_selector=submit_selector,
                 submit_control_frame_url=submit_frame_url,
+                **progress_metadata,
             )
 
             # WQ-8 post-fill URL guard: when a WQ-8 authorization is active,

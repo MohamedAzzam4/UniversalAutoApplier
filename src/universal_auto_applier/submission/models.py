@@ -63,6 +63,11 @@ class SubmissionSnapshotField(BaseModel):
     required: bool = False
     requires_confirmation: bool = False
     risk_level: str = ""
+    # New observations bind snapshot fields to the privacy-safe form-step
+    # digest while retaining the executor token used by the frozen plan.
+    # Empty defaults are omitted from legacy hash canonicalization.
+    source_field_token: str = ""
+    step_identity: str = ""
 
 
 class SubmissionSnapshotDocument(BaseModel):
@@ -89,6 +94,27 @@ class SubmissionSnapshotSubmitControl(BaseModel):
     selector: str = ""
     frame_url: str = ""
     classification: str = "dangerous_submit"
+
+
+def _snapshot_field_structure_payload(field: SubmissionSnapshotField) -> dict[str, Any]:
+    payload: dict[str, Any] = {
+        "token": field.field_token,
+        "type": field.field_type,
+        "label": field.label,
+        "required": field.required,
+    }
+    if field.source_field_token or field.step_identity:
+        payload["source_field_token"] = field.source_field_token
+        payload["step_identity"] = field.step_identity
+    return payload
+
+
+def _snapshot_field_hash_payload(field: SubmissionSnapshotField) -> dict[str, Any]:
+    payload = field.model_dump(exclude={"source_field_token", "step_identity"})
+    if field.source_field_token or field.step_identity:
+        payload["source_field_token"] = field.source_field_token
+        payload["step_identity"] = field.step_identity
+    return payload
 
 
 class SubmissionSnapshot(BaseModel):
@@ -119,6 +145,12 @@ class SubmissionSnapshot(BaseModel):
     )
     pending_intervention_count: int = 0
     submit_control: SubmissionSnapshotSubmitControl | None = None
+    # Set only by a live observer that reached one unique final submit
+    # control with no remaining safe Continue action. The fingerprint is a
+    # privacy-safe digest; it contains no raw control values.
+    final_boundary_confirmed: bool = False
+    completed_form_step_count: int = 0
+    form_progress_fingerprint: str = ""
     # Explicit gate flags computed from the field list. These are NOT
     # inferred from pending_intervention_count — they are direct checks
     # on the field records.
@@ -138,16 +170,8 @@ class SubmissionSnapshot(BaseModel):
         form's structure changed.
         """
         structure_fields = sorted(
-            [
-                {
-                    "token": f.field_token,
-                    "type": f.field_type,
-                    "label": f.label,
-                    "required": f.required,
-                }
-                for f in self.fields
-            ],
-            key=lambda f: f.get("token", ""),
+            [_snapshot_field_structure_payload(field) for field in self.fields],
+            key=lambda field: (field.get("token", ""), field.get("step_identity", "")),
         )
         doc_kinds = sorted([d.document_kind for d in self.documents])
         canonical: dict[str, Any] = {
@@ -163,6 +187,18 @@ class SubmissionSnapshot(BaseModel):
                 else None
             ),
         }
+        if (
+            self.final_boundary_confirmed
+            or self.completed_form_step_count
+            or self.form_progress_fingerprint
+        ):
+            canonical.update(
+                {
+                    "final_boundary_confirmed": self.final_boundary_confirmed,
+                    "completed_form_step_count": self.completed_form_step_count,
+                    "form_progress_fingerprint": self.form_progress_fingerprint,
+                }
+            )
         payload = json.dumps(canonical, sort_keys=True, default=str)
         return hashlib.sha256(payload.encode("utf-8")).hexdigest()[:32]
 
@@ -178,8 +214,11 @@ class SubmissionSnapshot(BaseModel):
             "application_id": self.application_id,
             "application_url": self.application_url,
             "fields": sorted(
-                [f.model_dump() for f in self.fields],
-                key=lambda f: f.get("field_token", ""),
+                [_snapshot_field_hash_payload(field) for field in self.fields],
+                key=lambda field: (
+                    field.get("field_token", ""),
+                    field.get("step_identity", ""),
+                ),
             ),
             "documents": sorted(
                 [d.model_dump() for d in self.documents],
@@ -191,6 +230,18 @@ class SubmissionSnapshot(BaseModel):
             "high_risk_unconfirmed_count": self.high_risk_unconfirmed_count,
             "submit_control": self.submit_control.model_dump() if self.submit_control else None,
         }
+        if (
+            self.final_boundary_confirmed
+            or self.completed_form_step_count
+            or self.form_progress_fingerprint
+        ):
+            canonical.update(
+                {
+                    "final_boundary_confirmed": self.final_boundary_confirmed,
+                    "completed_form_step_count": self.completed_form_step_count,
+                    "form_progress_fingerprint": self.form_progress_fingerprint,
+                }
+            )
         payload = json.dumps(canonical, sort_keys=True, default=str)
         return hashlib.sha256(payload.encode("utf-8")).hexdigest()[:32]
 
@@ -259,6 +310,39 @@ def derive_unresolved_upload_count(documents: list[SubmissionSnapshotDocument]) 
         for document in documents
         if document.status not in _RESOLVED_UPLOAD_STATUSES
         or not has_trustworthy_upload_evidence(document)
+    )
+
+
+def has_final_boundary_evidence(snapshot: SubmissionSnapshot) -> bool:
+    """Return whether a live observation proved one complete final boundary."""
+    control = snapshot.submit_control
+    return bool(
+        snapshot.final_boundary_confirmed
+        and snapshot.completed_form_step_count >= 1
+        and snapshot.form_progress_fingerprint.strip()
+        and control is not None
+        and control.selector.strip()
+        and control.text.strip()
+    )
+
+
+def has_progress_metadata(snapshot: SubmissionSnapshot) -> bool:
+    """Distinguish newly observed snapshots from legacy persisted snapshots."""
+    return bool(
+        snapshot.final_boundary_confirmed
+        or snapshot.completed_form_step_count
+        or snapshot.form_progress_fingerprint
+        or any(field.source_field_token or field.step_identity for field in snapshot.fields)
+    )
+
+
+def is_review_ready_snapshot(snapshot: SubmissionSnapshot) -> bool:
+    """Require a final-boundary proof and complete field/upload evidence."""
+    return bool(
+        has_final_boundary_evidence(snapshot)
+        and snapshot.pending_intervention_count == 0
+        and derive_unresolved_required_count(snapshot.fields) == 0
+        and derive_unresolved_upload_count(snapshot.documents) == 0
     )
 
 
@@ -384,6 +468,9 @@ def build_snapshot_from_report(
     submit_control_text: str = "",
     submit_control_selector: str = "",
     submit_control_frame_url: str = "",
+    final_boundary_confirmed: bool = False,
+    completed_form_step_count: int = 0,
+    form_progress_fingerprint: str = "",
 ) -> SubmissionSnapshot:
     """Build a :class:`SubmissionSnapshot` from a live run report.
 
@@ -400,20 +487,38 @@ def build_snapshot_from_report(
     - ``high_risk_unconfirmed_count``: direct count of fields with
       ``requires_confirmation=True`` or ``risk_level="high"``.
     """
-    snap_fields = [
-        SubmissionSnapshotField(
-            field_token=f.field_token,
-            label=f.label,
-            field_type=f.field_type,
-            filled_value=f.filled_value,
-            selected_value=f.selected_value,
-            status=f.status,
-            required=f.required,
-            requires_confirmation=f.requires_confirmation,
-            risk_level=f.risk_level,
+    steps_by_token: dict[str, set[str]] = {}
+    for field in fields:
+        if field.field_token and field.step_identity:
+            steps_by_token.setdefault(field.field_token, set()).add(field.step_identity)
+
+    snap_fields: list[SubmissionSnapshotField] = []
+    for field in fields:
+        snapshot_token = field.field_token
+        if (
+            field.field_token
+            and field.step_identity
+            and len(steps_by_token.get(field.field_token, set())) > 1
+        ):
+            scoped_digest = hashlib.sha256(
+                f"{field.step_identity}|{field.field_token}".encode()
+            ).hexdigest()[:16]
+            snapshot_token = f"lf-step-{scoped_digest}"
+        snap_fields.append(
+            SubmissionSnapshotField(
+                field_token=snapshot_token,
+                source_field_token=field.field_token if field.step_identity else "",
+                step_identity=field.step_identity,
+                label=field.label,
+                field_type=field.field_type,
+                filled_value=field.filled_value,
+                selected_value=field.selected_value,
+                status=field.status,
+                required=field.required,
+                requires_confirmation=field.requires_confirmation,
+                risk_level=field.risk_level,
+            )
         )
-        for f in fields
-    ]
 
     snap_docs: list[SubmissionSnapshotDocument] = []
     for u in uploads:
@@ -461,6 +566,9 @@ def build_snapshot_from_report(
         documents=snap_docs,
         pending_intervention_count=pending_intervention_count,
         submit_control=submit_control,
+        final_boundary_confirmed=final_boundary_confirmed,
+        completed_form_step_count=completed_form_step_count,
+        form_progress_fingerprint=form_progress_fingerprint,
         unresolved_required_field_count=max(
             unresolved_required,
             unresolved_any,
@@ -605,6 +713,9 @@ __all__ = [
     "derive_unconfirmed_high_risk_count",
     "derive_unresolved_required_count",
     "derive_unresolved_upload_count",
+    "has_final_boundary_evidence",
+    "has_progress_metadata",
+    "is_review_ready_snapshot",
     "display_upload_status",
     "has_consistent_upload_evidence",
     "has_trustworthy_upload_evidence",

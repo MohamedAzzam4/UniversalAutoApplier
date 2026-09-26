@@ -3,6 +3,7 @@
 import pytest
 from playwright.sync_api import Page
 
+from universal_auto_applier.browser.progress import is_form_step_candidate
 from universal_auto_applier.navigator.apply_path_finder import analyze_page
 
 
@@ -24,6 +25,7 @@ def test_intro_like_page_is_not_form(page: Page) -> None:
     assert analysis.file_input_count == 1
     # visible_controls should be 1 (the file input); is_application_form must be False.
     assert analysis.is_application_form is False
+    assert is_form_step_candidate(page, analysis) is False
 
 
 @pytest.mark.playwright

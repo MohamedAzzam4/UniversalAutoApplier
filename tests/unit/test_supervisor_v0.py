@@ -130,6 +130,9 @@ def _snapshot(
         submit_control=SubmissionSnapshotSubmitControl(
             text="Submit", selector="#submit", frame_url=url, classification="dangerous_submit"
         ),
+        final_boundary_confirmed=True,
+        completed_form_step_count=1,
+        form_progress_fingerprint="supervisor-test-form-progress",
         unresolved_required_field_count=unresolved,
         high_risk_unconfirmed_count=0,
         form_fingerprint="fp",
@@ -192,6 +195,30 @@ def test_a_happy_path_prepare_review_ready(tmp_path: Path) -> None:
         summary = service.run()
         assert job.application_id in summary.review_ready
         assert summary.submission_attempts == 0
+    finally:
+        engine.dispose()
+
+
+def test_supervisor_tool_rejects_review_ready_without_final_boundary(tmp_path: Path) -> None:
+    factory, engine = _session_factory(tmp_path)
+    try:
+        settings = _settings(tmp_path)
+        job = _make_job(external_job_id="missing-final-boundary")
+        _insert_job(factory, job)
+        no_boundary = _snapshot(job.application_id).model_copy(
+            update={
+                "final_boundary_confirmed": False,
+                "completed_form_step_count": 0,
+                "form_progress_fingerprint": "",
+            }
+        )
+        _persist_snapshot(factory, no_boundary)
+
+        tools = SupervisorTools(settings=settings, session_factory=factory)
+        assert tools.mark_review_ready(job.application_id) is False
+        persisted = tools.get_job(job.application_id)
+        assert persisted is not None
+        assert persisted.status == ApplicationStatus.EVALUATED
     finally:
         engine.dispose()
 

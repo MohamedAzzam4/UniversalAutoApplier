@@ -121,6 +121,9 @@ def _make_snapshot(
             )
         ],
         pending_intervention_count=0,
+        final_boundary_confirmed=True,
+        completed_form_step_count=1,
+        form_progress_fingerprint="synthetic-confirmed-boundary",
         submit_control=SubmissionSnapshotSubmitControl(
             text=submit_text,
             selector="button[type='submit']",
@@ -475,6 +478,9 @@ class TestDomChangeAfterApproval:
                     )
                 ],
                 pending_intervention_count=0,
+                final_boundary_confirmed=True,
+                completed_form_step_count=1,
+                form_progress_fingerprint="synthetic-confirmed-boundary",
                 submit_control=SubmissionSnapshotSubmitControl(
                     text="Submit application",
                     selector="button[type='submit']",
@@ -545,6 +551,9 @@ class TestDocumentChangeAfterApproval:
                     )
                 ],
                 pending_intervention_count=0,
+                final_boundary_confirmed=True,
+                completed_form_step_count=1,
+                form_progress_fingerprint="synthetic-confirmed-boundary",
                 submit_control=SubmissionSnapshotSubmitControl(
                     text="Submit application",
                     selector="button[type='submit']",
@@ -576,6 +585,9 @@ class TestDocumentChangeAfterApproval:
                     )
                 ],
                 pending_intervention_count=0,
+                final_boundary_confirmed=True,
+                completed_form_step_count=1,
+                form_progress_fingerprint="synthetic-confirmed-boundary",
                 submit_control=SubmissionSnapshotSubmitControl(
                     text="Submit application",
                     selector="button[type='submit']",

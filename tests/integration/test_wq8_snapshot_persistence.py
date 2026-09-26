@@ -105,6 +105,80 @@ fetch('/autosave?secret-path-sentinel', {
 </html>
 """
 
+_SAME_URL_THREE_STEP_HTML = """<!doctype html>
+<html lang="en"><head><title>Same URL wizard</title></head>
+<body data-submitted="false"><form id="application-form">
+  <section id="step-fields"></section>
+  <button id="continue" type="button">Continue</button>
+  <button id="submit" type="submit" hidden>Submit Application</button>
+</form><script>
+const steps = [
+  '<label for="step_answer">First name</label><input id="step_answer" name="step_answer" required>',
+  '<label for="step_answer">Last name</label><input id="step_answer" name="step_answer" required>',
+  '<label for="step_answer">City</label><input id="step_answer" name="step_answer" required>'
+];
+let currentStep = 0;
+const fields = document.querySelector('#step-fields');
+const next = document.querySelector('#continue');
+const submit = document.querySelector('#submit');
+const render = () => {
+  fields.innerHTML = steps[currentStep];
+  next.hidden = currentStep === steps.length - 1;
+  submit.hidden = currentStep !== steps.length - 1;
+};
+next.addEventListener('click', () => { currentStep += 1; render(); });
+document.querySelector('#application-form').addEventListener('submit', (event) => {
+  event.preventDefault();
+  document.body.dataset.submitted = 'true';
+});
+render();
+</script></body></html>"""
+
+_SAME_MARKUP_THREE_STEP_HTML = """<!doctype html>
+<html lang="en"><head><title>Repeated field wizard</title></head>
+<body><form id="application-form">
+  <h1 id="step-title"></h1>
+  <section id="step-fields"></section>
+  <button id="continue" type="button">Continue</button>
+  <button id="submit" type="submit" hidden>Submit Application</button>
+</form><script>
+const steps = ["About you", "Location", "Availability"];
+let currentStep = 0;
+const title = document.querySelector('#step-title');
+const fields = document.querySelector('#step-fields');
+const next = document.querySelector('#continue');
+const submit = document.querySelector('#submit');
+const render = () => {
+  title.textContent = steps[currentStep];
+  fields.innerHTML = '<label for="answer">First name</label>' +
+    '<input id="answer" name="answer" required>';
+  next.hidden = currentStep === steps.length - 1;
+  submit.hidden = currentStep !== steps.length - 1;
+};
+next.addEventListener('click', () => { currentStep += 1; render(); });
+document.querySelector('#application-form').addEventListener('submit', (event) => {
+  event.preventDefault();
+  document.body.dataset.submitted = 'true';
+});
+render();
+</script></body></html>"""
+
+_UNRESOLVED_FINAL_BOUNDARY_HTML = """<!doctype html>
+<html lang="en"><head><title>Unresolved final boundary</title></head>
+<body><form>
+  <label for="relocation">Will you relocate to another country?</label>
+  <input id="relocation" name="relocation" required>
+  <button id="submit" type="submit">Submit Application</button>
+</form></body></html>"""
+
+_NO_FINAL_BOUNDARY_HTML = """<!doctype html>
+<html lang="en"><head><title>No final boundary</title></head>
+<body><form>
+  <label for="first_name">First name</label>
+  <input id="first_name" name="first_name" required>
+  <button id="continue" type="button" onclick="document.body.dataset.clicks = '1'">Continue</button>
+</form></body></html>"""
+
 
 def _find_free_port() -> int:
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
@@ -492,6 +566,129 @@ class TestProductionAppObserveRegression:
             assert resp.status_code == 200, (
                 f"observe returned unexpected status {resp.status_code}; body: {resp.text}"
             )
+
+    def test_same_url_three_step_observe_persists_complete_boundary_evidence(
+        self, wq8_obs_app, fixture_server: _FixtureHTTPServer
+    ) -> None:
+        app, job, _engine, _sf, _settings, _tmp_path = wq8_obs_app
+        fixture_server.set_html(_SAME_URL_THREE_STEP_HTML)
+
+        with TestClient(app) as client:
+            response = client.post(f"/api/submit/{job.application_id}/observe")
+            status = client.get(f"/api/submit/{job.application_id}/status")
+
+        assert response.status_code == 200, response.text
+        snapshot = response.json()["snapshot"]
+        assert snapshot["final_boundary_confirmed"] is True
+        assert snapshot["completed_form_step_count"] == 3
+        assert len(snapshot["form_progress_fingerprint"]) >= 32
+        assert snapshot["application_url"] == fixture_server.url
+        assert snapshot["submit_control"]["text"] == "Submit Application"
+        assert {field["label"] for field in snapshot["fields"]} == {
+            "First name",
+            "Last name",
+            "City",
+        }
+        assert all(field["status"] == "filled" for field in snapshot["fields"])
+        assert len({field["field_token"] for field in snapshot["fields"]}) == 3
+        assert status.json()["snapshot"]["can_approve"] is True
+        assert fixture_server.post_count == 0
+
+    def test_repeated_identical_fields_use_privacy_safe_step_markers(
+        self, wq8_obs_app, fixture_server: _FixtureHTTPServer
+    ) -> None:
+        app, job, _engine, _sf, _settings, _tmp_path = wq8_obs_app
+        fixture_server.set_html(_SAME_MARKUP_THREE_STEP_HTML)
+
+        with TestClient(app) as client:
+            response = client.post(f"/api/submit/{job.application_id}/observe")
+
+        assert response.status_code == 200, response.text
+        snapshot = response.json()["snapshot"]
+        assert snapshot["completed_form_step_count"] == 3
+        assert snapshot["final_boundary_confirmed"] is True
+        assert [field["label"] for field in snapshot["fields"]] == [
+            "First name",
+            "First name",
+            "First name",
+        ]
+        assert len({field["field_token"] for field in snapshot["fields"]}) == 3
+        assert fixture_server.post_count == 0
+
+    def test_controlled_submit_does_not_treat_multistep_snapshot_as_one_page(
+        self, wq8_obs_app, fixture_server: _FixtureHTTPServer
+    ) -> None:
+        app, job, _engine, _sf, settings, _tmp_path = wq8_obs_app
+        fixture_server.set_html(_SAME_URL_THREE_STEP_HTML)
+        app.state.settings = settings.model_copy(update={"enable_real_submission": True})
+
+        with TestClient(app) as client:
+            observed = client.post(f"/api/submit/{job.application_id}/observe")
+            assert observed.status_code == 200, observed.text
+            snapshot = observed.json()["snapshot"]
+            approved = client.post(
+                f"/api/submit/{job.application_id}/approve",
+                json={"snapshot_hash": snapshot["snapshot_hash"], "confirm": True},
+            )
+            assert approved.status_code == 200, approved.text
+            submitted = client.post(
+                f"/api/submit/{job.application_id}/submit",
+                json={"approval_id": approved.json()["approval_id"], "confirm": True},
+            )
+
+        assert submitted.status_code == 200, submitted.text
+        result = submitted.json()
+        assert result["clicked"] is False
+        assert result["state"] == "submit_control_ambiguous"
+        assert fixture_server.post_count == 0
+
+    def test_unresolved_required_field_on_final_boundary_cannot_be_approved(
+        self, wq8_obs_app, fixture_server: _FixtureHTTPServer
+    ) -> None:
+        app, job, _engine, _sf, _settings, _tmp_path = wq8_obs_app
+        fixture_server.set_html(_UNRESOLVED_FINAL_BOUNDARY_HTML)
+
+        with TestClient(app) as client:
+            response = client.post(f"/api/submit/{job.application_id}/observe")
+            status = client.get(f"/api/submit/{job.application_id}/status")
+            snapshot = response.json()["snapshot"]
+            approval = client.post(
+                f"/api/submit/{job.application_id}/approve",
+                json={"snapshot_hash": snapshot["snapshot_hash"], "confirm": True},
+            )
+
+        assert response.status_code == 200, response.text
+        assert snapshot["final_boundary_confirmed"] is True
+        assert snapshot["completed_form_step_count"] == 0
+        assert snapshot["unresolved_required_field_count"] == 1
+        assert status.json()["snapshot"]["can_approve"] is False
+        assert approval.status_code == 409
+        assert fixture_server.post_count == 0
+
+    def test_missing_final_boundary_is_persisted_but_cannot_be_approved(
+        self, wq8_obs_app, fixture_server: _FixtureHTTPServer
+    ) -> None:
+        app, job, _engine, _sf, _settings, _tmp_path = wq8_obs_app
+        fixture_server.set_html(_NO_FINAL_BOUNDARY_HTML)
+
+        with TestClient(app) as client:
+            response = client.post(f"/api/submit/{job.application_id}/observe")
+            status = client.get(f"/api/submit/{job.application_id}/status")
+            snapshot = response.json()["snapshot"]
+            approval = client.post(
+                f"/api/submit/{job.application_id}/approve",
+                json={"snapshot_hash": snapshot["snapshot_hash"], "confirm": True},
+            )
+
+        assert response.status_code == 200, response.text
+        assert snapshot["final_boundary_confirmed"] is False
+        assert snapshot["completed_form_step_count"] == 1
+        assert snapshot["submit_control"] is None
+        assert status.json()["snapshot"]["can_approve"] is False
+        assert "final submit boundary" in status.json()["snapshot"]["approve_blocking_reason"]
+        assert approval.status_code == 409
+        assert "final submit boundary" in approval.json()["detail"]
+        assert fixture_server.post_count == 0
 
     def test_observe_blocks_mutating_autosave_and_revokes_old_approval(
         self, wq8_obs_app, fixture_server: _FixtureHTTPServer

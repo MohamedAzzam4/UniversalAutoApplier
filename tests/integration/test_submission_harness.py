@@ -263,6 +263,81 @@ class TestValidApprovedSubmission:
                 f"Expected application_status submitted, got {status['application_status']!r}"
             )
 
+    def test_legacy_approved_snapshot_keeps_its_original_hash_shape(
+        self, server: SubprocessServer
+    ) -> None:
+        import sqlite3
+        from contextlib import closing
+
+        from universal_auto_applier.form_engine.live_executor import compute_field_token
+        from universal_auto_applier.submission.models import SubmissionSnapshot
+
+        with server.client() as client:
+            approval_id = _observe_and_approve(client, server.application_id)
+            with closing(sqlite3.connect(server.get_db_path())) as connection:
+                row = connection.execute(
+                    "SELECT snapshot_json FROM submission_approvals WHERE approval_id = ?",
+                    (approval_id,),
+                ).fetchone()
+                assert row is not None
+                raw_snapshot = row[0]
+                snapshot_data = (
+                    json.loads(raw_snapshot) if isinstance(raw_snapshot, str) else raw_snapshot
+                )
+
+                legacy_controls = {
+                    "First name": ("text", "first_name"),
+                    "Email address": ("email", "email"),
+                }
+                for field in snapshot_data["fields"]:
+                    field_type, name = legacy_controls[field["label"]]
+                    field["field_token"] = compute_field_token(
+                        frame_id="main",
+                        field_type=field_type,
+                        element_id=name,
+                        name=name,
+                        label=field["label"],
+                    )
+                for field in snapshot_data["fields"]:
+                    field.pop("source_field_token", None)
+                    field.pop("step_identity", None)
+                for key in (
+                    "final_boundary_confirmed",
+                    "completed_form_step_count",
+                    "form_progress_fingerprint",
+                ):
+                    snapshot_data.pop(key, None)
+                legacy_snapshot = SubmissionSnapshot.model_validate(snapshot_data).with_hashes()
+                connection.execute(
+                    "UPDATE submission_approvals SET snapshot_json = ?, snapshot_hash = ? "
+                    "WHERE approval_id = ?",
+                    (
+                        json.dumps(legacy_snapshot.model_dump(mode="json")),
+                        legacy_snapshot.snapshot_hash,
+                        approval_id,
+                    ),
+                )
+                connection.commit()
+
+            legacy_status = client.get(f"/api/submit/{server.application_id}/status").json()[
+                "snapshot"
+            ]
+            assert legacy_status["is_complete"] is False
+            assert legacy_status["can_approve"] is False
+            assert "legacy approval" in legacy_status["approve_blocking_reason"]
+            assert legacy_status["can_submit"] is True
+
+            response = client.post(
+                f"/api/submit/{server.application_id}/submit",
+                json={"approval_id": approval_id, "confirm": True},
+            )
+
+        assert response.status_code == 200
+        result = response.json()
+        assert result["clicked"] is True, result
+        assert result["state"] == "submitted_confirmed"
+        assert server.get_metrics()["click_count"] == 1
+
 
 # ---------------------------------------------------------------------------
 # 2. Feature disabled

@@ -11,6 +11,8 @@ actionable blocking reason.
 
 from __future__ import annotations
 
+import hashlib
+import json
 from pathlib import Path
 from typing import Any
 
@@ -19,7 +21,7 @@ from fastapi.testclient import TestClient
 from pydantic import ValidationError
 
 from universal_auto_applier.api.app import create_app
-from universal_auto_applier.browser.live_models import LiveUploadRecord
+from universal_auto_applier.browser.live_models import LiveFieldRecord, LiveUploadRecord
 from universal_auto_applier.config import Settings
 from universal_auto_applier.core.identity import compute_application_id
 from universal_auto_applier.core.models import ApplicationJob
@@ -39,11 +41,15 @@ from universal_auto_applier.submission.models import (
     SubmissionSnapshotDocument,
     SubmissionSnapshotField,
     SubmissionSnapshotSubmitControl,
+    build_snapshot_from_report,
     check_snapshot_consistency,
     derive_is_complete,
     derive_unconfirmed_high_risk_count,
     derive_unresolved_required_count,
     derive_unresolved_upload_count,
+    has_final_boundary_evidence,
+    has_progress_metadata,
+    is_review_ready_snapshot,
 )
 from universal_auto_applier.submission.store import (
     create_approval,
@@ -121,6 +127,9 @@ def _snapshot(
         submit_control=SubmissionSnapshotSubmitControl(
             text="Submit", selector="button[type='submit']"
         ),
+        final_boundary_confirmed=True,
+        completed_form_step_count=1,
+        form_progress_fingerprint="safety-test-form-progress",
         **kw,
     )
     return snap.with_hashes()
@@ -132,6 +141,186 @@ def _make_app_client(settings: Settings, engine: Any, sf: Any):
     app.state.session_factory = sf
     app.state.engine = engine
     return TestClient(app)
+
+
+def test_legacy_snapshot_hash_shape_survives_new_boundary_metadata_defaults() -> None:
+    """Pre-progress approvals retain the exact old canonical hash payload."""
+    original = _snapshot("legacy-boundary", fields=[_field(field_token="legacy-field")])
+    original = original.model_copy(
+        update={
+            "final_boundary_confirmed": False,
+            "completed_form_step_count": 0,
+            "form_progress_fingerprint": "",
+        }
+    )
+
+    # Independently reconstruct the pre-progress canonical contract from the
+    # base model: no boundary keys and no step/source identity field keys.
+    old_structure = sorted(
+        [
+            {
+                "token": field.field_token,
+                "type": field.field_type,
+                "label": field.label,
+                "required": field.required,
+            }
+            for field in original.fields
+        ],
+        key=lambda item: item.get("token", ""),
+    )
+    old_form = {
+        "fields": old_structure,
+        "doc_kinds": sorted(document.document_kind for document in original.documents),
+        "submit_control": (
+            {
+                "text": original.submit_control.text,
+                "selector": original.submit_control.selector,
+                "frame_url": original.submit_control.frame_url,
+            }
+            if original.submit_control
+            else None
+        ),
+    }
+    old_snapshot = {
+        "application_id": original.application_id,
+        "application_url": original.application_url,
+        "fields": sorted(
+            [
+                field.model_dump(exclude={"source_field_token", "step_identity"})
+                for field in original.fields
+            ],
+            key=lambda item: item.get("field_token", ""),
+        ),
+        "documents": sorted(
+            [document.model_dump() for document in original.documents],
+            key=lambda item: (item.get("document_kind", ""), item.get("path", "")),
+        ),
+        "pending_intervention_count": original.pending_intervention_count,
+        "unresolved_required_field_count": original.unresolved_required_field_count,
+        "unresolved_upload_count": original.unresolved_upload_count,
+        "high_risk_unconfirmed_count": original.high_risk_unconfirmed_count,
+        "submit_control": original.submit_control.model_dump() if original.submit_control else None,
+    }
+    expected_form_fingerprint = hashlib.sha256(
+        json.dumps(old_form, sort_keys=True, default=str).encode("utf-8")
+    ).hexdigest()[:32]
+    expected_snapshot_hash = hashlib.sha256(
+        json.dumps(old_snapshot, sort_keys=True, default=str).encode("utf-8")
+    ).hexdigest()[:32]
+
+    legacy_json = original.model_dump()
+    for key in (
+        "final_boundary_confirmed",
+        "completed_form_step_count",
+        "form_progress_fingerprint",
+    ):
+        legacy_json.pop(key, None)
+    for field in legacy_json["fields"]:
+        field.pop("source_field_token", None)
+        field.pop("step_identity", None)
+
+    reloaded = SubmissionSnapshot.model_validate(legacy_json)
+
+    assert reloaded.final_boundary_confirmed is False
+    assert reloaded.completed_form_step_count == 0
+    assert reloaded.form_progress_fingerprint == ""
+    assert reloaded.compute_form_fingerprint() == expected_form_fingerprint
+    assert reloaded.compute_hash() == expected_snapshot_hash
+    assert has_final_boundary_evidence(reloaded) is False
+    assert is_review_ready_snapshot(reloaded) is False
+
+
+def test_snapshot_scopes_reused_field_tokens_by_step_and_hashes_the_identity() -> None:
+    fields = [
+        LiveFieldRecord(
+            page_url="https://example.test/apply",
+            selector="input[name='answer']",
+            label="Name",
+            field_type="text",
+            status="filled",
+            field_token="reused-token",
+            step_identity=step_identity,
+            filled_value=value,
+        )
+        for step_identity, value in (("a" * 64, "First"), ("b" * 64, "Second"))
+    ]
+    snapshot = build_snapshot_from_report(
+        application_id="step-scoped-snapshot",
+        application_url="https://example.test/apply",
+        fields=fields,
+        uploads=[],
+        pending_intervention_count=0,
+        submit_control_text="Submit Application",
+        submit_control_selector="#submit",
+        final_boundary_confirmed=True,
+        completed_form_step_count=2,
+        form_progress_fingerprint="c" * 64,
+    )
+
+    assert len(snapshot.fields) == 2
+    assert len({field.field_token for field in snapshot.fields}) == 2
+    assert {field.source_field_token for field in snapshot.fields} == {"reused-token"}
+    assert {field.step_identity for field in snapshot.fields} == {"a" * 64, "b" * 64}
+
+    changed_identity_fields = [
+        field.model_copy(update={"step_identity": "d" * 64}) for field in snapshot.fields
+    ]
+    changed_identity = snapshot.model_copy(update={"fields": changed_identity_fields})
+    assert changed_identity.compute_hash() != snapshot.snapshot_hash
+    assert changed_identity.compute_form_fingerprint() != snapshot.form_fingerprint
+
+
+def test_partial_source_token_metadata_is_hashed_and_not_legacy() -> None:
+    observed = _snapshot("partial-identity", fields=[_field(field_token="lf-1")])
+    baseline = observed.model_copy(
+        update={
+            "final_boundary_confirmed": False,
+            "completed_form_step_count": 0,
+            "form_progress_fingerprint": "",
+        }
+    ).with_hashes()
+    source_only_field = baseline.fields[0].model_copy(
+        update={"source_field_token": "original-token", "step_identity": ""}
+    )
+    source_only = baseline.model_copy(update={"fields": [source_only_field]}).with_hashes()
+    changed_source_field = source_only_field.model_copy(
+        update={"source_field_token": "changed-token"}
+    )
+    changed_source = baseline.model_copy(update={"fields": [changed_source_field]}).with_hashes()
+
+    assert has_progress_metadata(baseline) is False
+    assert has_progress_metadata(source_only) is True
+    assert source_only.snapshot_hash != baseline.snapshot_hash
+    assert source_only.snapshot_hash != changed_source.snapshot_hash
+    assert source_only.form_fingerprint != changed_source.form_fingerprint
+
+
+def test_review_readiness_requires_a_bound_final_boundary() -> None:
+    incomplete = _snapshot("missing-boundary", fields=[_field(field_token="field")])
+    incomplete = incomplete.model_copy(
+        update={
+            "final_boundary_confirmed": False,
+            "completed_form_step_count": 0,
+            "form_progress_fingerprint": "",
+        }
+    ).with_hashes()
+    complete = SubmissionSnapshot(
+        application_id="complete-boundary",
+        application_url="https://example.com/apply",
+        fields=[_field(field_token="field")],
+        documents=[],
+        pending_intervention_count=0,
+        submit_control=SubmissionSnapshotSubmitControl(
+            text="Submit Application", selector="#submit"
+        ),
+        final_boundary_confirmed=True,
+        completed_form_step_count=3,
+        form_progress_fingerprint="a" * 64,
+    ).with_hashes()
+
+    assert is_review_ready_snapshot(incomplete) is False
+    assert has_final_boundary_evidence(complete) is True
+    assert is_review_ready_snapshot(complete) is True
 
 
 # ===================================================================

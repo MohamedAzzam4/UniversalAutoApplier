@@ -79,6 +79,9 @@ class LiveReviewSnapshotResponse(BaseModel):
     observation_timestamp: datetime | None = None
     form_fingerprint: str = ""
     snapshot_hash: str = ""
+    final_boundary_confirmed: bool = False
+    completed_form_step_count: int = 0
+    form_progress_fingerprint: str = ""
     is_complete: bool = False
     is_stale: bool = False
     submit_control: LiveReviewSubmitControl | None = None

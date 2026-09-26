@@ -44,6 +44,7 @@ from universal_auto_applier.submission.coordinator import SubmissionCoordinator
 from universal_auto_applier.submission.models import (
     SubmissionResultState,
     SubmissionSnapshot,
+    SubmissionSnapshotSubmitControl,
 )
 
 pytestmark = pytest.mark.playwright
@@ -180,6 +181,12 @@ class TestCoordinatorDefaultCannotSubmit:
             snapshot = SubmissionSnapshot(
                 application_id=job.application_id,
                 application_url=job.url,
+                final_boundary_confirmed=True,
+                completed_form_step_count=1,
+                form_progress_fingerprint="synthetic-confirmed-boundary",
+                submit_control=SubmissionSnapshotSubmitControl(
+                    text="Submit Application", selector="#submit"
+                ),
             ).with_hash()
 
             # Approve the snapshot (this is allowed even when submission

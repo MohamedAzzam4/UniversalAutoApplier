@@ -1420,7 +1420,7 @@ def consolidate_fields(records: list[LiveFieldRecord]) -> list[LiveFieldRecord]:
         return []
 
     consolidated: list[LiveFieldRecord] = []
-    seen_tokens: dict[str, int] = {}  # token -> index in `consolidated`
+    seen_tokens: dict[tuple[str, str], int] = {}  # step/token -> index in `consolidated`
 
     for record in records:
         token = record.field_token
@@ -1428,14 +1428,15 @@ def consolidate_fields(records: list[LiveFieldRecord]) -> list[LiveFieldRecord]:
             # No stable identity — cannot consolidate, pass through.
             consolidated.append(record)
             continue
+        identity = (record.step_identity, token)
 
-        if token not in seen_tokens:
-            seen_tokens[token] = len(consolidated)
+        if identity not in seen_tokens:
+            seen_tokens[identity] = len(consolidated)
             consolidated.append(record)
             continue
 
-        # A previous record exists for this token. Apply supersession rules.
-        prev_index = seen_tokens[token]
+        # A previous record exists for this same-step token. Apply supersession rules.
+        prev_index = seen_tokens[identity]
         prev = consolidated[prev_index]
         prev_prio = _STATUS_PRIORITY.get(prev.status, 0)
         new_prio = _STATUS_PRIORITY.get(record.status, 0)
@@ -1706,11 +1707,10 @@ def execute_live_form(
     # conditional fields (e.g., a text input that appears only after
     # selecting "Yes" on a radio question).
     #
-    # Bounded: this is a SINGLE re-observation pass, not a loop. It
-    # processes only fields that were NOT in the initial extraction.
-    # It does not recursively re-observe after filling revealed fields.
-    # This prevents infinite loops and avoids re-filling unchanged fields.
-    _MAX_REOBSERVE_PASSES = 1
+    # Bounded: each pass processes only fields not previously extracted.
+    # Re-observation continues after newly filled fields so nested conditional
+    # questions can be resolved, with a fixed cap to prevent runaway pages.
+    _MAX_REOBSERVE_PASSES = 5
     for _pass in range(_MAX_REOBSERVE_PASSES):
         if not filled_tokens:
             break
@@ -1908,8 +1908,8 @@ def execute_live_form(
                     filled_value=filled_value,
                 )
             )
-        # Only newly filled tokens from this pass could trigger another
-        # reveal, but we stop here (bounded to 1 pass).
+        # Only newly filled tokens from this pass can trigger another reveal;
+        # the next bounded pass checks for additional visible fields.
 
     # Consolidate duplicate records by stable field_token. A field may
     # appear in both the initial pass and the re-observation pass (e.g. a
@@ -2551,7 +2551,7 @@ def execute_live_form_synthetic(
     recorded and left untouched. Document uploads are only ever performed
     for files whose SHA-256 is in ``approved_document_hashes``.
 
-    After the initial pass, one bounded re-observation pass handles newly
+    After the initial pass, bounded re-observation passes handle newly
     revealed conditional fields the same way. Passive/non-fill inputs
     (submit buttons, hidden inputs) are never mutated, and final submission
     is never triggered here.
@@ -2579,10 +2579,14 @@ def execute_live_form_synthetic(
         )
     ]
 
-    # Single bounded re-observation for conditionally revealed fields.
+    # Bounded re-observation for conditionally revealed fields. Every actual
+    # mutation still belongs to its own frozen, hash-verifiable plan.
     remaining_budget = mutation_budget - execution.budget_consumed
     existing_tokens = {f.field_token for f in execution.fields if f.field_token}
-    if existing_tokens and remaining_budget >= 1:
+    _MAX_SYNTHETIC_REVEAL_PASSES = 5
+    for pass_index in range(1, _MAX_SYNTHETIC_REVEAL_PASSES + 1):
+        if not existing_tokens or remaining_budget < 1:
+            break
         revealed = _run_mutation_pass(
             page=page,
             mutation_profile=mutation_profile,
@@ -2593,6 +2597,8 @@ def execute_live_form_synthetic(
             async_upload_protocols=async_upload_protocols,
             native_upload_contracts=native_upload_contracts,
         )
+        if not revealed.fields and not revealed.uploads:
+            break
         # Merge revealed fields/records into the main execution. The
         # budget is shared: revealed mutations count against it.
         execution.mutations_performed += revealed.mutations_performed
@@ -2602,13 +2608,17 @@ def execute_live_form_synthetic(
         execution.required_unresolved += revealed.required_unresolved
         passes.append(
             SyntheticMutationPass(
-                pass_index=1,
+                pass_index=pass_index,
                 plan=revealed.plan,
                 plan_hash=revealed.plan_hash,
                 mutations_performed=revealed.mutations_performed,
                 budget_consumed=revealed.budget_consumed,
             )
         )
+        existing_tokens.update(f.field_token for f in revealed.fields if f.field_token)
+        remaining_budget = mutation_budget - execution.budget_consumed
+        if revealed.mutations_performed == 0:
+            break
 
     execution.passes = passes
     execution.plan_chain_hash = plan_chain_hash([p.plan_hash for p in passes])

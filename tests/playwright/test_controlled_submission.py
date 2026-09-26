@@ -113,6 +113,9 @@ def _make_snapshot(application_id: str, application_url: str) -> SubmissionSnaps
             )
         ],
         pending_intervention_count=0,
+        final_boundary_confirmed=True,
+        completed_form_step_count=1,
+        form_progress_fingerprint="synthetic-confirmed-boundary",
         submit_control=SubmissionSnapshotSubmitControl(
             text="Submit application",
             selector="button[type='submit']",

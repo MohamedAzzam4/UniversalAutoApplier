@@ -28,6 +28,16 @@ from universal_auto_applier.browser.live_models import (
     LiveRunReport,
     SubmitInterlockCounters,
 )
+from universal_auto_applier.browser.progress import (
+    ProgressTracker,
+    consolidated_uploads,
+    form_step_has_unresolved_work,
+    has_final_review_boundary,
+    has_visible_answer_controls,
+    is_form_step_candidate,
+    step_scoped_fields,
+    uniquely_safe_form_continue,
+)
 from universal_auto_applier.browser.request_interlock import (
     PreparationRequestInterlock,
     RequestInterlockSetupError,
@@ -40,6 +50,7 @@ from universal_auto_applier.browser.submit_interlock import (
 from universal_auto_applier.candidate_profile_loader import resolve_candidate_profile
 from universal_auto_applier.core.models import ApplicationJob, CandidateProfile
 from universal_auto_applier.form_engine.live_executor import (
+    consolidate_fields,
     execute_live_form,
     execute_live_form_synthetic,
     execute_live_form_with_llm,
@@ -212,7 +223,7 @@ class LiveBrowserRunner:
         )
         page: Page | None = None
         trace_started = False
-        seen_actions: set[tuple[str, str, str]] = set()
+        progress = ProgressTracker()
         self._uaa_submit_clicks = 0
 
         # WQ-7 / WQ-8 Phase A: Install the browser-side submit interlock
@@ -308,7 +319,9 @@ class LiveBrowserRunner:
                     report.stopped_reason = "already_submitted"
                     break
 
-                if analysis.is_application_form:
+                if analysis.is_application_form or (
+                    not self._config.recon_only and is_form_step_candidate(page, analysis)
+                ):
                     if self._config.recon_only:
                         # WQ-7B: navigation/observation-only. Stop at the
                         # first application form; record its structure
@@ -333,7 +346,7 @@ class LiveBrowserRunner:
                         )
                     else:
                         execution = execute_live_form(page, resolved_candidate, job)
-                    report.fields.extend(execution.fields)
+                    report.fields.extend(step_scoped_fields(execution.fields, page))
                     report.uploads.extend(execution.uploads)
                     self._screenshot(
                         page,
@@ -357,7 +370,19 @@ class LiveBrowserRunner:
                         report.status = "needs_user_input"
                         report.stopped_reason = post_fill.blocker
                         break
-                    if post_fill.has_dangerous_submit:
+                    if has_final_review_boundary(
+                        post_fill,
+                        answer_controls_present=has_visible_answer_controls(page),
+                    ):
+                        if form_step_has_unresolved_work(
+                            execution.fields,
+                            execution.uploads,
+                            required_unresolved=execution.required_unresolved,
+                            validation_errors=execution.validation_errors,
+                        ):
+                            report.status = "needs_user_input"
+                            report.stopped_reason = "final_boundary_has_unresolved_work"
+                            break
                         report.status = "review_ready"
                         report.stopped_reason = "final_submit_detected"
                         self._screenshot(
@@ -374,8 +399,21 @@ class LiveBrowserRunner:
                         allow_continue=True,
                     )
                     if action is None:
-                        report.status = "review_ready"
-                        report.stopped_reason = "form_filled_no_submit_control"
+                        report.status = "needs_user_input"
+                        report.stopped_reason = "final_boundary_missing_or_ambiguous"
+                        break
+                    if not uniquely_safe_form_continue(post_fill):
+                        report.status = "needs_user_input"
+                        report.stopped_reason = "form_continue_missing_or_ambiguous"
+                        break
+                    if form_step_has_unresolved_work(
+                        execution.fields,
+                        execution.uploads,
+                        required_unresolved=execution.required_unresolved,
+                        validation_errors=execution.validation_errors,
+                    ):
+                        report.status = "needs_user_input"
+                        report.stopped_reason = "form_step_has_unresolved_work"
                         break
                 else:
                     action = choose_safe_action(
@@ -388,12 +426,10 @@ class LiveBrowserRunner:
                         report.stopped_reason = "no_safe_apply_path"
                         break
 
-                fingerprint = (page.url, action.selector_hint, action.text)
-                if fingerprint in seen_actions:
+                if not progress.register(page, action):
                     report.status = "needs_user_input"
                     report.stopped_reason = "navigation_loop_detected"
                     break
-                seen_actions.add(fingerprint)
 
                 from_url = page.url
                 logger.info(
@@ -506,6 +542,8 @@ class LiveBrowserRunner:
                 except PlaywrightError as exc:
                     report.errors.append(f"trace_stop_failed: {exc}")
             report.finished_at = datetime.now(UTC)
+            report.fields = consolidate_fields(report.fields)
+            report.uploads = consolidated_uploads(report.uploads)
             # Preparation never calls submit, and the interlock is a required
             # invariant. The counters provide independent evidence that the
             # browser guard was armed.
@@ -747,7 +785,7 @@ class LiveBrowserRunner:
         )
         page: Page | None = None
         trace_started = False
-        seen_actions: set[tuple[str, str, str]] = set()
+        progress = ProgressTracker()
         request_interlock = PreparationRequestInterlock(
             context,
             application_id=job.application_id,
@@ -829,7 +867,9 @@ class LiveBrowserRunner:
                     report.stopped_reason = "already_submitted"
                     break
 
-                if analysis.is_application_form:
+                if analysis.is_application_form or (
+                    not self._config.recon_only and is_form_step_candidate(page, analysis)
+                ):
                     execution = execute_live_form_synthetic(
                         page,
                         mutation_profile,
@@ -837,7 +877,7 @@ class LiveBrowserRunner:
                         approved_document_hashes=approved_document_hashes,
                         mutation_budget=mutation_budget,
                     )
-                    report.fields.extend(execution.fields)
+                    report.fields.extend(step_scoped_fields(execution.fields, page))
                     report.uploads.extend(execution.uploads)
                     report.plan_hash = execution.plan_hash
                     report.plan_chain_hash = execution.plan_chain_hash
@@ -885,7 +925,19 @@ class LiveBrowserRunner:
                         report.status = "needs_user_input"
                         report.stopped_reason = post_fill.blocker
                         break
-                    if post_fill.has_dangerous_submit:
+                    if has_final_review_boundary(
+                        post_fill,
+                        answer_controls_present=has_visible_answer_controls(page),
+                    ):
+                        if form_step_has_unresolved_work(
+                            execution.fields,
+                            execution.uploads,
+                            required_unresolved=execution.required_unresolved,
+                            validation_errors=execution.validation_errors,
+                        ):
+                            report.status = "needs_user_input"
+                            report.stopped_reason = "final_boundary_has_unresolved_work"
+                            break
                         report.status = "review_ready"
                         report.stopped_reason = "final_submit_detected"
                         self._screenshot(
@@ -902,8 +954,21 @@ class LiveBrowserRunner:
                         allow_continue=True,
                     )
                     if action is None:
-                        report.status = "review_ready"
-                        report.stopped_reason = "form_mutated_no_submit_control"
+                        report.status = "needs_user_input"
+                        report.stopped_reason = "final_boundary_missing_or_ambiguous"
+                        break
+                    if not uniquely_safe_form_continue(post_fill):
+                        report.status = "needs_user_input"
+                        report.stopped_reason = "form_continue_missing_or_ambiguous"
+                        break
+                    if form_step_has_unresolved_work(
+                        execution.fields,
+                        execution.uploads,
+                        required_unresolved=execution.required_unresolved,
+                        validation_errors=execution.validation_errors,
+                    ):
+                        report.status = "needs_user_input"
+                        report.stopped_reason = "form_step_has_unresolved_work"
                         break
                 else:
                     action = choose_safe_action(
@@ -916,12 +981,10 @@ class LiveBrowserRunner:
                         report.stopped_reason = "no_safe_apply_path"
                         break
 
-                fingerprint = (page.url, action.selector_hint, action.text)
-                if fingerprint in seen_actions:
+                if not progress.register(page, action):
                     report.status = "needs_user_input"
                     report.stopped_reason = "navigation_loop_detected"
                     break
-                seen_actions.add(fingerprint)
 
                 from_url = page.url
                 try:
@@ -1023,6 +1086,8 @@ class LiveBrowserRunner:
                 except PlaywrightError as exc:
                     report.errors.append(f"trace_stop_failed: {exc}")
             report.finished_at = datetime.now(UTC)
+            report.fields = consolidate_fields(report.fields)
+            report.uploads = consolidated_uploads(report.uploads)
             report.submitted = False
             self._write_report(report, run_dir)
 

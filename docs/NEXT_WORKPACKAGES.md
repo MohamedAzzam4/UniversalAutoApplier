@@ -7,26 +7,42 @@ Items are not started until they are pulled into an active workpackage in
 
 ## V2 progress ledger
 
-Approximate overall progress is **20-25%** across the ten V2 workpackages; this
+Approximate overall progress is **25–30%** across the ten V2 workpackages; this
 is a directional estimate, not a size-weighted schedule. V2-00 and V2-01 are
-complete. V2-02 remains in progress. The request-guard checkpoint is pushed on
-its source branch and merged into this safety worktree locally. Integrated gates
-pass; the combined tree is staged for supervisor review and is not committed or
-pushed. V2-03 through V2-08 are not complete. V2-07A and V2-07B are tracked as
-separate workpackages; 07A has not been implemented and remains a read-only
-design audit.
+complete. V2-02 remains active: the runner/service progress-fingerprint slice
+has passed the combined non-live gate and is supervisor-reviewed. Publication
+status is resolved dynamically using the HEAD/origin comparison in the active
+handoff. `93a45055f96f00a0d4217f37e4da01b639d73695` is the prior safety
+integration base, not the publication status of this branch.
+
+The combined `pytest -m 'not live'` gate passed **1,854 tests with 3
+deselected**. Same-URL three-step and nested-conditional runner/service
+observation now have regression coverage, with no-final-boundary and unresolved
+required-step cases rejected. Controlled submission remains single-page and
+fails closed on multi-step snapshots. Identical blank steps with no visible
+step marker remain fail-closed. A review-only final page without answer inputs
+is accepted only if the analyzer independently classifies it as an application
+form; otherwise the slice does not infer a final boundary from a lone Submit
+control.
+
+V2-03 through V2-08 are not complete. V2-07A and V2-07B are tracked separately.
+V2-07A's design/prototype checkpoint is pushed at
+`18ec4f29f5af919131ac0ce8ce11478e64f3135a` on
+`checkpoint/v2-07a-dashboard-design`; it remains unmerged and is not included
+in this V2-02 branch. V2-07A is design/prototype work, not the production
+operator dashboard work assigned to V2-07B.
 
 | Workpackage | Status |
 |---|---|
 | V2-00 | Complete; baseline checkpointed, with its browser-gate caveat documented |
 | V2-01 | Complete |
-| V2-02 | In progress; integrated tree validated and staged, not committed/pushed |
+| V2-02 | In progress; validated and reviewed slice; publication checked dynamically; one-executor, review-only and controlled-replay scope remains |
 | V2-03 | Not complete |
 | V2-04 | Not complete |
 | V2-05 | Not complete |
 | V2-06 | Not complete |
-| V2-07A | Not implemented; read-only design audit remains |
-| V2-07B | Not complete |
+| V2-07A | Design/prototype checkpoint pushed at `18ec4f29`; unmerged and not included here |
+| V2-07B | Not complete; production dashboard work |
 | V2-08 | Not complete |
 
 ## V2 roadmap — current delivery order
@@ -217,8 +233,9 @@ the existing WQ-8 contract; no code review gate blocks this synthetic work.
 **Objective.** Route CLI, dashboard worker, supervisor preparation and snapshot
 observation through one multi-step state machine; remove duplicated readiness
 decisions; provide structured errors and progress fingerprints. The guarded
-browser and request-preparation slices reduce mutation risk, but they do not
-complete the shared executor or its same-URL progress behavior.
+browser and request-preparation slices reduce mutation risk. This branch adds
+and validates same-URL step progress for live runner and observation paths, but
+it does not complete the shared executor or controlled-submit replay.
 
 **Safety/browser implementation.** `hard_submit_block` defaults to true and
 cannot be disabled. `LiveBrowserRunner.run` and synthetic-mutation paths install
@@ -266,14 +283,38 @@ secondary fail-closed protection. If the initial write cannot commit, no durable
 evidence can survive process loss, so storage must be restored and the target
 owner must reconcile before restart or retry.
 
+**Progress fingerprint and same-URL observation slice (validated and
+supervisor-reviewed).** On `checkpoint/v2-02-progress-fingerprint`, runner and
+service observation use a bounded privacy-safe progress fingerprint derived
+from stable control schema
+and visible step markers, not answer values. `field_token` remains the original
+report/frozen-plan token. A separate stable `step_identity` scopes cross-step
+consolidation; snapshot confirmation IDs are unique only when a source token
+collides across steps. `source_field_token` and `step_identity` are conditionally
+bound together in canonical snapshot hashes, while empty metadata remains
+omitted for legacy hash compatibility. Required fields and uploads must be
+resolved and read-back verified before Continue. No final-boundary proof or
+unresolved work can be reported as newly review-ready.
+
+Validation on this progress-fingerprint branch passed **1,854 tests, 3
+deselected (1,857 collected) in 1,961.65 seconds** with
+`pytest -m 'not live' -vv --tb=short`. Focused identity/WQ-7C/legacy/coordinator
+selection passed **90 tests**; corrected legacy-harness, live-review API,
+independent old-hash reconstruction and step-metadata regression passed **33**.
+Ruff, format, Pyright and `git diff --check` passed. Equivalent synthetic
+Playwright viewport tests passed at 1440×900 and 390×844. Their screenshots are
+render-only fixture evidence, not readiness proof; API/service tests prove
+readiness. No live test or real ATS target was used.
+
 **Broader V2-02 work still incomplete.** The objective remains one multi-step
-state machine across CLI, dashboard worker, supervisor preparation, and
-observation/fill, with duplicated readiness removed and structured
-errors/progress fingerprints. Acceptance still requires equivalent outcomes for
-the same fixtures across entry points, completion of three successive steps on
-the same URL and nested conditional questions, and never reporting review-ready
-while a final boundary is incomplete. These remaining behaviors must be
-implemented and validated before V2-02 is complete.
+state machine across CLI, dashboard worker, supervisor preparation,
+observation/fill and controlled submission, with duplicated readiness removed
+and structured errors/progress fingerprints. This validated slice covers runner
+and service observation/fill; it does not unify every entry point. Three same-
+URL steps and nested conditional questions are implemented for those paths, but
+controlled submission still reconstructs only one page and rejects a multi-step
+snapshot before any final click. Equivalent outcomes across all entry points and
+safe multi-step submit replay remain unimplemented.
 
 **Coverage limits.** The interlock covers routed Playwright HTTP requests; it
 does not cover WebSocket frames, server-side effects on GET endpoints, or
@@ -283,15 +324,17 @@ not confirm submission; when `request_outcome_unknown=true`, it does not prove
 remote non-submission. No exception for blocked methods or URLs is enabled.
 Controlled WQ-8 authorization and submission authority are unchanged.
 
-**Checkpoint lineage.** V2-01 and the safety/browser checkpoint are preserved on
-`checkpoint/v2-02-safety`; the verified pushed safety/classifier checkpoint is
-`88a279cfceaea7b7a7ac1c9cedadcb0257b5a926`. The classifier source checkpoint
+**Checkpoint lineage.** V2-01 and the safety/browser integration are preserved
+on `checkpoint/v2-02-safety`; the verified pushed integration base is
+`93a45055f96f00a0d4217f37e4da01b639d73695`. The classifier source checkpoint
 `98725115569fb15b200bceb91240821d60b108c2` is separately preserved on its source
 branch and integrated in that safety checkpoint. The request-guard source
 checkpoint `021330b811c33888dcf15a37d35d49596f6eafb3` is pushed on
-`checkpoint/v2-02-request-guard`. Its integration into the safety worktree is
-currently an uncommitted local merge for review; do not describe the combined
-tree as committed or pushed.
+`checkpoint/v2-02-request-guard` and is included in the pushed safety
+integration. The progress-fingerprint slice builds on that prior checkpoint
+and is tracked on its own branch. Resolve its publication state by comparing
+HEAD with `origin/checkpoint/v2-02-progress-fingerprint` as documented in the
+active handoff.
 
 **Inherited validation.** The safety fixture → WQ-8 → WQ-7C selection passed 18
 tests; WQ-7C → WQ-8 passed 14; plugin-page → safety fixture → WQ-7C → WQ-8
@@ -317,10 +360,9 @@ noted the isolated worktree has no local `.venv`; the installed executable
 produced the zero-diagnostic result. Integrated diff checks pass. No live test,
 ATS target, or real submission was used.
 
-**Next action.** The integrated safety
-tree is validated and staged for supervisor review. Review the exact staged
-source, test and documentation changes and gate evidence. Do not commit or push
-until supervisor approval; do not merge to main or run real ATS actions.
+**Next action.** Verify publication by comparing HEAD with
+`origin/checkpoint/v2-02-progress-fingerprint`, then resume the remaining
+unified-executor, review-only-boundary and controlled-replay work in V2-02.
 
 ### V2-07A — Dashboard interaction design (separate follow-up)
 

@@ -1,0 +1,40 @@
+<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8"><title>Three steps on one URL</title></head>
+<body data-submitted="false">
+  <main>
+    <h1>Application</h1>
+    <form id="application-form">
+      <section id="step-fields"></section>
+      <button id="continue" type="button">Continue</button>
+      <button id="submit" type="submit" hidden>Submit Application</button>
+    </form>
+  </main>
+  <script>
+    const steps = [
+      '<label for="step_answer">First name</label><input id="step_answer" name="step_answer" required>',
+      '<label for="step_answer">Last name</label><input id="step_answer" name="step_answer" required>',
+      '<label for="step_answer">City</label><input id="step_answer" name="step_answer" required>'
+    ];
+    let currentStep = 0;
+    const form = document.querySelector('#application-form');
+    const fields = document.querySelector('#step-fields');
+    const next = document.querySelector('#continue');
+    const submit = document.querySelector('#submit');
+    const render = () => {
+      fields.innerHTML = steps[currentStep];
+      next.hidden = currentStep === steps.length - 1;
+      submit.hidden = currentStep !== steps.length - 1;
+    };
+    next.addEventListener('click', () => {
+      currentStep += 1;
+      render();
+    });
+    form.addEventListener('submit', (event) => {
+      event.preventDefault();
+      document.body.dataset.submitted = 'true';
+    });
+    render();
+  </script>
+</body>
+</html>

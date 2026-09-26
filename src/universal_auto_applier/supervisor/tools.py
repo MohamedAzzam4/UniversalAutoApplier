@@ -34,7 +34,10 @@ from universal_auto_applier.persistence.job_repository import (
     list_application_jobs,
     update_application_status,
 )
-from universal_auto_applier.submission.models import SubmissionSnapshot
+from universal_auto_applier.submission.models import (
+    SubmissionSnapshot,
+    is_review_ready_snapshot,
+)
 from universal_auto_applier.supervisor.models import InterventionView
 
 logger = logging.getLogger("universal_auto_applier.supervisor.tools")
@@ -436,6 +439,13 @@ class SupervisorTools:
     def mark_review_ready(self, application_id: str) -> bool:
         """Transition the job to REVIEW_READY via the repository (guarded by
         the allowed-transitions map). Returns False when not allowed."""
+        snapshot = self.load_review_snapshot(application_id)
+        if snapshot is None or not is_review_ready_snapshot(snapshot):
+            logger.warning(
+                "[%s] review-ready transition blocked: final boundary or complete evidence missing",
+                application_id[:12],
+            )
+            return False
         return self._transition(application_id, ApplicationStatus.REVIEW_READY)
 
     def skip_application(self, application_id: str) -> bool:

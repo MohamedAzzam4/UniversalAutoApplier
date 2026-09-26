@@ -1,0 +1,42 @@
+<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8"><title>Nested conditional questions</title></head>
+<body data-submitted="false">
+  <main>
+    <h1>Application</h1>
+    <form id="application-form">
+      <fieldset>
+        <legend>Do you have experience with Python?</legend>
+        <label><input type="radio" name="python_experience" value="Yes" required> Yes</label>
+        <label><input type="radio" name="python_experience" value="No"> No</label>
+      </fieldset>
+      <fieldset id="fastapi-question" hidden>
+        <legend>Do you use FastAPI?</legend>
+        <label><input type="radio" name="uses_fastapi" value="Yes" required> Yes</label>
+        <label><input type="radio" name="uses_fastapi" value="No"> No</label>
+      </fieldset>
+      <div id="framework-question" hidden>
+        <label for="framework">Which framework do you use?</label>
+        <input id="framework" name="framework" required>
+      </div>
+      <button type="submit">Submit Application</button>
+    </form>
+  </main>
+  <script>
+    document.querySelectorAll('[name="python_experience"]').forEach((radio) => {
+      radio.addEventListener('change', () => {
+        document.querySelector('#fastapi-question').hidden = radio.value !== 'Yes';
+      });
+    });
+    document.querySelectorAll('[name="uses_fastapi"]').forEach((radio) => {
+      radio.addEventListener('change', () => {
+        document.querySelector('#framework-question').hidden = radio.value !== 'Yes';
+      });
+    });
+    document.querySelector('#application-form').addEventListener('submit', (event) => {
+      event.preventDefault();
+      document.body.dataset.submitted = 'true';
+    });
+  </script>
+</body>
+</html>

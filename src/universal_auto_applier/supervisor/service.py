@@ -33,6 +33,10 @@ from universal_auto_applier.core.models import ApplicationJob
 from universal_auto_applier.core.statuses import ApplicationStatus
 from universal_auto_applier.persistence.db import session_scope
 from universal_auto_applier.submission.authorization import _file_content_hash
+from universal_auto_applier.submission.models import (
+    has_final_boundary_evidence,
+    is_review_ready_snapshot,
+)
 from universal_auto_applier.supervisor.models import (
     AnswerSource,
     PlannerContext,
@@ -287,6 +291,27 @@ class SupervisorService:
 
         job_status = ApplicationStatus(str(job.status))
         if job_status is ApplicationStatus.REVIEW_READY:
+            existing_snapshot = self._tools.load_review_snapshot(app_id)
+            if existing_snapshot is None or not is_review_ready_snapshot(existing_snapshot):
+                self._handoff(
+                    run_id,
+                    job,
+                    reason_code=ReasonCode.UAA_EXECUTION_DEFECT,
+                    question="",
+                    action_required=(
+                        "Run a fresh review-only observation and confirm every form step reaches its final boundary."
+                    ),
+                    tool_result="the stored review packet has no valid final-boundary proof",
+                    resulting_state=SupervisorState.NEEDS_HUMAN,
+                )
+                summary.needs_human.append(
+                    {
+                        "application_id": app_id,
+                        "company": job.company,
+                        "reason_code": ReasonCode.UAA_EXECUTION_DEFECT.value,
+                    }
+                )
+                return
             self._record(
                 run_id,
                 app_id,
@@ -495,7 +520,7 @@ class SupervisorService:
             pending = self._tools.get_interventions(app_id)
 
             unresolved = snapshot.unresolved_required_field_count
-            if not pending and unresolved == 0:
+            if not pending and unresolved == 0 and is_review_ready_snapshot(snapshot):
                 # Fully prepared — stop at the review boundary.
                 moved = self._tools.mark_review_ready(app_id)
                 self._record(
@@ -519,6 +544,27 @@ class SupervisorService:
                     retry_count=prepare_attempts,
                 )
                 summary.review_ready.append(app_id)
+                return
+
+            if not pending and not has_final_boundary_evidence(snapshot):
+                self._handoff(
+                    run_id,
+                    job,
+                    reason_code=ReasonCode.UAA_EXECUTION_DEFECT,
+                    question="",
+                    action_required=(
+                        "Complete the remaining application steps, then run a fresh review-only observation."
+                    ),
+                    tool_result="the final submit boundary was not confirmed",
+                    resulting_state=SupervisorState.NEEDS_HUMAN,
+                )
+                summary.needs_human.append(
+                    {
+                        "application_id": app_id,
+                        "company": job.company,
+                        "reason_code": ReasonCode.UAA_EXECUTION_DEFECT.value,
+                    }
+                )
                 return
 
             if not pending:
@@ -699,8 +745,26 @@ class SupervisorService:
 
             if decision.action is SupervisorAction.MARK_REVIEW_READY:
                 # Veto unless genuinely complete.
-                if not pending and unresolved == 0:
-                    self._tools.mark_review_ready(app_id)
+                if not pending and unresolved == 0 and is_review_ready_snapshot(snapshot):
+                    moved = self._tools.mark_review_ready(app_id)
+                    if not moved:
+                        self._handoff(
+                            run_id,
+                            job,
+                            reason_code=ReasonCode.UAA_EXECUTION_DEFECT,
+                            question="",
+                            action_required="Inspect the final application boundary before owner review.",
+                            tool_result="review-ready transition was vetoed by snapshot evidence",
+                            resulting_state=SupervisorState.NEEDS_HUMAN,
+                        )
+                        summary.needs_human.append(
+                            {
+                                "application_id": app_id,
+                                "company": job.company,
+                                "reason_code": ReasonCode.UAA_EXECUTION_DEFECT.value,
+                            }
+                        )
+                        return
                     self._set_state(
                         run_id,
                         app_id,

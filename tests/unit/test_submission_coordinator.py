@@ -28,6 +28,8 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
+import pytest
+
 from universal_auto_applier.config import Settings
 from universal_auto_applier.core.identity import compute_application_id
 from universal_auto_applier.core.models import ApplicationJob
@@ -156,6 +158,9 @@ def _make_snapshot(
             text="Submit application",
             selector="button[type='submit']",
         ),
+        final_boundary_confirmed=True,
+        completed_form_step_count=1,
+        form_progress_fingerprint="test-form-progress",
     )
     return snap.with_hash()
 
@@ -257,6 +262,63 @@ class TestCorrectApproval:
             assert gate.allowed, f"Expected gates to pass, got: {gate.reason}"
         finally:
             engine.dispose()
+
+
+class TestFinalBoundaryApproval:
+    def test_fresh_legacy_shaped_snapshot_cannot_be_approved(self, tmp_path: Path) -> None:
+        settings = _make_settings(tmp_path, enable_real_submission=True)
+        job = _make_job(tmp_path)
+        engine, sf = _setup_db(tmp_path, settings, job)
+        try:
+            coordinator = SubmissionCoordinator(settings, sf)
+            current = _make_snapshot(job.application_id)
+            legacy_shaped = current.model_copy(
+                update={
+                    "final_boundary_confirmed": False,
+                    "completed_form_step_count": 0,
+                    "form_progress_fingerprint": "",
+                }
+            ).with_hash()
+
+            with pytest.raises(ValueError, match="without confirmed final-boundary evidence"):
+                coordinator.approve_snapshot(
+                    application_id=job.application_id,
+                    snapshot=legacy_shaped,
+                )
+        finally:
+            engine.dispose()
+
+
+def test_step_metadata_cannot_use_legacy_approval_grandfathering(tmp_path: Path) -> None:
+    settings = _make_settings(tmp_path, enable_real_submission=True)
+    job = _make_job(tmp_path)
+    engine, sf = _setup_db(tmp_path, settings, job)
+    try:
+        coordinator = SubmissionCoordinator(settings, sf)
+        fresh = _make_snapshot(job.application_id)
+        step_tagged = fresh.model_copy(
+            update={
+                "fields": [
+                    fresh.fields[0].model_copy(
+                        update={"source_field_token": "lf-1", "step_identity": "a" * 64}
+                    )
+                ],
+                "final_boundary_confirmed": False,
+                "completed_form_step_count": 0,
+                "form_progress_fingerprint": "",
+            }
+        ).with_hash()
+
+        # Simulate an already-active row with the exact hash. Even this must
+        # not turn newly step-tagged evidence into a grandfathered legacy record.
+        with session_scope(sf) as session:
+            row = create_approval(session, application_id=job.application_id, snapshot=step_tagged)
+            assert row.snapshot_hash == step_tagged.snapshot_hash
+
+        with pytest.raises(ValueError, match="without confirmed final-boundary evidence"):
+            coordinator.approve_snapshot(application_id=job.application_id, snapshot=step_tagged)
+    finally:
+        engine.dispose()
 
 
 # ---------------------------------------------------------------------------

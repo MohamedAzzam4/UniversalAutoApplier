@@ -67,6 +67,9 @@ def build_snapshot(
     submit_control_text: str = "",
     submit_control_selector: str = "",
     submit_control_frame_url: str = "",
+    final_boundary_confirmed: bool = False,
+    completed_form_step_count: int = 0,
+    form_progress_fingerprint: str = "",
 ) -> SubmissionSnapshot:
     """Build a snapshot from live run report data.
 
@@ -85,6 +88,9 @@ def build_snapshot(
         submit_control_text=submit_control_text,
         submit_control_selector=submit_control_selector,
         submit_control_frame_url=submit_control_frame_url,
+        final_boundary_confirmed=final_boundary_confirmed,
+        completed_form_step_count=completed_form_step_count,
+        form_progress_fingerprint=form_progress_fingerprint,
     )
 
 

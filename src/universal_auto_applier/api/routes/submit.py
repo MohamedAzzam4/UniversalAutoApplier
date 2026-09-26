@@ -51,6 +51,8 @@ from universal_auto_applier.submission.models import (
     derive_unresolved_required_count,
     derive_unresolved_upload_count,
     display_upload_status,
+    has_final_boundary_evidence,
+    has_progress_metadata,
 )
 from universal_auto_applier.submission.store import (
     confirm_high_risk_fields,
@@ -204,7 +206,11 @@ def _build_snapshot_response(
     derived_unresolved = derive_unresolved_required_count(snapshot.fields)
     derived_unresolved_uploads = derive_unresolved_upload_count(snapshot.documents)
     derived_unconfirmed = derive_unconfirmed_high_risk_count(snapshot.fields, confirmed_tokens)
-    is_complete = derive_is_complete(snapshot.fields) and derived_unresolved_uploads == 0
+    is_complete = (
+        derive_is_complete(snapshot.fields)
+        and derived_unresolved_uploads == 0
+        and has_final_boundary_evidence(snapshot)
+    )
 
     # Consistency check: detect stale aggregates that contradict field data.
     consistency_error = check_snapshot_consistency(snapshot, confirmed_tokens)
@@ -212,6 +218,12 @@ def _build_snapshot_response(
     # A preparation HTTP blocker takes precedence over snapshot completeness.
     can_approve = True
     approve_blocking_reason = ""
+    legacy_active_approval = bool(
+        approval is not None
+        and approval_state == "active"
+        and not approval_is_stale
+        and not has_progress_metadata(snapshot)
+    )
     if preparation_interlock_error_code == "http_request_outcome_unknown_reconciliation_required":
         can_approve = False
         approve_blocking_reason = (
@@ -226,6 +238,11 @@ def _build_snapshot_response(
         can_approve = False
         approve_blocking_reason = (
             "preparation blocker persistence failed; restore storage and reconcile before approval"
+        )
+    elif not has_final_boundary_evidence(snapshot) and not legacy_active_approval:
+        can_approve = False
+        approve_blocking_reason = (
+            "final submit boundary was not confirmed; complete the form and observe it again"
         )
     elif consistency_error:
         can_approve = False
@@ -243,8 +260,26 @@ def _build_snapshot_response(
         can_approve = False
         approve_blocking_reason = f"{derived_unconfirmed} unconfirmed high-risk answers"
 
-    # Determine can_submit.
-    can_submit = approval_state == "active" and not approval_is_stale and can_approve
+    # A pre-upgrade approval remains usable under its original snapshot hash,
+    # but this legacy snapshot cannot be presented as newly approvable without
+    # fresh final-boundary evidence. Keep those two API capabilities distinct.
+    legacy_submit_preserved = bool(
+        legacy_active_approval and can_approve and not has_final_boundary_evidence(snapshot)
+    )
+    if legacy_submit_preserved:
+        can_approve = False
+        approve_blocking_reason = (
+            "existing legacy approval lacks final-boundary evidence; re-observe before creating "
+            "a new approval"
+        )
+
+    # Determine can_submit. Only the exact active, hash-matching legacy
+    # approval bypasses the new-observation boundary requirement.
+    can_submit = (
+        approval_state == "active"
+        and not approval_is_stale
+        and (can_approve or legacy_submit_preserved)
+    )
     submit_blocking_reason = ""
     if not can_submit:
         if approval_state != "active":
@@ -265,6 +300,9 @@ def _build_snapshot_response(
         observation_timestamp=snapshot.created_at,
         form_fingerprint=snapshot.form_fingerprint,
         snapshot_hash=snapshot.snapshot_hash,
+        final_boundary_confirmed=snapshot.final_boundary_confirmed,
+        completed_form_step_count=snapshot.completed_form_step_count,
+        form_progress_fingerprint=snapshot.form_progress_fingerprint,
         is_complete=is_complete,
         is_stale=approval_is_stale,
         submit_control=submit_control,
@@ -625,6 +663,15 @@ def approve_snapshot_endpoint(
             raise HTTPException(
                 status_code=500,
                 detail="failed to load snapshot from approval",
+            )
+
+        if not has_final_boundary_evidence(snapshot) and has_progress_metadata(snapshot):
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    "cannot approve: final submit boundary was not confirmed; complete the form "
+                    "and observe it again"
+                ),
             )
 
         # Validate gates — derive from field data, not trusted aggregates.
