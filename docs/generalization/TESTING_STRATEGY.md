@@ -6,8 +6,8 @@ previous working behavior.
 
 ## Testing Principles
 
-1. Every phase adds tests.
-2. Every phase runs all previous tests.
+1. Code phases add focused behavioral tests where they protect a user-visible contract.
+2. Each iteration runs focused checks; the accepted integration checkpoint runs one combined full non-live gate before merge.
 3. Siemens regressions are blockers.
 4. Unknown-site generic automation must be tested in dry-run only.
 5. Tests must cover failure paths, not only happy paths.
@@ -191,7 +191,12 @@ Acceptance:
 
 ## Regression Gate
 
-Run this gate after every workpackage and every phase.
+Use focused checks during each code iteration and the affected integration/browser
+selection before review. Run one combined full non-live gate at the accepted
+integration checkpoint/workpackage before merge. A later code change invalidates
+affected evidence; the final accepted code receives the applicable gate.
+Documentation-only changes require document consistency and whitespace checks,
+not code suites.
 
 ### Required Checks
 
@@ -203,16 +208,18 @@ Run this gate after every workpackage and every phase.
 5. existing Siemens regression tests
 6. full pipeline dry-run test
 7. Playwright UI tests if UI changed
-8. Playwright MCP user-perspective inspection if UI or browser behavior changed
+8. User-perspective browser inspection if UI or browser behavior changed (Playwright MCP when available, otherwise a recorded Python Playwright equivalent)
 9. git diff --check
 10. changed-file review for unrelated files
 ```
 
 ### User-Perspective Playwright MCP Check
 
-After any phase that changes the dashboard, navigation, form filling,
-interventions, review, or browser-visible errors, the implementation agent must
-start the local system and inspect it with Playwright MCP as a user would.
+After a phase that changes the dashboard, navigation, form filling,
+interventions, review, or browser-visible errors, inspect the local system as
+a user would with Playwright MCP when available. If MCP is unavailable, an
+equivalent Python Playwright inspection may be recorded with its method and
+evidence; it must not be reported as MCP.
 
 Required inspection:
 
@@ -226,10 +233,9 @@ Required inspection:
 6. Capture screenshots for the implementation report.
 7. Inspect browser console errors and failed network requests.
 
-This MCP inspection complements automated Playwright tests; it does not replace
-them. If Playwright MCP is unavailable in the implementation environment, the
-agent must report the gate as unverified and must not claim the UI phase is
-fully accepted.
+This inspection complements automated Playwright tests; it does not replace
+them. Record viewport sizes, the flow exercised and evidence. Keep keyboard
+and mobile behavior in scope.
 
 ### No-Go Conditions
 
@@ -240,7 +246,7 @@ Do not continue to the next phase if any of these happen:
 - Import creates duplicate jobs.
 - Queue/history loses previous job state.
 - UI cannot show waiting/error state.
-- Required Playwright MCP user-perspective verification was skipped.
+- Neither a Playwright MCP nor an equivalent recorded user-perspective browser inspection was performed for a UI/browser change.
 - Tests pass only because they inspect strings instead of behavior, when
   behavior can be tested.
 - Generated artifacts are committed accidentally.
@@ -341,7 +347,7 @@ Regression:
 - new tests:
 - full pipeline dry-run:
 - UI Playwright:
-- Playwright MCP user-perspective check:
+- User-perspective browser inspection method and evidence:
 
 Not run:
 - list anything skipped and why

@@ -18,9 +18,9 @@ on a local branch can be lost instantly.
    git rev-parse HEAD
    git rev-parse origin/<branch>
    ```
-   Compare the two resolved values against the base SHA and last
-   checkpoint SHA recorded in `ACTIVE_WORKPACKAGE.md`. They are reference
-   points, not the current HEAD (the file cannot contain its own SHA).
+   Compare the resolved values with the actual source/integration parent and
+   last checkpoint recorded in `ACTIVE_WORKPACKAGE.md`. The base need not be
+   `origin/main`; those SHAs are reference points, not the current HEAD.
 
 3. **Verify working tree:** Run `git status --short` before any checkout
    or reset. Stop immediately if untracked user/debug files or uncommitted
@@ -44,28 +44,29 @@ on a local branch can be lost instantly.
 
 ## Checkpoint rule (work is not preserved until it is on origin)
 
-- **Work is not considered preserved until its commit exists on origin.**
-  A local commit that has not been pushed can be lost instantly if the
-  sandbox is reset.
+- **Preservation and acceptance are separate.** Work is preserved only when
+  its commit exists on origin. A clearly labelled WIP checkpoint may record
+  known failures or unverified gates before a long run, pause or context reset;
+  WIP status is not acceptance.
 
-- **Commit and push after every completed milestone.** A milestone is a
-  coherent unit of work (a feature, a fix, a test suite, a documentation
-  update). Do not accumulate multiple milestones in a single local commit.
+- **Commit and push after each publishable milestone**, unless a supervisor
+  explicitly reserved the draft for review first. A milestone is a coherent
+  unit of work; do not accumulate unrelated milestones in one commit.
 
-- **Commit and push before a pause, handoff, restart, risky operation,
-  or expected context reset.** If you are about to lose context (e.g.,
-  approaching a token limit, switching tasks, ending a session), push
-  first.
+- **Before a pause, handoff, restart, risky operation or expected context
+  reset, preserve the work when publication is authorized.** If a supervisor
+  explicitly reserved a draft for review, keep it labelled WIP and do not
+  publish it prematurely.
 
 - **Commit and push when context usage approaches 60%.** Do not wait
   until 70% or 80% — by then it may be too late to complete the push
   before the context runs out.
 
-- **Do not leave important work uncommitted or in local-only commits.**
-  If you have made code changes, commit and push them before doing
-  anything else.
+- **Do not leave accepted work only in a local commit.** If a change is still
+  a supervisor-reserved draft, label it WIP and keep it available for that
+  review; publish only after that review permits it.
 
-- **After every push, verify local HEAD equals origin checkpoint HEAD:**
+- **After every push, verify local HEAD equals the remote branch HEAD:**
   ```text
   git rev-parse HEAD
   git rev-parse origin/<branch>
@@ -73,8 +74,11 @@ on a local branch can be lost instantly.
   The two values MUST match. If they don't, the push failed — do not
   continue development.
 
-- **Record both full SHAs in `ACTIVE_WORKPACKAGE.md`** after every
-  successful push: the local HEAD SHA and the verified remote HEAD SHA.
+- **Record dynamic verification in `ACTIVE_WORKPACKAGE.md`** after every
+  successful push. Do not embed the SHA of the commit that contains that
+  handoff. For unpublished WIP, state that it is unpublished; do not claim
+  local/remote equality. Resolve SHA values from command output and do not
+  create a status-only commit just to record its own SHA.
 
 - **If push fails, stop substantial development immediately.** Do not
   continue making code changes on top of an unpushed commit. Resolve
@@ -88,8 +92,10 @@ on a local branch can be lost instantly.
   collaborators' work. If a push is rejected, fetch and rebase instead.
 - **Never delete checkpoint branches.** They preserve the history of
   each workpackage.
-- **Use one checkpoint branch per workpackage.** Branch name format:
-  `checkpoint/<workpackage-name>`.
+- **Use one integration branch per workpackage.** Follow the assigned
+  `checkpoint/<workpackage-name>` or `codex/<workpackage-name>` name. Optional
+  bounded worktrees are for independent paths only; name one integration
+  owner and do not let parallel workstreams rewrite shared state independently.
 - **Merge exactly once through a reviewed PR.** Never perform a local
   squash merge to main AND also merge the PR — that creates duplicate
   commits.
@@ -147,9 +153,9 @@ ls /tmp/git-cred-helper-oneshot.sh 2>/dev/null
 - **Repository:** the GitHub `owner/repo` identifier
 - **Workpackage:** the WP ID (e.g., WQ-6)
 - **Branch:** the checkpoint branch name
-- **Base SHA:** the `origin/main` SHA the branch was created from
+- **Base SHA:** the actual source/integration parent SHA the branch was created from; it need not be `origin/main`
 - **Local HEAD:** the current local HEAD SHA (resolved dynamically, never embedded in the file's own commit)
-- **Verified remote HEAD:** the `origin/<branch>` SHA after the last successful push
+- **Verified remote HEAD:** resolve `origin/<branch>` dynamically after publication; label unpublished WIP clearly
 - **Last successful checkpoint time:** ISO 8601 timestamp of the last push
 - **Completed milestones:** bullet list of what has been done
 - **Changed files:** list of files modified in this workpackage

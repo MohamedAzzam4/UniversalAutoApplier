@@ -204,26 +204,26 @@ Evaluate Laya in shadow mode against a compact multilingual embedding baseline a
 
 ## 7. Ordered implementation workpackages
 
-Each workpackage should have its own scoped PR and behavioral acceptance evidence. Use checkpoint branches according to the repository policy, verify write authentication before editing, and preserve existing checkpoint branches. Documentation-only rebaseline work follows the repository's designated branch/worktree rule. No direct main push or merge.
+The table below is a component backlog, not execution order or authorization to start every item. The four acceptance checkpoints in section 18 control delivery order. Inspect actual inputs and select the first flow before broad implementation; preserve existing branches, use the assigned integration branch and do not push or merge directly to main.
 
 | WP | Scope and implementation | Completion criteria | Depends on |
 |---|---|---|---|
 | V2-00: baseline and execution contracts | Preserve/publish the existing dashboard checkpoint through the normal process; reconcile main, WQ-8 and supervisor changes; fix formatting and any narrowly attributable browser test-lifecycle defect; promote this plan into the repository; specify the state/ownership, re-import, upload, mutation and approval contracts in section 17. | One explicitly chosen, remotely preserved baseline; documented migration head; combined non-live gate result recorded; reviewed contracts and a documented first-flow decision gate; no user artifacts committed. Select the live form family only when an owner-approved current queue target is available. | None |
 | V2-01: immediate correctness blockers | Fix unsupported fact mappings, missing read-back, destructive metadata re-import and inconsistent duplicate gates; propagate requiredness and honest document/request evidence. Disable unverified mutation flows rather than claim universal request blocking is solved. | Negative skill evidence and visa ambiguity abstain; cleared values fail read-back; rejected uploads are not accepted; manual-submitted state survives import and blocks execution through all paths; readiness follows native/asynchronous upload contracts. | V2-00 contracts; no dependency on a new local model |
-| V2-02: one executor | Route CLI, dashboard worker, supervisor preparation and snapshot observation through one multi-step state machine; remove duplicated readiness decisions; structured errors and progress fingerprints. | Same fixtures yield equivalent outcomes from every entry point; three same-URL steps and nested conditional questions complete; no final boundary means not review-ready. | V2-01 |
+| V2-02: shared preparation core | Continue the bounded shared preparation/readiness path behind thin CLI, dashboard-worker and supervisor entry points; retain one source of readiness decisions and structured progress. Do not create a parallel engine or framework. Controlled multi-step submit replay is a later, separately accepted slice. | The selected entry points agree on preparation state; same-URL and nested-step progress is preserved; production app/worker E2E reaches an honest review boundary without clicking final submit. Existing approved-submit safety regressions remain green. | V2-01 |
 | V2-03: candidate and documents | Extend candidate facts, owner policies, document manifest and scoped answer memory; UAA-only queue compatibility layer and preflight. | Common address/study/language/availability fields resolve without repeated questions; unknown/false/conflict/expiry distinguished; wrong-job, stale and missing documents block; legacy queue fixtures still import. | V2-01; integrates with V2-02 |
 | V2-04: durable browser resume | Session/tab manager, single application lease, checkpoints, login/CAPTCHA handoff, restart recovery and safe replay. | Owner login resumes correct application/tab; expired session is detected; crash/restart preserves state; concurrent entry points cannot operate one job; no automatic retry after unknown submission outcome. | V2-02 |
 | V2-05: hybrid resolver | Common resolver/provider API; deterministic then local semantic tier then API LLM; Laya benchmark, provenance, abstention, budgets and caching. | Held-out German/English evaluation meets precision/coverage gates; zero unsupported sensitive assertions in acceptance cases; identical wiring through CLI/dashboard/supervisor; outages degrade safely. | V2-02, V2-03 |
-| V2-06: supported ATS flows | Qualify one initial public form family end to end, selected from the owner's available queue; Greenhouse/Lever are candidates, not promised launch platforms. Add other families only against measured demand and the section 17 mutation contract. | Published per-flow capability/evidence matrix; first target and generic handoff behavior proven; broader widgets/families are individually accepted additions, not a prerequisite for the first usable release. | V2-02–V2-04; V2-05 only for model-dependent coverage |
+| V2-06: supported ATS flows | Discover the actual owner-selected first application flow early from a completed JobHunter export, then qualify only its concrete page/variant capabilities as the shared preparation core supports them. Unknown mutation patterns stay default-deny. | A per-flow capability/evidence record states what was observed and allowed; unknown patterns hand off safely. Other families are added only against demonstrated demand. | V2-02; additional dependencies only for capabilities actually required |
 | V2-07A: dashboard interaction design | Define and prototype the main user journeys, information hierarchy, truthful state labels, live attention queue and correction flow before backend contracts are finalized. | User can identify what is happening, why a job stopped and the correct next action in the prototype; event/action contracts feed V2-02–V2-04. | Starts with V2-00; no dependency on broad ATS coverage |
 | V2-07B: operator dashboard implementation | Candidate/document readiness, queue run controls, live per-job updates, grouped owner decisions, open/resume browser, correction saving, verified review diff, durable events and evidence, manual-submitted audit. | User can import → prepare → resolve → resume → review without shell commands or external chat; UI checked at 1440×900 and 390×844; no ambiguous completed/submitted badges; section 12 acceptance checks pass. | V2-07A; incrementally integrated with V2-02–V2-04 and later resolver/ATS work |
-| V2-08: release qualification | Migration/restore, production E2E and representative soak runs for the declared preparation capabilities. Qualify controlled submission separately using the existing coordinator and staged owner-approved pilot. | Preparation release can pass without consuming WQ-8 authorization; controlled submission remains disabled/unverified until its own gates and owner-approved live proof pass. No unverified final-submit capability is advertised. | Core workpackages plus V2-07B for the declared scope; model gates only if model acceptance is enabled |
+| V2-08: release qualification | Qualify the declared intake, first-flow preparation, correction/reuse and operator journeys on the production UAA app/worker path. Assess upgrade/restore and operational limits when release scope requires them. Qualify controlled submission separately under its existing authorization contract. | A capability-by-capability acceptance record separates supported, unsupported and unverified behavior. Preparation acceptance does not consume WQ-8 authorization; no unverified final-submit capability is advertised. | Completed capabilities in the declared release; no optional model or broad ATS work is a prerequisite |
 
-Dashboard usability is part of operational correctness: begin its interaction design with the baseline and build each user journey alongside its backend capability. Do not defer control, recovery or understandable status to a cosmetic final pass. Bulk parallel browsing, additional adapter names, new agent frameworks and model fine-tuning remain secondary to one verified flow through the real production entry points.
+The first operator surface needs truthful status, reason, next action and review state, with accessible keyboard and mobile behavior. Build that slice alongside the capability and use existing polling if it meets the local update target. The broader dashboard specification and visual polish remain backlog; push/replay infrastructure, bulk parallel browsing, additional adapter names, new agent frameworks and model fine-tuning do not gate the first supported flow.
 
 V2-08 is not permission to submit during this review or to finish WQ-8 automatically. The existing WQ-8 single-application authorization requirements remain in force until explicitly superseded by the owner.
 
-Suggested delivery cuts: V2 alpha = V2-00 through V2-04 with one supported end-to-end flow and its usable dashboard controls; V2 beta = resolver plus measured ATS coverage and expanded dashboard workflows; V2 release = recovery/soak evidence and approved-submission proof. Parallel preparation is a later V2.x milestone. Estimate calendar time after V2-00/V2-01 expose the actual test and migration costs, rather than promise a universal system on a fixed deadline.
+Delivery cuts are outcome-based: (1) intake evidence from a completed export; (2) one supported preparation flow through the production app/worker with honest review readiness; (3) scoped correction and reuse with durable recovery; (4) release qualification for each declared capability. Optional models, broad ATS coverage, generalized recovery, parallel preparation and controlled-submission proof remain separate additions and cannot silently block useful preparation.
 
 ## 8. Measurable acceptance and rollout
 
@@ -271,6 +271,10 @@ After baseline and contract reconciliation, turn the six diagnostic probes into 
 This establishes the foundation on which local embeddings, BERT/Laya and API LLM fallback can improve coverage without amplifying incorrect state or answers.
 
 ## 12. Core dashboard, intervention and learning requirements
+
+This is a product backlog specification, not a first-flow delivery gate.
+Section 18 defines the smaller required operator slice for the first supported
+flow; broader dashboard journeys can follow measured needs.
 
 ### Product goal: clear status and direct control
 
@@ -340,7 +344,10 @@ When an answer conflicts with an existing fact, show the conflict instead of sil
 
 ## 13. Deferred V2.x: parallel application preparation
 
-Parallel applications are explicitly optional for the first V2 release. Plan for them in the scheduler and event contracts now, but launch with concurrency=1 until verified single-job execution and recovery are stable.
+Parallel applications are explicitly optional for the first V2 release. Keep
+stable job/attempt identifiers and single-owner state so later isolation is
+possible, but do not build a worker pool, lease framework or generalized
+parallel scheduler now. Launch with one active application.
 
 **Proposed V2-09 workpackage:** a bounded worker pool with owner-configurable concurrency and conservative per-employer/site limits. Each job has an independent attempt, lease, browser/tab binding, document bundle, progress and intervention state. A blocked job yields execution capacity so unrelated eligible jobs continue; paused browser retention and eviction use an explicit resource budget.
 
@@ -356,7 +363,11 @@ Dependency: unified executor, scoped knowledge, durable session/lease recovery a
 
 ## 14. Concrete verification plan
 
-Testing is a deliverable of every workpackage. Each PR identifies which existing behaviors it could affect, adds behavioral regression cases, and runs the existing gates. A feature is not accepted because its new tests pass in isolation. The baseline remains the actual reviewed results in section 10, including the failing combined browser run; V2-00 must repair that gate.
+Testing protects each delivered behavior. Freeze acceptance contracts and
+inventory fixtures and test commands before broad test expansion. The latest
+V2-02 progress-fingerprint checkpoint recorded 1,854 passed and 3 deselected in
+the combined non-live gate; it is historical evidence for that exact tree, not
+a result for later code.
 
 ### Test layers and when they run
 
@@ -366,8 +377,8 @@ Testing is a deliverable of every workpackage. Each PR identifies which existing
 | Contract | Existing JobHunter JSONL, identity algorithm, document paths, legacy/versioned normalization, UAA API/event shapes, provider request/response normalization | Every code PR; compatible old fixtures remain supported |
 | Persistence/integration | Import → store → resolver → interventions → snapshot; atomic save/resume, concurrent updates, document revisions, leases, migration and backup/restore | Every code PR; real temporary DB and services |
 | Browser component | Native/custom controls, repeaters, iframes, upload acceptance/rejection, conditional fields, consent overlays, login handoff, same-URL steps | Combined non-live browser gate; controlled local HTTP fixtures |
-| Production E2E | Real app startup, import API/UI, subprocess worker, browser, owner correction, DB persistence, live dashboard updates, review and controlled fixture submission | Every accepted code milestone; no mock executor/resolver/store on the critical path; external model calls use a controlled stub |
-| Regression | Previously supported flows, all six reproduced defects, duplicate protection, controlled-submit gates, Siemens adapter boundary, old queue formats and dashboard journeys | Full old + new suite for every code milestone; failed/flaky tests cannot be hidden by only running selected files |
+| Production E2E | Real app startup, import API/UI, subprocess worker, browser, owner correction, DB persistence, live dashboard updates and review | At the intake, preparation, correction/reuse and release acceptance checkpoints; no mock app/worker/store/executor on the critical path; fixture server confirms zero final-application requests during preparation |
+| Regression | Previously supported flows, reproduced defects, duplicate protection, controlled-submit gates, Siemens adapter boundary, old queue formats and dashboard journeys | Focused affected checks per iteration; one combined full non-live gate at the accepted integration checkpoint before merge |
 | UI/accessibility | Keyboard navigation, focus, inline errors, live updates while typing, disconnected states, responsive layout, visual comparison and task completion | Every UI/browser milestone; automated checks plus required user-perspective browser inspection |
 | Model evaluation | Held-out German/English field decisions, unfamiliar wording, negation, factual grounding, abstention, injection, local/API routing and provider comparisons | Before changing model, prompt, retrieval index or decision thresholds; fixed labeled dataset, report precision AND coverage |
 | Fault/recovery | Kill worker/browser, restart API, interrupt upload/save, DB write failure, lost event connection, API timeout/rate limit, uncertain post-click result | Relevant PRs and release gate; deterministic injection at named checkpoints |
@@ -404,7 +415,7 @@ Names below are proposed regression cases; they may be grouped into existing tes
 
 ### End-to-end acceptance journeys
 
-1. **Ordinary application:** archived synthetic JobHunter export → UAA dashboard import → validated documents/profile → background executor → three-step local ATS → verified final snapshot. Assert UI state, DB history, document identity, actual DOM answers and zero unintended final requests.
+1. **Ordinary application:** completed JobHunter export → UAA dashboard import → validated documents/profile → production background executor → three-step local ATS fixture → verified final snapshot. Assert UI state, DB history, document identity, actual DOM answers and that the fixture server receives zero final-application requests during preparation.
 2. **Learn once:** first application lacks a known type of fact → intervention appears live → owner enters it and sees save scope → Save & resume → review-ready → second equivalent job reuses it. A third differently scoped question must still ask. Repeat after restart.
 3. **Recover:** login or upload failure mid-flow → plain next action in dashboard → manual browser correction/document replacement → resume same application → revalidation → review. No repeating already-completed unsafe actions.
 4. **Approved local submission:** exact snapshot approved against a local fake ATS → one coordinator-authorized submission request → confirmation/reference persisted → dashboard history updated → repeat attempt blocked. Separate stale/unknown-result variants must never silently retry.
@@ -425,9 +436,9 @@ Run L1 after relevant ATS changes when authorized; L2 before declaring a support
 
 ### Merge and release gates
 
-For each code milestone: targeted new cases → full unit/contract/integration/pipeline regression → applicable combined browser suite → lint/format/type checks → diff/scope review → required interactive UI/browser inspection. Record command, runtime, exact count, environment and skipped/unverified gates in the workpackage. Repair flaky lifecycle tests; do not redefine success as passing each file separately.
+For each code iteration: focused static/unit/contract checks → affected integration/browser checks → supervisor review. At the accepted integration checkpoint/workpackage, run one combined full non-live gate before merge, followed by applicable lint/format/type and scope checks. Do not run redundant full non-browser and full browser-inclusive gates back to back. Later code edits invalidate affected evidence; final accepted code receives the applicable gate. Documentation-only edits use consistency and whitespace checks, not code suites.
 
-Before release: complete combined non-live browser gate, production E2E journeys, supported-platform matrix, upgrade/restore, fault recovery, model/provider evaluation, soak/performance and authorized live evidence. If a live gate is unavailable, label that capability unverified; synthetic success is not live proof. Every supported old capability retains its regression scenario, including Siemens boundary behavior without modifying its repository.
+At release, qualify production E2E for the declared capabilities and assess upgrade/restore, fault recovery, model/provider evaluation or soak evidence only where those capabilities are in scope. L0 is local synthetic qualification. L1 observation, L2 live preparation and L3 real submission are separate live levels, each requiring its own explicit scope authorization; authorization for one level does not authorize another. If real/live evidence is unavailable, label the capability unverified; synthetic success is not live proof. Preserve supported regressions, including the Siemens boundary, without modifying its repository.
 
 ## 15. JobHunter → UAA integration contract
 
@@ -443,7 +454,7 @@ UAA: capture/validate import → documents + local facts → queue → prepare �
                                       UAA-owned answers, history, evidence and status
 ```
 
-Configure the actual queue path once; do not guess it or scan unrelated output directories. The dashboard provides Import/Refresh and shows the last source snapshot, new/updated/duplicate/invalid counts and actionable row errors. Import alone does not launch a browser or submit. Automatic refresh may be enabled later as a separate explicit setting; preparation follows the owner's run settings.
+Configure the actual queue path once; do not guess it or scan unrelated output directories. Inspect one real completed JobHunter export and its owner-selected application flow early. Keep queue/profile/document data private and ignored; commit no personal export, browser trace or screenshot. If real inputs are unavailable, use synthetic fixtures for contract and integration checks and label the actual-input acceptance as pending. This plan authorizes no live navigation, mutation, upload or submission. The dashboard's intake surface reports the source snapshot, row counts and actionable errors; import alone does not launch a browser or submit.
 
 ### Data ownership and fields
 
@@ -468,7 +479,7 @@ Existing exports are accepted through a legacy contract adapter. Introduce a UAA
 
 No feedback write into JobHunter is required for V2. If future search deduplication needs UAA outcomes, define a separate explicit outcome-export contract later. It must not become shared database ownership.
 
-Workpackage mapping: V2-01 fixes destructive re-import/duplicate-state risks; V2-03 owns compatibility intake, source/local ownership and document snapshots; V2-07B owns import status and correction UI; V2-08 owns an actual completed-export acceptance check when available. Existing orchestration stays optional, not a dependency of UAA.
+Workpackage mapping: V2-01 fixes destructive re-import/duplicate-state risks; actual-export and first-flow discovery move to the earliest V2-02 intake checkpoint; V2-03 handles only compatibility, source/local ownership and document-snapshot gaps demonstrated by that evidence; V2-07B owns the needed import/status and correction surface. V2-08 records release qualification, not first discovery. Existing orchestration stays optional, not a dependency of UAA.
 
 ## 16. Changing LLM APIs without changing the application engine
 
@@ -528,16 +539,16 @@ This section closes omissions from the earlier plan. It defines proposed impleme
 
 ### A. Scope and delivery cuts
 
-The initial plan accumulated too much scope in one release and hid dependencies inside broad workpackages. Use four usable increments:
+The initial plan accumulated too much scope in one release and hid dependencies inside broad workpackages. Use the four outcome checkpoints in section 18 rather than treating the following historical increments as a serial scope bundle.
 
-1. **Correctness baseline:** regression gate repaired; immediate mapping/read-back/re-import/duplicate defects fixed; unverified mutation paths clearly disabled; dashboard explains unsupported capability. No local-model installation or broad ATS promise.
-2. **Single-job product:** one shared executor, one selected public form family, scoped correction saving, exact document identity, production E2E and usable dashboard. Extend this with authenticated takeover/recovery as an explicitly tested capability.
-3. **Qualified assistance:** optional local semantic model and API fallback, provider switching, evaluation and additional supported form families selected from measured failures. No model may bypass the same policy gates.
-4. **Capability release:** recovery/upgrade/soak and authorized live preparation evidence for declared flows. Controlled submission gains its own release qualification when the owner authorizes the live test. Parallel preparation remains V2-09.
+1. **Intake and discovery:** inspect an actual completed export and owner-selected first flow early; do not authorize live action through this plan. Synthetic evidence remains provisional if real inputs are unavailable.
+2. **Preparation:** complete the bounded shared preparation core and one production app/worker E2E through a verified review boundary, with single-owner and default-deny safety.
+3. **Correction and reuse:** atomically save provenance, resolve the targeted intervention, invalidate only affected approvals and enqueue one scoped resume; reuse known facts only at the right scope.
+4. **Capability release:** report the supported/unsupported/unverified matrix and qualify declared capabilities. Controlled submission, optional models, broad ATS coverage and parallel execution remain separate work.
 
 Independent product readiness labels are required: preparation supported, controlled submission supported, and unsupported/unverified. Do not block all preparation value on a WQ-8 real-submit authorization; do not advertise final submission without its proof. No unattended policy-based final submit is included in these increments. That remains an explicit unresolved product-scope decision relative to the original ambition.
 
-Before implementation, move the reviewed plan and decisions into UAA's prescribed documentation branch/worktree, update the active handoff through normal review, and checkpoint on origin. This external artifact is currently outside the repository's durable project memory. Existing WQ-8 work must be archived/referenced or explicitly retained, never silently overwritten. No branch merge, publication or active-workpackage change was made during this plan audit.
+The plan is already inside UAA durable documentation. The prior V2-02 active handoff is archived byte-for-byte before the active file describes this documentation revision. Preserve the divergent checkpoint/project-rebaseline branch; this revision uses the documented codex/v2-delivery-plan exception from the latest integrated V2-02 checkpoint. WQ-8 submission authority remains in its archived handoff and controlled-submission plan.
 
 ### B. Canonical state, atomic commands and event ownership (V2-00/02/04/07B)
 
@@ -620,13 +631,13 @@ Limit total calls/time/cost across an attempt, not just per request; cache keys 
 
 | Decision | Why it remains open | Resolve by |
 |---|---|---|
-| First real form family and supported variant | Needs the owner's available queue and authorized test target; do not presume a particular employer remains open. No current target was selected in V2-00. | V2-06, before live implementation acceptance |
-| Upstream generation evidence | Actual completed export/manifest from the repaired JobHunter has not been examined; contract fixtures alone cannot establish producer behavior. | V2-03 compatibility acceptance |
+| First real form family and supported variant | Inspect the actual owner-selected completed export and identify one candidate flow early; discovery does not authorize live browser actions. Mutation qualification still requires its own explicit authorization. | V2-02 intake/discovery; qualify before claiming live support |
+| Upstream generation evidence | Inspect an actual completed export and referenced documents; fixtures alone cannot establish producer behavior. If unavailable, synthetic checks remain provisional. | V2-02 intake checkpoint; compatibility fixes as needed in V2-03 |
 | Local model/runtime and useful coverage floor | Requires actual hardware, baseline error distribution and held-out benchmark. Laya remains a candidate. | V2-05 promotion gate |
 | Evidence retention, backup destination and resource budgets | User preference and machine capacity affect defaults; propose reviewable defaults in settings design. | V2-03/04 before live data rollout |
 | Unattended final submission scope | Original ambition exceeds current repository approval contract. No silent policy change is planned. | Separate explicit owner decision after controlled submission is proven |
 
-These decisions do not block the immediate synthetic regression fixes or dashboard interaction design. This audit did not execute new live tests, modify source code, benchmark models or certify the future contracts.
+These decisions do not block focused synthetic regression fixes. This audit did not execute new live tests, modify source code, benchmark models or certify the future contracts.
 
 ### J. V2-00 adopted baseline and execution contracts
 
@@ -646,6 +657,26 @@ These decisions are the V2-00 documentation contract. They describe the intended
 
 **Browser ownership and uncertain effects.** A lease expiry does not transfer browser control by itself. Each owner generation rejects commands from an older worker; takeover requires acknowledged suspension or verified revocation/closure. If exclusive ownership cannot be established, the flow stops for recovery. Observation may be repeated; field writes require read-back before replay; repeated-row creation, draft saving, uploads and submit attempts persist intent and reconcile the observed outcome before retry. An unknown final-submit result blocks another attempt and is never described as exactly-once delivery to the ATS.
 
-**Initial form family decision.** No real form family is selected at V2-00 because an available owner-approved queue target was not supplied. Greenhouse and Lever remain candidates, not commitments. Select one supported variant from the actual queue before V2-06 live acceptance; until then, changes use synthetic/replay fixtures and make no broader live-coverage claim.
+**Initial form family decision.** The V2-00 record that no real form family had been selected is historical. Inspect an actual completed export and identify the owner's intended first flow at the earliest intake/discovery checkpoint. This planning change selects no employer and authorizes no live action; until the owner selects available inputs, synthetic/replay fixtures remain provisional and no broader live-coverage claim is made.
 
-**Dashboard interaction design follow-up (V2-07A).** Keep interaction design as a separate package from V2-00 and from later dashboard implementation. Its prototype must replace prompt-based corrections and blind resume with an explicit `Save → Saved → Resume queued → Rechecking` flow, show each job's current state and next action, distinguish flow/answer/upload trust and evidence, and include a queue/document preflight before scheduling. It must cover the observed 10-second polling behavior, mobile layout and keyboard/screen-reader use. V2-07B implementation waits until the command, revision, idempotency and event contracts are defined by the executor workpackages; V2-00 makes no dashboard UI change.
+**Dashboard interaction design follow-up (V2-07A).** V2-07A remains a separate, unmerged design checkpoint. Its broad prototype and V2-07B production redesign are backlog. The first usable operator slice needs truthful job status, reason, next action and review evidence, scoped save/resume feedback, and keyboard/mobile accessibility. Keep atomic state/event ownership and audit history; use existing polling if it meets the local freshness target. Push transport, full replay infrastructure and visual polish are not prerequisites for the first flow.
+
+## 18. Owner-directed delivery-plan update (2026-09-26)
+
+This section is the current controlling plan for delivery order, test cadence and scope. It supersedes conflicting workpackage timing and acceptance language above; the detailed field, upload, state ownership and submission-safety contracts remain in force.
+
+**Acceptance checkpoints.** Work in this order: (1) inspect one actual completed JobHunter export and its referenced owner-selected application flow; (2) prove intake and first-flow preparation through the production UAA app, API and background worker, using the real inputs where available; (3) prove a correction is persisted with provenance, resolves only its targeted intervention, invalidates only affected approval, and enqueues one scoped resume atomically, then verify correct future reuse while uncertain answers remain job-local; (4) qualify release behavior for the declared capabilities. The first-flow discovery is early; broad ATS implementation is not.
+
+For the preparation end-to-end acceptance, start the production app and worker, import the completed queue snapshot, process one selected job through the real browser/executor path, persist observed form state and history, surface a blocker with a reason and next action, and reach review-ready only at the verified final boundary with required fields and documents reconciled. Verify persisted state and dashboard status/review evidence; assert that no final action was clicked and the fixture server observed zero final-application requests during preparation. Critical-path app, worker, store and executor must be real. A local deterministic fixture may stand in for a real site. If the completed export or real target is unavailable, synthetic evidence is useful but the corresponding actual-input or live-flow acceptance remains pending. This plan itself grants no live authorization.
+
+**V2-02 boundary.** Continue the current bounded shared preparation/readiness core behind thin entry points. Keep the existing service/store, single browser owner, exact review snapshot and WQ-8 approval gates. Do not introduce a second executor, broad workflow framework, pool/lease framework or duplicate history. Controlled multi-step submission replay is a separate capability; it does not block correct multi-step preparation. Keep the approved-submit safety regressions intact while preparing.
+
+**Flow safety and state.** Qualify concrete form variants and mutation capabilities early. Unknown or unqualified actions remain default-deny and hand off with an explanation; do not use a blanket POST allow rule or claim universal network safety. A crash or request with unknown remote outcome stops for reconciliation; never clear a lock or retry blindly. Preserve candidate facts, documents, attempts, interventions, history and outcomes. Saving a correction, recording source/scope, resolving the exact intervention revision, invalidating affected approvals and enqueueing one idempotent resume happen atomically. Known facts may be reused only at the right scope; uncertain answers stay job-local unless explicitly confirmed for wider reuse.
+
+**Operator surface and optional intelligence.** Keep the first dashboard slice to timely status, reason, next action, verified review state and accessible correction/recovery controls. Preserve keyboard and mobile requirements. Existing polling is acceptable if it meets the observed local freshness target; a new push/replay subsystem is not a first-flow dependency. Resolution order remains deterministic rules, optional local semantic suggestions, then configured API provider, all under the same evidence and confirmation gates. Defer Laya/model bakeoffs, broad ATS expansion, generalized recovery, parallel execution and late visual-polish loops until measured demand.
+
+**Test and review cadence.** Before broad test expansion, freeze the acceptance contracts and inventory the fixtures/commands. Each code iteration runs focused static, unit and contract checks; run affected integration/browser selections before supervisor review. Run one combined full non-live gate at the accepted integration checkpoint/workpackage before merge, not redundant full non-browser and full-browser-inclusive gates back to back. Any later code change invalidates affected evidence; the final accepted code receives the gate. Documentation-only changes require document consistency and whitespace checks, not code suites. Production E2E uses the real app/worker and store on its critical path. L0 is local synthetic qualification and needs no live authorization; L1 observation, L2 live preparation and L3 real submission remain separate live levels, each requiring its own explicit authorization under the controlled-submission plan. When Playwright MCP is unavailable, an equivalent Python Playwright inspection may be recorded with its method and evidence; do not label it MCP.
+
+**Evidence, metrics and integration.** Preserve checkpoints independently from acceptance: a clearly labelled WIP checkpoint may record known failures or unverified gates before a long run or context reset; only a gate-passing accepted milestone is called accepted. Resolve SHA values dynamically from command output; never write a commit's self-SHA into its own handoff. The base is the actual source/integration parent and need not be `main`. Use one integration branch per workpackage, with optional bounded worktrees only for independent paths and one named integration owner. Report a capability acceptance matrix and measured baseline for cycle time, rework and runtime when collected; do not publish aggregate progress percentages, fabricated baselines or speedup claims. Defer duration profiling and marker-classification changes to separately scoped work.
+
+**Conditional migration decision.** Invalidating approvals during a schema migration is a proposed safeguard only. First inventory live and in-flight authorizations and determine whether the migration changes the approved snapshot semantics. Do not adopt or execute blanket migration-time invalidation silently; preserve the existing explicit approval contract until an owner-reviewed decision is recorded.

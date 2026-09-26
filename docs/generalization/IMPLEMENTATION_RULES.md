@@ -5,8 +5,9 @@ system. Every AI or human implementer must follow it.
 
 Repository ownership and local deployment requirements are defined in
 `DEPLOYMENT_AND_REPO_STRATEGY.md`. Generalized production code belongs in the
-new `UniversalAutoApplier` repository. This planning pack being stored in the
-Siemens repository does not authorize implementation here.
+`UniversalAutoApplier` repository. The location of planning documents does
+not change repository ownership or authorize implementation in Siemens or
+JobHunter.
 
 The technology and package choices in `TECHNICAL_BASELINE.md` are fixed for
 version 1 unless an approved architecture decision record changes them.

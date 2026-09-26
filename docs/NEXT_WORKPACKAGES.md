@@ -7,13 +7,13 @@ Items are not started until they are pulled into an active workpackage in
 
 ## V2 progress ledger
 
-Approximate overall progress is **25–30%** across the ten V2 workpackages; this
-is a directional estimate, not a size-weighted schedule. V2-00 and V2-01 are
-complete. V2-02 remains active: the runner/service progress-fingerprint slice
-has passed the combined non-live gate and is supervisor-reviewed. Publication
-status is resolved dynamically using the HEAD/origin comparison in the active
+No aggregate V2 progress percentage is recorded. Report workpackage status and
+capability acceptance directly; cycle time, rework and runtime baselines are
+unmeasured until collected. V2-00 and V2-01 are complete. V2-02 remains active:
+the runner/service progress-fingerprint slice passed the combined non-live gate
+and supervisor review. Publication is resolved dynamically in the active
 handoff. `93a45055f96f00a0d4217f37e4da01b639d73695` is the prior safety
-integration base, not the publication status of this branch.
+integration base, not the publication status of the latest checkpoint.
 
 The combined `pytest -m 'not live'` gate passed **1,854 tests with 3
 deselected**. Same-URL three-step and nested-conditional runner/service
@@ -36,7 +36,7 @@ operator dashboard work assigned to V2-07B.
 |---|---|
 | V2-00 | Complete; baseline checkpointed, with its browser-gate caveat documented |
 | V2-01 | Complete |
-| V2-02 | In progress; validated and reviewed slice; publication checked dynamically; one-executor, review-only and controlled-replay scope remains |
+| V2-02 | In progress; progress-fingerprint slice validated; bounded shared preparation remains. Controlled multi-step submit replay is a separate capability and does not gate preparation. |
 | V2-03 | Not complete |
 | V2-04 | Not complete |
 | V2-05 | Not complete |
@@ -44,6 +44,18 @@ operator dashboard work assigned to V2-07B.
 | V2-07A | Design/prototype checkpoint pushed at `18ec4f29`; unmerged and not included here |
 | V2-07B | Not complete; production dashboard work |
 | V2-08 | Not complete |
+
+### Delivery acceptance status
+
+Historical unit/browser counts do not establish actual-input or live-flow
+readiness. None of these four acceptance checkpoints is currently accepted.
+
+| Checkpoint | Required done criteria | Current status |
+|---|---|---|
+| Intake and first-flow discovery | Inspect one actual completed JobHunter export and referenced owner-selected application flow; record import validity, artifact identity and any source gaps without committing private artifacts. | Not verified with actual inputs; discovery is the exact next action. |
+| Preparation | Start the production UAA app/API/worker; process the selected job through the real browser/executor path to a truthful final review boundary; verify persisted attempt/history and dashboard status, reason, next action and review evidence; fixture server observes zero final-application requests. | Historical suite is green on its checkpoint; this production app/worker acceptance is not recorded. |
+| Correction and reuse | Save correction provenance, resolve only the targeted intervention, invalidate only affected approvals and enqueue one scoped idempotent resume atomically; verify later reuse at matching scope and job-local handling of uncertain answers. | Not accepted. |
+| Release qualification | Record supported/unsupported/unverified capability matrix and run the single combined accepted-code gate; assess release-relevant upgrade/restore and any separately authorized live levels. | Not accepted; all actual/live readiness remains unverified. |
 
 ## V2 roadmap — current delivery order
 
@@ -228,14 +240,14 @@ active below.
 Owner approval is separately required for any real target/live action under
 the existing WQ-8 contract; no code review gate blocks this synthetic work.
 
-### V2-02 — One executor (safety, classifier, request guard; broader work incomplete)
+### V2-02 — Shared preparation core (bounded; broader work incomplete)
 
-**Objective.** Route CLI, dashboard worker, supervisor preparation and snapshot
-observation through one multi-step state machine; remove duplicated readiness
-decisions; provide structured errors and progress fingerprints. The guarded
-browser and request-preparation slices reduce mutation risk. This branch adds
-and validates same-URL step progress for live runner and observation paths, but
-it does not complete the shared executor or controlled-submit replay.
+**Objective.** Continue one bounded preparation/readiness core behind thin CLI,
+dashboard-worker and supervisor entry points. Preserve structured errors,
+progress fingerprints and one readiness decision. Do not add a duplicate
+engine or general workflow framework. The current branch validates same-URL
+step progress for live runner and observation paths, but it does not complete
+all shared entry points or controlled-submit replay.
 
 **Safety/browser implementation.** `hard_submit_block` defaults to true and
 cannot be disabled. `LiveBrowserRunner.run` and synthetic-mutation paths install
@@ -306,15 +318,12 @@ Playwright viewport tests passed at 1440×900 and 390×844. Their screenshots ar
 render-only fixture evidence, not readiness proof; API/service tests prove
 readiness. No live test or real ATS target was used.
 
-**Broader V2-02 work still incomplete.** The objective remains one multi-step
-state machine across CLI, dashboard worker, supervisor preparation,
-observation/fill and controlled submission, with duplicated readiness removed
-and structured errors/progress fingerprints. This validated slice covers runner
-and service observation/fill; it does not unify every entry point. Three same-
-URL steps and nested conditional questions are implemented for those paths, but
-controlled submission still reconstructs only one page and rejects a multi-step
-snapshot before any final click. Equivalent outcomes across all entry points and
-safe multi-step submit replay remain unimplemented.
+**Broader V2-02 work still incomplete.** Keep the active scope on shared
+preparation/readiness through thin entry points and production app/worker E2E.
+The validated slice covers runner and service observation/fill; it does not
+unify every entry point. Controlled submission still rejects multi-step
+snapshots before any final action. Safe multi-step submit replay is a separate
+capability and does not block correct multi-step preparation.
 
 **Coverage limits.** The interlock covers routed Playwright HTTP requests; it
 does not cover WebSocket frames, server-side effects on GET endpoints, or
@@ -360,9 +369,14 @@ noted the isolated worktree has no local `.venv`; the installed executable
 produced the zero-diagnostic result. Integrated diff checks pass. No live test,
 ATS target, or real submission was used.
 
-**Next action.** Verify publication by comparing HEAD with
-`origin/checkpoint/v2-02-progress-fingerprint`, then resume the remaining
-unified-executor, review-only-boundary and controlled-replay work in V2-02.
+**Exact next action.** Inspect one actual completed JobHunter export and the
+owner-selected first application flow, or record that no usable real input is
+available yet. Do not start broad implementation from discovery alone. Once
+the acceptance contracts and fixture inventory are reviewed, continue only
+the bounded preparation core. The preparation E2E must use the production
+app/API/worker/browser path, persist history and truthful review evidence, and
+show zero final-application requests at the fixture server. Preserve the
+approved-submit safety regressions. This plan grants no live authorization.
 
 ### V2-07A — Dashboard interaction design (separate follow-up)
 

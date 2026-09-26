@@ -122,4 +122,20 @@ These do not block immediate synthetic regression fixes. They have named decisio
 - Added T19–T29: eleven missing acceptance scenarios, bringing the named scenario catalog to 29. T18 is still deferred with parallelism; the catalog is not a count of implemented test functions.
 - Left the underlying UAA/JobHunter repositories untouched. The audit revised planning artifacts only; it did not rerun the code suite or establish the future guarantees through tests.
 
-The next implementation step is V2-00's baseline and contract decisions, followed by immediate correctness fixes. It is not to begin all 29 scenarios, every ATS and every model integration simultaneously.
+The next step is to inspect an actual completed JobHunter export and identify the owner's first application flow. After acceptance contracts and fixture inventory are reviewed, continue only the bounded V2-02 preparation core; do not auto-start broad ATS, model, recovery or parallel work.
+
+## Owner-directed audit addendum (2026-09-26)
+
+The current delivery order is actual completed-export/first-flow discovery,
+bounded production app/worker preparation, scoped correction/reuse, then
+capability release qualification. This plan authorizes no live navigation,
+mutation, upload or submission. All actual-input and live readiness remains
+unverified until its explicit acceptance evidence exists.
+
+The latest recorded combined non-live run passed 1,854 tests with 3 deselected
+in 1,961.65 seconds (about 32.7 minutes). It is a duration observation for
+that checkpoint, not a performance baseline: no profile identifies a hotspot
+or establishes a speedup. The audit also noted subprocess browser-default
+coverage and pure mirror tests as items to classify in the fixture/command
+inventory, not as grounds for a late test-framework rewrite. Duration
+profiling and marker-classification changes remain separate future work.

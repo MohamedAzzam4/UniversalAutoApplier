@@ -73,8 +73,14 @@ submit with review-before-submit, and records evidence and history.
   commits in the past and is forbidden.
 - **Preserve `checkpoint/*` branches** unless explicitly approved for
   deletion.
-- Documentation-only work is developed on `checkpoint/project-rebaseline`
-  and merged to `main` via a reviewed PR.
+- Documentation-only work normally uses the designated, current documentation
+  branch and is merged through a reviewed PR. If that branch is divergent,
+  preserve it; do not merge or reset it merely to satisfy the convention.
+  For this delivery-plan revision only, use `codex/v2-delivery-plan` from the
+  verified `checkpoint/v2-02-progress-fingerprint` integration checkpoint.
+  This scoped exception preserves the older divergent
+  `checkpoint/project-rebaseline` history; it does not authorize rewriting or
+  deleting that branch.
 - **Only commit what the workpackage asked for.** Never commit screenshots,
   PDFs, `live-runs`, `.uaa_data`, `.env`, browser profiles, traces, or a
   local database. Check `git status --short` before committing and
@@ -101,7 +107,9 @@ submit with review-before-submit, and records evidence and history.
    git rev-parse origin/<branch>
    ```
 
-   The two values must match before any handoff or review. Compare the
+   The two values must match before claiming a published checkpoint or
+   completing a remote handoff. An unpublished draft may be reviewed locally
+   when it is labelled unpublished and its base is recorded. Compare the
    **base SHA** and the **last completed/checkpoint SHA** from
    `docs/CURRENT_STATE.md` / `docs/handoffs/ACTIVE_WORKPACKAGE.md` against
    the resolved values; they are reference points, not the current HEAD.
@@ -121,16 +129,20 @@ submit with review-before-submit, and records evidence and history.
 
 - **Work is not considered preserved until its commit exists on origin.**
   A local-only commit can be lost instantly if the sandbox is reset.
-- **Commit and push after every completed milestone.**
-- **Commit and push before a pause, handoff, restart, risky operation, or
-  expected context reset.**
+- **Commit and push after every publishable milestone, unless the supervisor
+  reserved the draft for review first.**
+- **Preserve a WIP before a long gate or expected context reset when
+  publication is authorized.** A supervisor-reserved draft stays labelled
+  WIP until review; do not publish prematurely.
 - **Commit and push when context usage approaches 60%.** Do not wait.
-- **After every push, verify local HEAD equals origin checkpoint HEAD:**
+- **After every push, verify local HEAD equals the remote branch HEAD:**
   ```text
   git rev-parse HEAD
   git rev-parse origin/<branch>
   ```
-  Record both full SHAs in `docs/handoffs/ACTIVE_WORKPACKAGE.md`.
+  Keep the dynamic commands in `docs/handoffs/ACTIVE_WORKPACKAGE.md`; do not
+  embed a commit's self-SHA in the document it modifies. Label unpublished
+  work clearly and do not claim local/remote equality before publication.
 - **If push fails, stop substantial development immediately.** Resolve
   the auth issue first (request a PAT), push, verify, then continue.
 - Update `docs/handoffs/ACTIVE_WORKPACKAGE.md` after every major milestone
@@ -170,16 +182,20 @@ python -m pytest -m "not live"        # includes playwright if installed
 `ResourceWarning` is a test failure — dispose engines/close contexts in
 `finally` blocks.
 
-## What to verify after a change to code
+## What to verify after a change
 
-Run the full gate after any change that touches code:
-
-1. Unit + contract + integration + pipeline tests pass.
-2. Playwright (UI/browser) tests pass if browser or dashboard changed.
-3. `ruff check`, `ruff format --check`, and `pyright` pass.
-4. `git diff --check` passes and no unrequested files are staged.
-5. If UI or browser behavior changed, run the local system and verify with
-   Playwright MCP at 1440x900 and 390x844 before claiming acceptance.
+For code work, run focused static, unit and contract checks per iteration and
+the affected integration/browser selections before review. Run one combined
+full non-live gate at the accepted integration checkpoint/workpackage before
+merge; do not run redundant full non-browser and full browser-inclusive gates
+back to back. A later code change invalidates affected evidence, and the final
+accepted code must receive the applicable gate. Run `ruff check`, `ruff format
+--check`, `pyright`, and `git diff --check` as appropriate to the accepted
+code checkpoint. For documentation-only work, check document consistency and
+`git diff --check`; code suites are not required. If UI/browser behavior
+changes, inspect at 1440x900 and 390x844 with Playwright MCP where available.
+When MCP is unavailable, an equivalent Python Playwright inspection may be
+recorded with its method and evidence; do not label it MCP.
 
 For real-submission work: only the standalone `live-submit` CLI/API path
 plus a user-approved run per `docs/testing/CONTROLLED_REAL_SUBMISSION_TEST_PLAN.md`.
@@ -232,7 +248,9 @@ The document must always contain:
   git rev-parse origin/<branch>
   ```
 
-  The two resolved values must match before handoff/review.
+  The two resolved values must match before claiming a published checkpoint
+  or completing a remote handoff. An unpublished draft may be reviewed locally
+  when it is labelled unpublished and its base is recorded.
 - completed work
 - changed files
 - tests and exact results

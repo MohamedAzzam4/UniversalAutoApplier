@@ -1,10 +1,36 @@
 # Current State
 
-## Current checkout snapshot — V2-00 (2026-09-24)
+## Current checkout overlay — V2 delivery-plan revision (2026-09-26)
 
-This section is the current checkout record and takes precedence over the
-historical V1 snapshot below. It records the selected V2-00 baseline at branch
-creation; resolve HEAD dynamically after later V2-00 commits.
+This overlay records the latest selected implementation checkpoint and the
+root-reviewed documentation revision. Publication status is resolved
+dynamically from the active handoff; the V2-00 section below is a historical
+baseline record, not the current checkout status.
+
+- **Repository:** `MohamedAzzam4/UniversalAutoApplier`.
+- **Documentation branch:** `codex/v2-delivery-plan`, based on the verified
+  `origin/checkpoint/v2-02-progress-fingerprint` checkpoint
+  `18fb1ff4b25640bdb8ea4dc7326ddd2449b55a41`. Root review is approved;
+  branch publication is resolved dynamically in the active handoff.
+- **Latest implementation checkpoint:** V2-02 progress-fingerprint slice;
+  its recorded combined `pytest -m 'not live'` gate passed 1,854 tests with 3
+  deselected in 1,961.65 seconds. See `docs/NEXT_WORKPACKAGES.md` and the
+  archived V2-02 handoff for exact evidence. No code tests were run for this
+  documentation-only revision.
+- **Current delivery status:** V2-00 and V2-01 are complete. V2-02 remains
+  active; its progress-fingerprint slice is validated, while bounded shared
+  preparation/readiness integration remains. Controlled multi-step
+  submit-replay is separate and does not gate preparation.
+  V2-07A is a separate unmerged design/prototype checkpoint.
+- **Branch preservation:** the divergent `checkpoint/project-rebaseline`
+  branch remains preserved. This revision uses a narrow
+  `codex/v2-delivery-plan` branch from the latest integrated implementation
+  checkpoint; no branch was merged, reset or deleted.
+
+## Historical V2-00 baseline snapshot (2026-09-24)
+
+This section records the selected V2-00 baseline at branch creation. It is
+retained as history; the current delivery overlay above takes precedence.
 
 - **Repository:** `MohamedAzzam4/UniversalAutoApplier`.
 - **Base:** `origin/main` at branch creation was
