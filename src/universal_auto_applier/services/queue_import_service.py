@@ -4,8 +4,8 @@ Responsibilities (WQ-3):
 
 - Reads the configured absolute queue path (``Settings.queue_path`` /
   ``UAA_QUEUE_PATH``). Never scans folders; never invents a path.
-- Calls the existing contract importer (:func:`import_queue_file`) — JSONL
-  validation is never reimplemented here.
+- Captures the queue once, then calls the contract importer's captured-bytes
+  entry point. JSONL row validation stays in the shared importer parser.
 - Persists a durable run record per attempt (survives restart) with counts,
   a file fingerprint, structured row errors, and a safe failure reason.
 - Preserves valid-row import when other lines are malformed (partial runs).
@@ -25,6 +25,8 @@ from __future__ import annotations
 
 import hashlib
 import logging
+import os
+import stat
 import threading
 import uuid
 from dataclasses import dataclass, field
@@ -36,7 +38,7 @@ from typing import Any
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session, sessionmaker
 
-from universal_auto_applier.application_queue.importer import import_queue_file
+from universal_auto_applier.application_queue.importer import import_queue_bytes
 from universal_auto_applier.config import Settings
 from universal_auto_applier.persistence.db import session_scope
 from universal_auto_applier.persistence.models import ApplicationJobRow, QueueImportRunRow
@@ -65,23 +67,56 @@ def _utcnow() -> datetime:
     return datetime.now(UTC)
 
 
-def _fingerprint(path: Path) -> str | None:
-    """Return the sha256 hex digest of ``path`` content, or None if unreadable.
+class _QueueChangedDuringCaptureError(RuntimeError):
+    """The source file changed while its bytes were being captured."""
 
-    A partially-written file still fingerprints (so a re-run is recorded and
-    idempotent); a missing/undecodable file returns None, meaning the import
-    cannot even be attempted safely.
-    """
+    def __init__(self, fingerprint: str) -> None:
+        super().__init__("queue file changed while being captured; import rejected")
+        self.fingerprint = fingerprint
+
+
+def _same_file(left: os.stat_result, right: os.stat_result) -> bool:
+    """Compare stable device/inode identity across path and descriptor stats."""
+    return (left.st_dev, left.st_ino) == (right.st_dev, right.st_ino)
+
+
+def _same_path_version(left: os.stat_result, right: os.stat_result) -> bool:
+    """Compare path-visible version fields with portable Windows semantics."""
+    return (left.st_size, left.st_mtime_ns) == (right.st_size, right.st_mtime_ns)
+
+
+def _same_descriptor_version(left: os.stat_result, right: os.stat_result) -> bool:
+    """Compare descriptor versions, including ctime where fstat is consistent."""
+    return _same_path_version(left, right) and left.st_ctime_ns == right.st_ctime_ns
+
+
+def _capture_queue(source: Path) -> tuple[bytes, str]:
+    """Read a stable queue snapshot once and fingerprint those exact bytes."""
+    path_before = source.stat()
+    if not stat.S_ISREG(path_before.st_mode):
+        raise OSError(f"queue source is not a regular file: {source}")
+
+    with source.open("rb") as queue_file:
+        descriptor_before = os.fstat(queue_file.fileno())
+        content = queue_file.read()
+        descriptor_after = os.fstat(queue_file.fileno())
     try:
-        if not path.exists() or not path.is_file():
-            return None
-        digest = hashlib.sha256()
-        with path.open("rb") as fh:
-            for chunk in iter(lambda: fh.read(1024 * 1024), b""):
-                digest.update(chunk)
-        return digest.hexdigest()
-    except OSError:
-        return None
+        path_after = source.stat()
+    except OSError as exc:
+        fingerprint = hashlib.sha256(content).hexdigest()
+        raise _QueueChangedDuringCaptureError(fingerprint) from exc
+
+    fingerprint = hashlib.sha256(content).hexdigest()
+    if (
+        not _same_file(path_before, descriptor_before)
+        or not _same_path_version(path_before, descriptor_before)
+        or not _same_file(descriptor_before, descriptor_after)
+        or not _same_descriptor_version(descriptor_before, descriptor_after)
+        or not _same_file(descriptor_after, path_after)
+        or not _same_path_version(descriptor_after, path_after)
+    ):
+        raise _QueueChangedDuringCaptureError(fingerprint)
+    return content, fingerprint
 
 
 @dataclass
@@ -207,8 +242,23 @@ class QueueImportService:
         run_id = uuid.uuid4().hex
         started_at = _utcnow()
 
-        fingerprint = _fingerprint(source)
-        if fingerprint is None:
+        try:
+            content, fingerprint = _capture_queue(source)
+        except _QueueChangedDuringCaptureError as exc:
+            return self._persist(
+                run_id=run_id,
+                source_path=str(source),
+                trigger=trigger,
+                source_fingerprint=exc.fingerprint,
+                state=QueueImportState.FAILED,
+                total_lines=0,
+                imported=0,
+                skipped=0,
+                row_errors=[],
+                reason=_safe_reason(exc),
+                started_at=started_at,
+            )
+        except OSError:
             return self._persist(
                 run_id=run_id,
                 source_path=str(source),
@@ -224,8 +274,8 @@ class QueueImportService:
             )
 
         try:
-            import_result = import_queue_file(
-                source, self._session_factory, synthetic_mutation=synthetic_mutation
+            import_result = import_queue_bytes(
+                content, self._session_factory, synthetic_mutation=synthetic_mutation
             )
         except Exception as exc:  # noqa: BLE001 - any importer failure must be recorded durably
             logger.exception("queue import crashed; recording failed run")

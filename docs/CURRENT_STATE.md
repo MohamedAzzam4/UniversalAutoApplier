@@ -1,31 +1,34 @@
 # Current State
 
-## Current checkout overlay — V2 delivery-plan revision (2026-09-26)
+## Current checkout overlay — V2-02 intake preparation WIP (2026-09-26)
 
-This overlay records the latest selected implementation checkpoint and the
-root-reviewed documentation revision. Publication status is resolved
-dynamically from the active handoff; the V2-00 section below is a historical
-baseline record, not the current checkout status.
+This overlay records the selected V2-02 intake-preparation work in progress.
+Publication status is resolved dynamically from the active handoff; the V2-00
+section below is historical, not current checkout status.
 
 - **Repository:** `MohamedAzzam4/UniversalAutoApplier`.
-- **Documentation branch:** `codex/v2-delivery-plan`, based on the verified
-  `origin/checkpoint/v2-02-progress-fingerprint` checkpoint
-  `18fb1ff4b25640bdb8ea4dc7326ddd2449b55a41`. Root review is approved;
-  branch publication is resolved dynamically in the active handoff.
-- **Latest implementation checkpoint:** V2-02 progress-fingerprint slice;
-  its recorded combined `pytest -m 'not live'` gate passed 1,854 tests with 3
-  deselected in 1,961.65 seconds. See `docs/NEXT_WORKPACKAGES.md` and the
-  archived V2-02 handoff for exact evidence. No code tests were run for this
-  documentation-only revision.
+- **Active branch:** `codex/v2-intake-preparation`, based on source checkpoint
+  `322f3aaea844f61c090d4f4c8c9167fb7ea4f307`. The WIP is not published until
+  dynamic branch-head equality is verified in the active handoff.
+- **Actual-input intake:** local capture/import validation is accepted for the
+  owner-selected DATEV Workday row in the existing queue snapshot. It passed
+  importer validation and two named-service imports against a disposable temp
+  SQLite store, producing two successful run records and one persisted job.
+  Producer completion/run provenance and a queue-to-document generation
+  manifest remain unverified, so completed-export provenance is pending.
+  Sanitized evidence is in
+  [`docs/evidence/v2/INTAKE_DISCOVERY.md`](evidence/v2/INTAKE_DISCOVERY.md).
 - **Current delivery status:** V2-00 and V2-01 are complete. V2-02 remains
-  active; its progress-fingerprint slice is validated, while bounded shared
-  preparation/readiness integration remains. Controlled multi-step
-  submit-replay is separate and does not gate preparation.
+  active; the progress-fingerprint and actual-input intake slices are
+  validated, while production app/API/worker preparation, review-boundary
+  acceptance, correction/reuse, and the combined non-live gate remain pending.
+  No live DATEV readiness or submission is claimed.
   V2-07A is a separate unmerged design/prototype checkpoint.
 - **Branch preservation:** the divergent `checkpoint/project-rebaseline`
-  branch remains preserved. This revision uses a narrow
-  `codex/v2-delivery-plan` branch from the latest integrated implementation
-  checkpoint; no branch was merged, reset or deleted.
+  branch remains preserved. The current implementation WIP uses
+  `codex/v2-intake-preparation`; the earlier documentation-only revision on
+  `codex/v2-delivery-plan` is historical. No branch was merged, reset or
+  deleted during this work.
 
 ## Historical V2-00 baseline snapshot (2026-09-24)
 

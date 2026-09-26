@@ -7,6 +7,7 @@ no-browser / no-pipeline guarantee.
 
 from __future__ import annotations
 
+import hashlib
 import json
 from pathlib import Path
 
@@ -113,6 +114,7 @@ class TestServiceRun:
         assert summary.skipped == 0
         assert summary.error_count == 0
         assert summary.source_fingerprint is not None
+        assert summary.source_fingerprint == hashlib.sha256(queue_path.read_bytes()).hexdigest()
         assert summary.failure_reason is None
 
         row = _latest_run_row(session_factory)
@@ -151,6 +153,150 @@ class TestServiceRun:
         # Only line number + message are persisted — never the raw JSONL line.
         assert summary.row_errors == [{"line_number": 2, "error": summary.row_errors[0]["error"]}]
         assert "invalid JSON" in summary.row_errors[0]["error"]
+
+    def test_captured_bytes_keep_blank_line_numbering_and_partial_import(
+        self, tmp_path: Path, session_factory
+    ) -> None:
+        queue_path = tmp_path / "queue.jsonl"
+        queue_path.write_bytes(
+            ("\r" + _make_valid_job_line(external_job_id="j1") + "\r\n\r{bad json}\r").encode(
+                "utf-8"
+            )
+        )
+        service = QueueImportService(_make_settings(tmp_path, queue_path), session_factory)
+
+        summary = service.run(trigger="api")
+
+        assert summary.state == QueueImportState.PARTIAL
+        assert summary.total_lines == 2
+        assert summary.imported == 1
+        assert summary.skipped == 1
+        assert summary.row_errors[0]["line_number"] == 4
+
+    def test_invalid_utf8_fails_before_importing_any_rows(
+        self, tmp_path: Path, session_factory
+    ) -> None:
+        queue_path = tmp_path / "queue.jsonl"
+        queue_path.write_bytes(
+            (_make_valid_job_line(external_job_id="j1") + "\n").encode("utf-8") + b"\xff\n"
+        )
+        service = QueueImportService(_make_settings(tmp_path, queue_path), session_factory)
+
+        summary = service.run(trigger="api")
+
+        assert summary.state == QueueImportState.FAILED
+        assert summary.imported == 0
+        assert summary.total_lines == 0
+        assert summary.source_fingerprint == hashlib.sha256(queue_path.read_bytes()).hexdigest()
+        assert "utf-8" in (summary.failure_reason or "").lower()
+        with session_factory() as session:
+            assert (
+                get_application_job(
+                    session,
+                    compute_application_id(
+                        platform="greenhouse",
+                        external_job_id="j1",
+                        url="https://example.com/jobs/123",
+                    ),
+                )
+                is None
+            )
+
+    def test_source_replaced_after_capture_does_not_change_imported_bytes(
+        self, tmp_path: Path, session_factory, monkeypatch
+    ) -> None:
+        import universal_auto_applier.services.queue_import_service as queue_import_module
+
+        queue_path = tmp_path / "queue.jsonl"
+        captured = (_make_valid_job_line(external_job_id="captured") + "\n").encode("utf-8")
+        replacement = (_make_valid_job_line(external_job_id="replacement") + "\n").encode("utf-8")
+        queue_path.write_bytes(captured)
+        real_import = queue_import_module.import_queue_bytes
+
+        def replace_before_parse(content: bytes, *args, **kwargs):
+            assert content == captured
+            queue_path.write_bytes(replacement)
+            return real_import(content, *args, **kwargs)
+
+        monkeypatch.setattr(queue_import_module, "import_queue_bytes", replace_before_parse)
+        service = QueueImportService(_make_settings(tmp_path, queue_path), session_factory)
+
+        summary = service.run(trigger="api")
+
+        assert queue_path.read_bytes() == replacement
+        assert summary.state == QueueImportState.SUCCESS
+        assert summary.imported == 1
+        assert summary.source_fingerprint == hashlib.sha256(captured).hexdigest()
+        with session_factory() as session:
+            captured_id = compute_application_id(
+                platform="greenhouse",
+                external_job_id="captured",
+                url="https://example.com/jobs/123",
+            )
+            replacement_id = compute_application_id(
+                platform="greenhouse",
+                external_job_id="replacement",
+                url="https://example.com/jobs/123",
+            )
+            assert get_application_job(session, captured_id) is not None
+            assert get_application_job(session, replacement_id) is None
+
+    def test_source_changed_while_captured_is_rejected_before_row_writes(
+        self, tmp_path: Path, session_factory, monkeypatch
+    ) -> None:
+        queue_path = tmp_path / "queue.jsonl"
+        captured = (_make_valid_job_line(external_job_id="j1") + "\n").encode("utf-8")
+        queue_path.write_bytes(captured)
+        original_open = Path.open
+
+        class _MutatingReader:
+            def __init__(self, file_handle) -> None:
+                self._file_handle = file_handle
+                self._mutated = False
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *args) -> None:
+                self._file_handle.close()
+
+            def fileno(self) -> int:
+                return self._file_handle.fileno()
+
+            def read(self) -> bytes:
+                content = self._file_handle.read()
+                if not self._mutated:
+                    self._mutated = True
+                    queue_path.write_bytes(captured + b" ")
+                return content
+
+        def open_and_mutate(path: Path, *args, **kwargs):
+            file_handle = original_open(path, *args, **kwargs)
+            if path == queue_path and args and args[0] == "rb":
+                return _MutatingReader(file_handle)
+            return file_handle
+
+        monkeypatch.setattr(Path, "open", open_and_mutate)
+        service = QueueImportService(_make_settings(tmp_path, queue_path), session_factory)
+
+        summary = service.run(trigger="api")
+
+        assert summary.state == QueueImportState.FAILED
+        assert summary.imported == 0
+        assert summary.source_fingerprint == hashlib.sha256(captured).hexdigest()
+        assert "changed while being captured" in (summary.failure_reason or "")
+        with session_factory() as session:
+            assert (
+                get_application_job(
+                    session,
+                    compute_application_id(
+                        platform="greenhouse",
+                        external_job_id="j1",
+                        url="https://example.com/jobs/123",
+                    ),
+                )
+                is None
+            )
 
     def test_all_lines_invalid_is_failed(self, tmp_path: Path, session_factory) -> None:
         queue_path = tmp_path / "queue.jsonl"

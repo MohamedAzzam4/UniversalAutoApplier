@@ -10,10 +10,15 @@ Items are not started until they are pulled into an active workpackage in
 No aggregate V2 progress percentage is recorded. Report workpackage status and
 capability acceptance directly; cycle time, rework and runtime baselines are
 unmeasured until collected. V2-00 and V2-01 are complete. V2-02 remains active:
-the runner/service progress-fingerprint slice passed the combined non-live gate
-and supervisor review. Publication is resolved dynamically in the active
-handoff. `93a45055f96f00a0d4217f37e4da01b639d73695` is the prior safety
-integration base, not the publication status of the latest checkpoint.
+the progress-fingerprint slice passed its combined non-live gate and supervisor
+review; local capture/import validation of the existing queue snapshot and the
+named-service double-import check are accepted. Producer completion/run
+provenance and a queue-to-document generation manifest are unverified, so the
+actual-completed-export checkpoint is not fully accepted. Production app/worker
+preparation and the current combined non-live gate remain pending. See
+[`docs/evidence/v2/INTAKE_DISCOVERY.md`](evidence/v2/INTAKE_DISCOVERY.md) and
+resolve publication dynamically in the active handoff. The V2-02 source/base
+SHAs are reference points, not publication status.
 
 The combined `pytest -m 'not live'` gate passed **1,854 tests with 3
 deselected**. Same-URL three-step and nested-conditional runner/service
@@ -36,7 +41,7 @@ operator dashboard work assigned to V2-07B.
 |---|---|
 | V2-00 | Complete; baseline checkpointed, with its browser-gate caveat documented |
 | V2-01 | Complete |
-| V2-02 | In progress; progress-fingerprint slice validated; bounded shared preparation remains. Controlled multi-step submit replay is a separate capability and does not gate preparation. |
+| V2-02 | In progress; progress-fingerprint slice validated; existing queue snapshot passed local importer and named-service intake for the owner-selected DATEV Workday row in a disposable store. Producer completion/run provenance and a queue-to-document generation manifest remain unverified; production app/worker preparation, review boundary, correction/reuse, and final combined gate remain pending. No live DATEV readiness is claimed. Controlled multi-step submit replay is separate and does not gate preparation. |
 | V2-03 | Not complete |
 | V2-04 | Not complete |
 | V2-05 | Not complete |
@@ -52,8 +57,8 @@ readiness. None of these four acceptance checkpoints is currently accepted.
 
 | Checkpoint | Required done criteria | Current status |
 |---|---|---|
-| Intake and first-flow discovery | Inspect one actual completed JobHunter export and referenced owner-selected application flow; record import validity, artifact identity and any source gaps without committing private artifacts. | Not verified with actual inputs; discovery is the exact next action. |
-| Preparation | Start the production UAA app/API/worker; process the selected job through the real browser/executor path to a truthful final review boundary; verify persisted attempt/history and dashboard status, reason, next action and review evidence; fixture server observes zero final-application requests. | Historical suite is green on its checkpoint; this production app/worker acceptance is not recorded. |
+| Intake and first-flow discovery | Inspect one actual completed JobHunter export and record the owner-selected first flow, importer validity, and artifact existence without committing private artifacts. | **Partially accepted locally (2026-09-26):** the existing snapshot's one row passed `_validate_and_build_job`; its producer verdict is `consider` and queue status is `ready_to_apply`; DATEV Workday is selected; referenced PDFs existed and parsed; two named-service imports succeeded in a disposable SQLite store with matching source fingerprints and one persisted job. The snapshot has no completion/run marker or queue-to-document generation manifest, so completed-export provenance is pending. Live page inspection remains unverified. See [`INTAKE_DISCOVERY.md`](evidence/v2/INTAKE_DISCOVERY.md). |
+| Preparation | Start the production UAA app/API/worker; process the selected job through the real browser/executor path to a truthful final review boundary; verify persisted attempt/history and dashboard status, reason, next action and review evidence; fixture server observes zero final-application requests. | **Pending.** The accepted temp-store intake check did not start the production app/API/worker or browser; the normal local runtime still needs an explicit queue path. |
 | Correction and reuse | Save correction provenance, resolve only the targeted intervention, invalidate only affected approvals and enqueue one scoped idempotent resume atomically; verify later reuse at matching scope and job-local handling of uncertain answers. | Not accepted. |
 | Release qualification | Record supported/unsupported/unverified capability matrix and run the single combined accepted-code gate; assess release-relevant upgrade/restore and any separately authorized live levels. | Not accepted; all actual/live readiness remains unverified. |
 
@@ -369,14 +374,15 @@ noted the isolated worktree has no local `.venv`; the installed executable
 produced the zero-diagnostic result. Integrated diff checks pass. No live test,
 ATS target, or real submission was used.
 
-**Exact next action.** Inspect one actual completed JobHunter export and the
-owner-selected first application flow, or record that no usable real input is
-available yet. Do not start broad implementation from discovery alone. Once
-the acceptance contracts and fixture inventory are reviewed, continue only
-the bounded preparation core. The preparation E2E must use the production
-app/API/worker/browser path, persist history and truthful review evidence, and
-show zero final-application requests at the fixture server. Preserve the
-approved-submit safety regressions. This plan grants no live authorization.
+**Exact next action.** Keep completed-export provenance pending unless the
+producer completion/run marker and queue-to-document generation manifest can
+be established. Continue only the bounded preparation core using the selected
+snapshot and an explicit local queue path. The production app/API/worker E2E
+must use a deterministic local fixture, persist history and truthful review
+evidence, and show zero final-application requests at the fixture server. Do
+not navigate or prepare on the live DATEV site without separate authorization.
+Preserve the approved-submit safety regressions. This plan grants no live
+authorization.
 
 ### V2-07A — Dashboard interaction design (separate follow-up)
 

@@ -30,6 +30,7 @@ Path handling:
 
 from __future__ import annotations
 
+import io
 import json
 import logging
 from collections.abc import Iterator
@@ -79,10 +80,19 @@ def _read_jsonl(path: Path) -> Iterator[tuple[int, str]]:
     are 1-based.
     """
     with path.open("r", encoding="utf-8") as fh:
-        for line_number, line in enumerate(fh, start=1):
-            stripped = line.strip()
-            if not stripped:
-                continue
+        yield from _iter_jsonl_lines(fh)
+
+
+def _read_jsonl_text(text: str) -> Iterator[tuple[int, str]]:
+    """Yield JSONL rows from already-decoded captured text."""
+    yield from _iter_jsonl_lines(io.StringIO(text, newline=None))
+
+
+def _iter_jsonl_lines(lines: Iterator[str]) -> Iterator[tuple[int, str]]:
+    """Apply the shared blank-line and line-number rules to JSONL text."""
+    for line_number, line in enumerate(lines, start=1):
+        stripped = line.strip()
+        if stripped:
             yield line_number, stripped
 
 
@@ -213,9 +223,38 @@ def import_queue_file(
     The import is idempotent: re-importing the same file updates descriptive
     fields but does not duplicate jobs or erase attempt history.
     """
+    return _import_queue_lines(
+        _read_jsonl(path), session_factory, synthetic_mutation=synthetic_mutation
+    )
+
+
+def import_queue_bytes(
+    content: bytes,
+    session_factory: sessionmaker[Session],
+    synthetic_mutation: bool = False,
+) -> ImportResult:
+    """Import captured UTF-8 JSONL bytes through the same row parser.
+
+    Decoding happens before the first row is written so invalid UTF-8 cannot
+    produce a partial import. QueueImportService uses this entry point after
+    capturing and fingerprinting a stable source file.
+    """
+    text = content.decode("utf-8")
+    return _import_queue_lines(
+        _read_jsonl_text(text), session_factory, synthetic_mutation=synthetic_mutation
+    )
+
+
+def _import_queue_lines(
+    lines: Iterator[tuple[int, str]],
+    session_factory: sessionmaker[Session],
+    *,
+    synthetic_mutation: bool,
+) -> ImportResult:
+    """Validate and upsert rows produced by either supported input source."""
     result = ImportResult()
 
-    for line_number, raw_line in _read_jsonl(path):
+    for line_number, raw_line in lines:
         result.total_lines += 1
 
         outcome = _validate_and_build_job(line_number, raw_line)
@@ -286,5 +325,6 @@ def _stamp_synthetic_mutation(
 __all__ = [
     "ImportRowError",
     "ImportResult",
+    "import_queue_bytes",
     "import_queue_file",
 ]

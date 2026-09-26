@@ -8,6 +8,7 @@ runs, missing file (200 with failed run), unconfigured (400), concurrent
 
 from __future__ import annotations
 
+import hashlib
 import json
 from collections.abc import Iterator
 from contextlib import contextmanager
@@ -128,6 +129,22 @@ class TestPostImport:
             assert run["row_errors"][0]["line_number"] == 2
             # Never the raw JSONL line.
             assert "{bad json}" not in json.dumps(run)
+
+    def test_invalid_utf8_is_a_durable_failed_run_with_no_imports(self, tmp_path: Path) -> None:
+        queue_path = tmp_path / "queue.jsonl"
+        captured = (_make_valid_job_line(external_job_id="j1") + "\n").encode("utf-8") + b"\xff\n"
+        queue_path.write_bytes(captured)
+        with _make_client(_make_settings(tmp_path, queue_path)) as client:
+            response = client.post("/api/queue/import")
+            assert response.status_code == 200
+            run = response.json()["run"]
+            assert run["state"] == "failed"
+            assert run["imported"] == 0
+            assert run["source_fingerprint"] == hashlib.sha256(captured).hexdigest()
+            assert "utf-8" in run["failure_reason"].lower()
+            status = client.get("/api/queue/status").json()
+            assert status["latest_run"]["run_id"] == run["run_id"]
+            assert status["queue_job_summary"]["total"] == 0
 
     def test_missing_file_returns_200_with_failed_run(self, tmp_path: Path) -> None:
         missing = tmp_path / "missing.jsonl"
