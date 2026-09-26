@@ -347,6 +347,7 @@ class SubmissionExecutionService:
         *,
         application_id: str,
         artifact_dir: Path | None = None,
+        raise_on_error: bool = False,
     ) -> SubmissionSnapshot | None:
         """Open browser, navigate from ``job.url`` to the actual application
         form, fill it, observe the submit control, build and persist the
@@ -359,6 +360,11 @@ class SubmissionExecutionService:
 
         The snapshot is NOT approved — the user must explicitly approve
         it via :meth:`approve_snapshot`.
+
+        Expected page blockers return ``None``. Unexpected observation errors
+        also return ``None`` by default for compatibility; callers that own a
+        durable job boundary may set ``raise_on_error`` to record them as
+        failures instead of treating them as human-input blockers.
 
         WQ-8 ATS target URL separation: ``job.url`` is the canonical
         source/job identity URL (often a job DETAIL page). The snapshot's
@@ -452,7 +458,7 @@ class SubmissionExecutionService:
                         _cmp_result.policy,
                         _cmp_result.result,
                     )
-                    raise RuntimeError("cookie_consent_blocked")
+                    return None
                 if _cmp_result.result == "resolved":
                     logger.info(
                         "[%s] observe: cookie consent resolved (cmp=%s policy=%s)",
@@ -774,6 +780,8 @@ class SubmissionExecutionService:
                     error=blocked,
                 )
                 raise blocked from exc
+            if raise_on_error:
+                raise
             logger.exception("[%s] snapshot observation failed: %s", application_id[:12], exc)
             return None
         finally:

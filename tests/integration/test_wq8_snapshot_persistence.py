@@ -25,6 +25,7 @@ import socket
 import threading
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -521,6 +522,42 @@ class TestEventOrderInterlockBeforeNavigation:
         assert "goto:about:blank" in order
         assert page_idx < order.index("goto:about:blank")
         engine.dispose()
+
+    def test_initial_consent_blocker_stays_none_with_error_propagation_enabled(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """A known human consent blocker remains a blocker, not a browser failure."""
+        settings = _make_settings(tmp_path)
+        job = _make_job(tmp_path, "https://example.com/jobs/consent")
+        engine, sf = _setup_db(tmp_path, settings, job)
+        factory = _OrderRecordingFactory()
+
+        def no_fail_goto(page: _OrderRecordingPage, url: str, **_kwargs: Any) -> None:
+            page._order_log.append(f"goto:{url}")
+            page.url = url
+
+        monkeypatch.setattr(_OrderRecordingPage, "goto", no_fail_goto)
+        monkeypatch.setattr(
+            "universal_auto_applier.browser.consent_banner.handle_consent_banner",
+            lambda *_args, **_kwargs: SimpleNamespace(
+                result="human_required",
+                cmp="unknown",
+                policy="necessary_only",
+            ),
+        )
+        service = SubmissionExecutionService(settings, sf, factory)
+
+        try:
+            snapshot = service.observe_and_persist_snapshot(
+                application_id=job.application_id,
+                raise_on_error=True,
+            )
+            assert snapshot is None
+            assert "goto:" + job.url in factory.order_log
+        finally:
+            engine.dispose()
 
 
 # ---------------------------------------------------------------------------

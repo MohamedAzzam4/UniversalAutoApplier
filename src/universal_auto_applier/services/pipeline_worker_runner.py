@@ -425,7 +425,10 @@ class PipelineWorkerRunner:
             context_factory=self._submission_context_factory,
         )
         try:
-            snapshot = service.observe_and_persist_snapshot(application_id=application_id)
+            snapshot = service.observe_and_persist_snapshot(
+                application_id=application_id,
+                raise_on_error=True,
+            )
         except PreparationInterlockPersistenceError as exc:
             # This outcome means blocker persistence itself was incomplete.
             # Keep its typed reason and require storage recovery/reconciliation;

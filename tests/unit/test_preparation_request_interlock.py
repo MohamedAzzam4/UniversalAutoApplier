@@ -17,7 +17,7 @@ from universal_auto_applier.browser.request_interlock import (
     RequestInterlockSetupError,
 )
 from universal_auto_applier.config import Settings
-from universal_auto_applier.core.statuses import ApplicationStatus
+from universal_auto_applier.core.statuses import ApplicationStatus, InterventionKind
 from universal_auto_applier.services import pipeline_worker_runner
 from universal_auto_applier.services.pipeline_worker_runner import PipelineWorkerRunner
 from universal_auto_applier.submission.execution_service import (
@@ -212,7 +212,10 @@ def test_abort_failure_requires_reconciliation_and_stops_pipeline_retry(
     assert job.status == ApplicationStatus.NEEDS_USER_INPUT
     assert job.status not in {ApplicationStatus.READY_TO_APPLY, ApplicationStatus.QUEUED}
     assert create_intervention.call_count == 0  # service already persisted the typed blocker
-    observe.assert_called_once_with(application_id="synthetic-application")
+    observe.assert_called_once_with(
+        application_id="synthetic-application",
+        raise_on_error=True,
+    )
     runner._bump.assert_called_once_with(jobs_completed=1)
     assert (
         "http_request_outcome_unknown_reconciliation_required"
@@ -221,6 +224,54 @@ def test_abort_failure_requires_reconciliation_and_stops_pipeline_retry(
     assert "before any retry" in runner._update.call_args.kwargs["last_action"]
     record_phase.assert_called_once()
     finish_attempt.assert_called_once()
+
+
+def test_worker_keeps_legitimate_missing_snapshot_as_needs_input(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    runner = PipelineWorkerRunner(
+        settings=Settings(data_dir=tmp_path),
+        session_factory=MagicMock(),
+        run_id="synthetic-run",
+        max_jobs=1,
+        job_pulse_ms=0,
+    )
+    runner._submission_context_factory = MagicMock()
+    runner._update = MagicMock()
+    runner._bump = MagicMock()
+    runner._append_error = MagicMock()
+    monkeypatch.setattr(pipeline_worker_runner, "session_scope", lambda _: nullcontext(object()))
+    monkeypatch.setattr(pipeline_worker_runner, "upsert_application_job", MagicMock())
+    monkeypatch.setattr(
+        pipeline_worker_runner,
+        "record_attempt_started",
+        MagicMock(return_value=SimpleNamespace(attempt_id="synthetic-attempt")),
+    )
+    monkeypatch.setattr(pipeline_worker_runner, "record_phase_result", MagicMock())
+    monkeypatch.setattr(pipeline_worker_runner, "finish_attempt", MagicMock())
+    observe = MagicMock(return_value=None)
+    monkeypatch.setattr(SubmissionExecutionService, "observe_and_persist_snapshot", observe)
+    create = MagicMock()
+    monkeypatch.setattr(pipeline_worker_runner, "create_intervention", create)
+
+    job = MagicMock(
+        application_id="synthetic-application",
+        metadata={},
+        status=ApplicationStatus.READY_TO_APPLY,
+    )
+    runner._process_job_live(job)
+
+    assert job.status == ApplicationStatus.NEEDS_USER_INPUT
+    runner._bump.assert_called_once_with(jobs_completed=1)
+    create.assert_called_once()
+    assert create.call_args.kwargs["kind"] == InterventionKind.UNKNOWN_PAGE
+    assert "No review snapshot was persisted" in create.call_args.kwargs["question"]
+    assert "when it is resolved" in runner._update.call_args.kwargs["last_action"]
+    observe.assert_called_once_with(
+        application_id="synthetic-application",
+        raise_on_error=True,
+    )
 
 
 def test_worker_preserves_interlock_persistence_failure_as_nonretryable(
@@ -269,4 +320,7 @@ def test_worker_preserves_interlock_persistence_failure_as_nonretryable(
     assert "preparation_interlock_persistence_failed" in error
     assert "do not retry preparation or submission" in error
     assert "before any retry" in runner._update.call_args.kwargs["last_action"]
-    observe.assert_called_once_with(application_id="synthetic-application")
+    observe.assert_called_once_with(
+        application_id="synthetic-application",
+        raise_on_error=True,
+    )
