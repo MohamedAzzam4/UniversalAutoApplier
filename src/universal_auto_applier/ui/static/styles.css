@@ -262,6 +262,12 @@ code {
   background: rgba(255, 255, 255, 0.03);
   border-radius: 8px;
 }
+.uaa-status-grid > .uaa-stat {
+  min-width: 0;
+}
+#queue-import-status > .uaa-stat:nth-child(2) > span:not(.uaa-stat-label) {
+  overflow-wrap: anywhere;
+}
 .uaa-stat-label {
   font-size: 0.78rem;
   color: var(--uaa-text-muted);
